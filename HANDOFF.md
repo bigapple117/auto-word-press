@@ -1,21 +1,26 @@
 # HANDOFF
 
-- 현재 작업자: Gemini
-- 현재 상태: 계획 수립 단계 (/plan 플랜 아티팩트 작성 및 사용자 선택 대기)
-- 이번 작업 범위:
-  - 구글 시트 + 워드프레스 자동 발행 시스템 설계 및 구현 계획안 작성
-  - Codex 기술 자문 완료 및 아키텍처 옵션 도출
-- 변경 파일:
-  - `PROJECT.md`
-  - `AGENTS.md`
-  - `HANDOFF.md`
-  - 플랜 아티팩트 (`wordpress_auto_publisher_plan.md`)
-- 다음 작업:
-  - 사용자 옵션 선택 (GAS 단독형 vs Python 백엔드형 vs 하이브리드)
-  - 승인 후 선택된 방식의 코드베이스 구축 및 테스트
+- 현재 상태: 기획 및 아키텍처 설계 완료 (`PLAN.md`), Claude 구현 착수 대기
+- 지시자: 사용자
+- 이전 작업자 (기획/설계): Gemini (Codex 자문 2회 완료)
+- 차기 메인 작업자 (구현): Claude (Claude Code)
+- 검토자: Codex (기능 단위 완료 후)
 
-## 기본 역할 전환: Claude 메인 — 2026-10-31
-- 지시자: 사용자 ("Antigravity/Gemini 메인에서 Claude 메인으로 전환"). 작업자: Claude. 검토자: 없음 (문서 역할 표기만 변경, 앱 코드 변경 없음).
-- 새 기본값: Claude 총괄·구현·배포 / Gemini 조사(읽기 전용) / Codex 리뷰·테스트. 규칙 원본은 AGENTS.md의 AI-TEAM 블록입니다.
-- 이 항목 이전의 "Gemini를 메인으로 사용" 등 역할 기록은 과거 기록으로만 보존하고, 현재 기준은 이 항목입니다.
-- 변경 파일: PROJECT.md 담당 표기 (해당되는 프로젝트만), HANDOFF.md. 앱 배포·서비스 재시작은 하지 않았습니다.
+## 작업 히스토리 요약
+1. 1단계 기획: 구글 시트 주제 입력 ➡️ AI 제목/본문(실용 위젯) 생성 ➡️ 워드프레스 REST API 자동 발행 ➡️ 텔레그램 승인/알림 파이프라인 수립.
+2. 2단계 기획 확장: 무료 스톡 API(Pexels, Pixabay) 문단별 이미지/영상 자동 삽입 + AI 성우(Edge-TTS) + 자막 싱크 + FFmpeg 숏폼(1080x1920) 자동 렌더링 + 웹 대시보드(진행률 콘솔) 통합 기획 확정.
+3. 기획 상세 문서: `/home/ubuntu/auto-word-press/PLAN.md`에 아키텍처, 디렉터리 구조, 열 구성, 4단계 렌더링 파이프라인, 테스트 계획을 완벽하게 작성 완료.
+
+## Claude가 이어받을 구현 작업 (Next Steps)
+1. Python 가상환경(`.venv`) 및 의존성 구성 (`requirements.txt`: `requests`, `gspread`, `google-genai`, `openai`, `edge-tts`, `pillow`, `pydantic`, `fastapi`, `uvicorn` 등)
+2. ARM64 호환 FFmpeg 및 한글 폰트(`assets/fonts/`) 준비
+3. 모듈별 구현 (`PLAN.md` 5절 파일 구조 준수):
+   - `templates/prompt_template.py`: 블로그 HTML + 쇼츠 대본 마스터 JSON 프롬프트
+   - `src/stock_media.py`: Pexels / Pixabay API 검색 및 다운로드
+   - `src/tts_engine.py`: Edge-TTS 음성 합성 및 자막 타임스탬프(.ass) 생성
+   - `src/video_renderer.py`: FFmpeg 필터그래프 기반 세로형 쇼츠 합성
+   - `src/wp_client.py`: WordPress REST API 포스팅 및 미디어 업로드
+   - `src/sheet_manager.py`: Google Sheets 연동
+   - `src/web_ui.py`: 실시간 4단계 콘솔 UI (두 번째 레퍼런스 스타일)
+   - `src/orchestrator.py`: 단일/배치 오케스트레이션
+4. 단위 테스트 및 통합 드라이런 검증 (`tests/`)
