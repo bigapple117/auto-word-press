@@ -24,3 +24,13 @@
    - `src/web_ui.py`: 실시간 4단계 콘솔 UI (두 번째 레퍼런스 스타일)
    - `src/orchestrator.py`: 단일/배치 오케스트레이션
 4. 단위 테스트 및 통합 드라이런 검증 (`tests/`)
+
+## 2026-10-31 새 운영 서버 연결 (지시: 사용자 / 작업: Claude, PC 쪽 Claude 세션 / 검토: 없음, 코드 변경 없음)
+- 결정: 워드프레스와 자동 생성 프로그램을 모두 새 오라클 서버에 둠 (사용자 선택 3번)
+- 새 서버: Ubuntu 24.04 ARM64, CPU 1개, 메모리 5.8GiB, 디스크 41G 남음. 접속 주소는 이 서버 `~/.ssh/known_hosts`와 사용자에게 확인
+- 이미 설치됨: nginx, PHP 8.3-fpm, MariaDB, 워드프레스 7.1.4(`/var/www/html`), python3, git, Node, Claude Code
+- 설치 안 됨: ffmpeg, cloudflared, SSL(https), 도메인
+- 워드프레스 웹 설치는 사용자가 직접 마침 (비밀번호는 사용자가 보관)
+- 이 서버 공개키를 새 서버에 등록함 (사용자가 PC 세션에서 직접 승인)
+- 실제 검증: 이 서버에서 키 파일 없이 SSH 접속 성공, `install.php`가 "이미 설치됨"으로 응답
+- 남은 일: ffmpeg와 한글 폰트 설치, 도메인과 https 적용, CPU 증설 검토(무료 등급 여유분), PLAN.md 순서대로 구현
