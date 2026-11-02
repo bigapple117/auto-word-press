@@ -20,6 +20,9 @@ class SectionImage:
     alt: str
     credit: str = ""        # 예: "Photo by 홍길동 on Pexels"
     credit_url: str = ""
+    width: int = 0
+    height: int = 0
+    media_id: int = 0       # 워드프레스 미디어 번호(있으면 반응형 크기 자동 적용)
 
 
 def _safe_url(url: str) -> str | None:
@@ -60,9 +63,11 @@ def _image(img: SectionImage) -> str:
         if link:
             text = f'<a href="{escape(link)}" rel="nofollow noopener" target="_blank">{text}</a>'
         credit = f"<figcaption>{text}</figcaption>"
+    size = f' width="{int(img.width)}" height="{int(img.height)}"' if img.width and img.height else ""
+    cls = f' class="wp-image-{int(img.media_id)}"' if img.media_id else ""
     return (
-        f'<figure class="wp-block-image"><img src="{escape(src)}" alt="{escape(img.alt)}" '
-        f'loading="lazy" decoding="async">{credit}</figure>'
+        f'<figure class="wp-block-image size-large"><img src="{escape(src)}" alt="{escape(img.alt)}"'
+        f'{size}{cls} loading="lazy" decoding="async">{credit}</figure>'
     )
 
 

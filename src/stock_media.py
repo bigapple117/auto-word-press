@@ -270,6 +270,30 @@ def has_letterbox(ffmpeg: Path, path: Path, width: int, height: int) -> bool:
     return w < width * LETTERBOX_MIN_RATIO or h < height * LETTERBOX_MIN_RATIO
 
 
+BLOG_IMAGE_SIZE = (1200, 675)    # 블로그 본문 사진: 16:9로 통일
+
+
+def normalize_blog_image(src: Path, dest_dir: Path, size: tuple[int, int] = BLOG_IMAGE_SIZE) -> Path:
+    """가운데를 16:9로 잘라 1200x675 JPEG로 저장한다(비율 통일·용량 절감). 이미 있으면 재사용."""
+    from PIL import Image, ImageOps
+
+    dest = dest_dir / f"{src.stem}_{size[0]}x{size[1]}.jpg"
+    if dest.exists() and dest.stat().st_size > 0:
+        return dest
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        fitted = ImageOps.fit(im, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+        fd, tmp_name = tempfile.mkstemp(dir=dest_dir, prefix=dest.name + ".", suffix=".part")
+        os.close(fd)
+        try:
+            fitted.save(tmp_name, "JPEG", quality=82, optimize=True, progressive=True)
+            Path(tmp_name).replace(dest)
+        finally:
+            Path(tmp_name).unlink(missing_ok=True)
+    return dest
+
+
 def _simpler(query: str) -> str | None:
     words = query.split()
     return " ".join(words[:2]) if len(words) > 2 else None

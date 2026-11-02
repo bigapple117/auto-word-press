@@ -273,3 +273,15 @@ def test_broken_image_tries_next_and_blog_images_prune(tmp_path, monkeypatch):
     picks = picker.pick_blog_images(["office desk", "family home"])
     assert [p.media_id for p in picks] == [2, 3]                 # 깨진 1번 건너뛰고, 겹치지 않음
     assert calls["keep"] == {p.path for p in picks}
+
+
+def test_normalize_blog_image_crops_to_16_9(tmp_path):
+    from PIL import Image
+    for name, size in [("tall.jpg", (800, 1200)), ("wide.png", (2000, 600))]:
+        src = tmp_path / name
+        Image.new("RGB", size, "red").save(src)
+        out = sm.normalize_blog_image(src, tmp_path / "out")
+        with Image.open(out) as im:
+            assert im.size == sm.BLOG_IMAGE_SIZE and im.format == "JPEG"
+        assert sm.normalize_blog_image(src, tmp_path / "out") == out      # 다시 만들지 않음
+    assert not list((tmp_path / "out").glob("*.part"))

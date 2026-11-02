@@ -524,3 +524,10 @@ def test_news_signals_included_as_non_evidence():
     p = build_prompt("청년도약계좌", SOURCES, 45, news=[("01 Nov 2026", "청년미래적금으로 갈아탈까")])
     assert "[최근 뉴스 - 변경 신호, 사실 근거 아님]" in p and "청년미래적금으로 갈아탈까" in p
     assert "[최근 뉴스" not in build_prompt("청년도약계좌", SOURCES, 45)
+
+
+def test_image_markup_has_size_and_wp_class():
+    html = render_blog_html(model(good_data()), SOURCES,
+                            images={1: SectionImage("https://jalcheck.com/a.jpg", "alt", width=1200, height=675,
+                                                    media_id=16)})
+    assert 'width="1200" height="675" class="wp-image-16"' in html

@@ -19,7 +19,7 @@ from src.blog_html import SectionImage, render_blog_html  # noqa: E402
 from src.config import load_settings  # noqa: E402
 from src.content_schema import MasterContent  # noqa: E402
 from src.source_fetcher import Source  # noqa: E402
-from src.stock_media import StockMediaPicker  # noqa: E402
+from src.stock_media import BLOG_IMAGE_SIZE, StockMediaPicker, normalize_blog_image  # noqa: E402
 from src.wp_client import WordPressClient  # noqa: E402
 
 
@@ -60,13 +60,17 @@ def main() -> int:
         chosen = saved[str(args.job_id)]
     images: dict[int, SectionImage] = {}
     featured = None
+    w, h = BLOG_IMAGE_SIZE
     for i, (section, pick) in enumerate(zip(content.sections, chosen)):
         if not pick:
             continue
-        media = wp.upload_media(Path(pick["file"]), args.job_id, i, alt=section.heading,
-                                caption=pick["credit"])
-        images[i] = SectionImage(media.url, section.heading, f"사진: {pick['credit']}", pick["page"])
-        featured = featured or media.id
+        fitted = normalize_blog_image(Path(pick["file"]), settings.data_dir / "media_cache" / "blog")
+        media = wp.upload_media(fitted, args.job_id, i, alt=section.heading, caption=pick["credit"])
+        if featured is None:
+            featured = media.id          # 대표 사진은 글 맨 위에 테마가 보여 주므로 본문에는 다시 넣지 않음
+            continue
+        images[i] = SectionImage(media.url, section.heading, f"사진: {pick['credit']}", pick["page"],
+                                 width=w, height=h, media_id=media.id)
 
     html = render_blog_html(content, sources, images)
     post = wp.save_draft(args.job_id, content.title, html, slug=content.slug,
