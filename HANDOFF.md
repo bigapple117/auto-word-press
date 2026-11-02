@@ -75,3 +75,13 @@
 - 되돌리기: 백업 nginx 설정 복원+reload, DB siteurl/home 원복(또는 덤프 복원), Cloudflare SSL 모드 원복. 301은 브라우저에 캐시될 수 있음
 - 실제 검증: https 200, http/www/IP 접속 모두 https://jalcheck.com 으로 301, wp-admin 로그인 사용자 확인, 페이지 내 링크 전부 https://jalcheck.com, wp-json 200
 - 남은 일: 개인정보 처리방침 실제 내용 작성(애드센스 승인 필요), 예제 페이지·샘플 글 정리, (선택) nginx에 Cloudflare 실제 방문자 IP 복원 설정, PLAN.md 구현(.venv부터)
+
+## 2026-11-02 파이썬 실행 환경 구성 (지시: 사용자 / 작업: Claude / 검토: 없음, 의존성 구성만)
+- 서버에 pip·python3-venv 패키지가 없어 sudo 설치 대신 `python3 -m venv --without-pip .venv` + 공식 get-pip.py로 프로젝트 안에만 pip 설치
+- `requirements.txt`(버전 고정): requests, python-dotenv, pydantic, google-genai, gspread, edge-tts, pillow, fastapi, uvicorn / `requirements-dev.txt`: pytest
+- openai는 유료 API라 이번엔 뺌. AI 글 생성 모듈 만들 때 Gemini 무료 등급으로 충분한지 보고 필요하면 추가
+- 텔레그램은 별도 라이브러리 없이 requests로 호출 예정, 작업 상태 DB는 내장 sqlite3 사용
+- `.gitignore`에 `.venv/`, `.env`, `__pycache__/` 추가
+- 실제 검증: `pip check` 충돌 없음, 전체 import 성공, edge-tts 한국어 음성(ko-KR-SunHiNeural) 합성 성공(5.04초 mp3 + 문장별 시작·끝 시간 자막 생성)
+- 참고: 한국어 성우 3종 사용 가능(SunHi 여, InJoon 남, HyunsuMultilingual 남)
+- 남은 일: PLAN.md 5절 순서로 src/config.py, .env.example, src/db.py부터 구현

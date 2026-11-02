@@ -1,3 +1,7 @@
 # 설치 스크립트로 받는 큰 파일
 tools/
 assets/fonts/*.otf
+.venv/
+.env
+__pycache__/
+*.pyc
