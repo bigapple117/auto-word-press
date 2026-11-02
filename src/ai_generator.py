@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 RETRY_WAITS = (10, 30, 60)       # 일시적 오류 재시도 간격(초)
 MAX_QUALITY_ROUNDS = 3           # 검사 불합격 시 최대 작성 횟수
+MAX_TIMEOUTS_PER_MODEL = 2      # 같은 모델에서 시간 초과가 이만큼 나면 예비 모델로
 MAX_SHORTS_REPAIRS = 2           # 쇼츠 길이만 틀렸을 때 대본만 고쳐 쓰는 횟수
 NARRATION_PROBLEM = "쇼츠 내레이션 전체 길이"
 REQUEST_TIMEOUT_MS = 300_000
@@ -335,6 +336,7 @@ class ContentGenerator:
         """(응답 글자, 실제 쓴 모델). 모든 모델이 일시적 오류로 실패하면 GenerationError."""
         last: Exception | None = None
         for model in self.models:
+            timeouts = 0
             for attempt in range(len(self.retry_waits) + 1):
                 try:
                     return self._call(model, prompt, **call_kwargs), model
@@ -342,6 +344,11 @@ class ContentGenerator:
                     if not _is_transient(exc):
                         raise
                     last = exc
+                    # 시간 초과(504·타임아웃)는 한 번에 수 분씩 걸리므로 두 번 나면 바로 다음 모델로
+                    if getattr(exc, "code", None) == 504 or "timeout" in exc.__class__.__name__.lower():
+                        timeouts += 1
+                        if timeouts >= MAX_TIMEOUTS_PER_MODEL:
+                            break
                     if attempt < len(self.retry_waits):
                         wait = self.retry_waits[attempt]
                         log.warning("%s 일시 오류(%s), %s초 후 재시도", model, exc, wait)

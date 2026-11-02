@@ -1,1 +1,2 @@
 pytest==9.2.0
+playwright==1.64.1  # 화면 캡처(scripts/screenshot_post.py)

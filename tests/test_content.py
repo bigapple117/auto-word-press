@@ -664,3 +664,10 @@ def test_strong_count_ignores_hidden_fields_and_five_columns_rejected():
 def test_table_repeat_keeps_sign():
     rows = [["가", "-100원"], ["나", "-200원"], ["다", "-300원"]]
     assert table_repeated_in_text(rows, ["가는 100원입니다. 나는 200원입니다. 다는 300원입니다."]) is False
+
+
+def test_two_timeouts_switch_to_backup_model_quickly():
+    gen, client = make_gen([api_error(504), api_error(504), json.dumps(good_data())])
+    r = gen.generate("근로장려금", SOURCES, 45)
+    assert [m for m, _ in client.calls] == ["main-model", "main-model", "backup-model"]
+    assert r.model == "backup-model"

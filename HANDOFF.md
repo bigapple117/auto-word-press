@@ -175,3 +175,11 @@
 - 문제: Gemini 3.8 Flash 503/504가 잦아 이번 생성에 24분(504 한 번에 약 5분 대기). 요청 시간 제한·예비 모델 전환 시점 조정 필요
 - 화면 캡처 도구: playwright(.venv, requirements 미포함)와 headless Chromium(`tools/pw-browsers`, 280MB, Git 제외) 받았으나 시스템 라이브러리(libatk 등) 없어 실행 불가 — 설치는 sudo 필요해 보류(사용자 승인 대기)
 - 정리 대기: 시험 임시 글 13·22번과 그 사진(jcjob-900001-*, 900002-*)은 사용자 확인 후 삭제
+
+## 2026-11-02 PC 본문 폭·모바일 표 수정, 화면 캡처 도구, 시험 글 정리 (지시: 사용자 / 작업: Claude / 검토: 없음 — 표시 CSS·도구·시험 데이터 정리)
+- 사용자 피드백: 26번 글 내용은 괜찮으나 PC에서 좌우를 꽉 채워 읽기 힘듦
+- 원인: jc-article.css의 `max-width: 100%`가 테마(Twenty Twenty-Five) 본문 폭 제한을 덮어씀(실측 본문 폭 1340px) → `min(100%, --wp--style--global--content-size)` + 가운데 정렬로 수정(실측 645px). 2~3열 표 min-width 0(휴대폰 화면에 맞춤), 4열 표는 가로 스크롤 유지. `scripts/apply_site_css.py`로 재적용(백업 자동)
+- 화면 캡처: 사용자 승인으로 Chromium 필수 시스템 라이브러리 8개만 apt 설치(libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libasound2t64 libatk1.0-0t64 libatspi2.0-0t64 libgbm1). 한글 글꼴은 프로젝트 글꼴을 `~/.local/share/fonts`에 링크(계정 한정). `scripts/screenshot_post.py <글번호>`: 공개 글 페이지에 임시 글 본문을 끼워 실제 테마 그대로 PC(1440)·모바일(390) 캡처, 본문 폭·가로 넘침 출력 → `data/screenshots/`. playwright는 .venv에 설치(requirements-dev 성격, 브라우저는 tools/pw-browsers)
+- 사용자 승인으로 시험 임시 글 13·22번과 사진 12장(jcjob-900001-*, 900002-*) 영구 삭제(삭제 전 상태·작업 표시 확인). 남은 임시 글은 26번(작업 900003)
+- Gemini 대기 개선: 같은 모델에서 시간 초과(504) 2번이면 바로 예비 모델로(MAX_TIMEOUTS_PER_MODEL). 테스트 196개 통과
+- 남은 일: 텔레그램 승인 알림, 오케스트레이터(전체 연결), 사이트 기본 정리(이름 "테스트"·시간대 UTC·개인정보 처리방침·예제 글)

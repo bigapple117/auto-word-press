@@ -16,7 +16,10 @@
   word-break: keep-all;
   overflow-wrap: break-word;
   min-width: 0;
-  max-width: 100%;
+  /* 읽기 좋은 폭: 테마 본문 폭(약 645px)을 따르고, 없으면 720px. 가운데 정렬 */
+  max-width: min(100%, var(--wp--style--global--content-size, 720px));
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 .jc-article p,
 .jc-article li { font-size: inherit; line-height: inherit; }
@@ -82,7 +85,7 @@
 .jc-article .jc-scroll:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 3px; }
 .jc-article .jc-table {
   width: 100%;
-  min-width: 22rem;
+  min-width: 0;            /* 2~3열 표는 화면 폭에 맞춤 */
   border-collapse: collapse;
   background: #fff;
   font-size: 0.9375rem;
