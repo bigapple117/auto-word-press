@@ -19,7 +19,8 @@ class Section(BaseModel):
     table: Table | None = Field(default=None, description="비교가 필요할 때만")
     checklist: list[str] | None = Field(default=None, description="독자가 스스로 확인할 항목. 필요할 때만, 3~7개")
     source_ids: list[str] = Field(description="이 소제목의 사실 근거가 된 자료 번호(S1 등)")
-    image_query: str = Field(description="이 부분에 어울리는 스톡 사진 영어 검색어 2~4단어")
+    image_query: str = Field(description=(
+        "이 부분에 어울리는 스톡 사진 영어 검색어 2~4단어. 특정 나라 지폐, 달력, 국기, 글자가 보이는 장면은 피한다"))
 
 
 class Faq(BaseModel):
@@ -30,7 +31,10 @@ class Faq(BaseModel):
 
 class Scene(BaseModel):
     narration: str = Field(description="성우가 읽을 한국어 문장. 1~2문장")
-    video_query: str = Field(description="배경 영상 영어 검색어 2~4단어. 사람 얼굴 클로즈업·로고 피하기")
+    video_query: str = Field(description=(
+        "배경 영상 영어 검색어 2~4단어. 분위기를 보여 주는 일반적인 장면(예: 'hands typing laptop', "
+        "'family living room', 'city street night'). 특정 나라 지폐·동전, 달력·날짜, 국기, 글자·숫자가 "
+        "보이는 화면, 로고, 사람 얼굴 클로즈업은 내용과 어긋날 수 있으니 피한다"))
 
 
 class Shorts(BaseModel):

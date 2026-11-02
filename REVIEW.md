@@ -72,3 +72,22 @@
 
 2차 **PASS** (남은 실제 결함 없음)
 - 검증: pytest 130개(Claude 실행), 실제 kinfa.or.kr 대신 읽기 성공·핵심 문장 원문 표기 일치, 127.0.0.1 거절. Codex는 정적 검토만
+
+---
+
+# 2026-11-02 Pixabay 배경 수집·영상 합성 검토 기록 (작성: Claude, 검토: Codex — codex-consult 코드 전달)
+
+대상: src/stock_media.py(신규), src/video_renderer.py, scripts/dry_run_short.py
+
+1차 **CHANGES_REQUESTED** → 반영
+- 렌더 잠금이 폴더별이라 동시 실행 가능, ASS 작성·검증·교체가 잠금 밖 → 공용 잠금 `data/.render.lock`, 전 과정 잠금 안, 실패 시 임시 출력 삭제
+- 다운로드 임시 파일명 충돌 → mkstemp 고유 임시 파일 후 replace
+- 다운로드 전체 시간 미보장 → 감시 타이머로 소켓 shutdown(Pixabay CDN 고정이라 최선 노력)
+- 디스크 무한 증가 → 보관함 3GB 상한·LRU 삭제(사용 중 파일 보호), 여유 3GB 미만이면 다운로드 거절
+- 필터 경로 작은따옴표 → 위험 문자 포함 경로 거절, ':'만 이스케이프
+- API 키가 예외 체인에 남을 수 있음 → `from None`, 응답 본문 출력 제거
+- 깨진 미디어 재사용 → ffprobe 검증, 깨진 파일 삭제 후 다음 후보
+2차 **CHANGES_REQUESTED** → 반영: 깨진 사진 다음 후보 시도, 블로그 사진 경로(pick_blog_images)에도 보관함 정리
+3차 **PASS**
+- 검증: pytest 162개(Claude 실행), 실제 Pixabay 영상으로 32초 쇼츠 재렌더(87초), 검은 띠 영상 자동 교체 확인
+- 미검증: 블로그 사진 → 워드프레스 업로드 연결(wp_client 미구현)

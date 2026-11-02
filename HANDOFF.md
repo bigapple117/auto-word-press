@@ -141,3 +141,12 @@
 - 추가: `src/video_renderer.py` — 장면별 배경(영상: 화면 채우기·반복, 사진: 천천히 이동, 없음: 어두운 움직이는 그라데이션) + 성우 + 자막 + 위쪽 제목(노란 글씨 두 줄, `tts_engine.write_ass(title=...)`), 1080x1920 30fps H.264/AAC, nice 15, 서버 전체 한 번에 하나(파일 잠금), 임시 파일로 렌더 후 ffprobe로 크기·소리·길이 확인하고 교체
 - 실제 검증: 근로장려금 쇼츠(그라데이션·시험 영상·시험 사진 배경) 32초 영상 렌더 67초, 캡처에서 제목·자막·배경 정상. 테스트 142개 통과(실제 소형 렌더 포함)
 - 남은 일: Pixabay 키 받으면 `src/stock_media.py`(장면별 영상 검색·다운로드, 외부 다운로드라 Codex 검토), 그다음 wp_client.py
+
+## 2026-11-02 Pixabay 장면 배경 수집 (지시: 사용자 / 작업: Claude / 검토: Codex 3회, 최종 PASS — REVIEW.md)
+- Pixabay 키 `.env` 저장(PIXABAY_API_KEY). Pexels는 신규 키 발급 중단이라 미사용
+- 추가: `src/stock_media.py` — 장면별 세로 영상 우선 → 큰 가로 영상 → 세로 사진 → 없으면 그라데이션, 한 쇼츠 안 중복 금지, 검색 결과 24시간 저장, 다운로드는 Pixabay https만·크기/시간 제한·고유 임시 파일, ffprobe로 깨진 파일 거름, cropdetect로 검은 띠 영상 거름, 보관함 3GB 상한·디스크 여유 3GB 검사. 블로그용 `pick_blog_images()`
+- `scripts/dry_run_short.py`: dry run 폴더 → 성우·자막 → 배경 → 렌더(발행 안 함)
+- 검색어 규칙 보완(content_schema): 특정 나라 지폐·달력·국기·글자 보이는 장면 피하기(달러·March 달력이 나온 문제)
+- 렌더 공용 잠금 `data/.render.lock`(Git 제외 폴더)
+- 실제 검증: 근로장려금 쇼츠 실제 Pixabay 영상 5개로 32초 렌더(합성 87초, 배경 찾기 3~9초), 결과 7.8MB. 테스트 162개 통과
+- 남은 일: 새 규칙으로 글을 새로 만들어 쇼츠 확인, wp_client.py(워드프레스 응용 프로그램 비밀번호 필요, 작업 번호 표시로 중복 초안 방지), telegram_notifier.py, orchestrator.py

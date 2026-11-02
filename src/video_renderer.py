@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from src.config import ROOT
 from src.tts_engine import Caption, write_ass
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ WIDTH, HEIGHT, FPS = 1080, 1920, 30
 TAIL_SECONDS = 0.6          # 마지막 대사 뒤 여유
 NICE_LEVEL = 15
 LOCK_WAIT_SECONDS = 1800
+DEFAULT_LOCK = ROOT / "data" / ".render.lock"   # 서버 전체 공용 잠금
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 # 배경이 없을 때 쓸 그라데이션 색 조합(어두운 톤이라 흰 자막이 잘 보임)
@@ -68,9 +70,15 @@ def segment_durations(scene_starts: Sequence[float], total: float) -> list[float
     return durations
 
 
+_UNSAFE_FILTER_CHARS = set("'\\[];,\n")
+
+
 def _filter_path(path: Path) -> str:
-    """ffmpeg 필터 인자 안에 넣을 경로(특수문자 이스케이프)."""
-    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace(",", "\\,")
+    """ffmpeg 필터 인자 안에 넣을 경로. 작은따옴표 안에 넣으므로 ':'만 이스케이프하고, 따옴표·괄호 등은 거절한다."""
+    text = str(path.resolve())
+    if _UNSAFE_FILTER_CHARS & set(text):
+        raise RenderError(f"자막·글꼴 경로에 쓸 수 없는 문자가 있습니다: {text}")
+    return text.replace(":", "\\:")
 
 
 def build_command(
@@ -171,33 +179,34 @@ def render_short(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     ass_path = out_path.with_suffix(".ass")
-    write_ass(captions, ass_path, title=title, duration=total)
     tmp_out = out_path.with_name(out_path.stem + ".part.mp4")
-    cmd = build_command(ffmpeg, media, durations, audio_path, ass_path, fonts_dir, tmp_out,
-                        palette_seed=title or str(out_path))
-    lock = lock_path or out_path.parent / ".render.lock"
+    lock = lock_path or DEFAULT_LOCK
     started = time.monotonic()
+    # 자막 작성부터 결과 확인·교체까지 잠금 안에서(같은 결과 파일을 두 작업이 덮어쓰지 않게)
     with render_lock(lock):
+        write_ass(captions, ass_path, title=title, duration=total)
+        cmd = build_command(ffmpeg, media, durations, audio_path, ass_path, fonts_dir, tmp_out,
+                            palette_seed=title or str(out_path))
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=max(300, total * 20))
-        except subprocess.TimeoutExpired as exc:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=max(300, total * 20))
+            except subprocess.TimeoutExpired as exc:
+                raise RenderError("렌더링 시간이 너무 오래 걸려 멈췄습니다") from exc
+            if result.returncode != 0:
+                raise RenderError(f"렌더링 실패: {result.stderr.strip()[-500:]}")
+            info = probe(ffprobe, tmp_out)
+            video = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+            has_audio = any(s.get("codec_type") == "audio" for s in info.get("streams", []))
+            duration = float(info.get("format", {}).get("duration", 0))
+            if not video or (video.get("width"), video.get("height")) != (WIDTH, HEIGHT):
+                raise RenderError(f"결과 영상 크기가 다릅니다: {video}")
+            if not has_audio:
+                raise RenderError("결과 영상에 소리가 없습니다")
+            if abs(duration - total) > 0.6:
+                raise RenderError(f"결과 영상 길이({duration:.2f}초)가 예상({total:.2f}초)과 다릅니다")
+            tmp_out.replace(out_path)
+        finally:
             tmp_out.unlink(missing_ok=True)
-            raise RenderError("렌더링 시간이 너무 오래 걸려 멈췄습니다") from exc
     taken = time.monotonic() - started
-    if result.returncode != 0:
-        tmp_out.unlink(missing_ok=True)
-        raise RenderError(f"렌더링 실패: {result.stderr.strip()[-500:]}")
-
-    info = probe(ffprobe, tmp_out)
-    video = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
-    has_audio = any(s.get("codec_type") == "audio" for s in info.get("streams", []))
-    duration = float(info.get("format", {}).get("duration", 0))
-    if not video or (video.get("width"), video.get("height")) != (WIDTH, HEIGHT):
-        raise RenderError(f"결과 영상 크기가 다릅니다: {video}")
-    if not has_audio:
-        raise RenderError("결과 영상에 소리가 없습니다")
-    if abs(duration - total) > 0.6:
-        raise RenderError(f"결과 영상 길이({duration:.2f}초)가 예상({total:.2f}초)과 다릅니다")
-    tmp_out.replace(out_path)
     log.info("렌더링 완료 %.1f초 영상, %.0f초 걸림", duration, taken)
     return RenderResult(out_path, duration, WIDTH, HEIGHT, taken)

@@ -131,5 +131,28 @@ def test_failed_render_leaves_no_output(tmp_path, monkeypatch):
                         lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "boom"))
     out = tmp_path / "o.mp4"
     with pytest.raises(vr.RenderError, match="렌더링 실패"):
-        vr.render_short(timeline, wav, [None, None], out, Path("/ff"), Path("/fp"), Path("/f"))
+        vr.render_short(timeline, wav, [None, None], out, Path("/ff"), Path("/fp"), Path("/f"),
+                        lock_path=tmp_path / "l.lock")
     assert not out.exists()
+
+
+def test_unsafe_filter_path_rejected(tmp_path):
+    with pytest.raises(vr.RenderError, match="쓸 수 없는 문자"):
+        vr._filter_path(Path("/data/owner's/short.ass"))
+    assert vr._filter_path(Path("/data/a:b/c.ass")).endswith("a\\:b/c.ass")
+
+
+def test_failed_validation_cleans_temp_output(tmp_path, monkeypatch):
+    timeline, wav, _ = _make_inputs(tmp_path)
+    out = tmp_path / "o.mp4"
+
+    def fake_run(cmd, **kw):
+        Path(cmd[-1]).write_bytes(b"partial")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(vr.subprocess, "run", fake_run)
+    monkeypatch.setattr(vr, "probe", lambda fp, path: {"streams": [], "format": {"duration": "1"}})
+    with pytest.raises(vr.RenderError, match="크기"):
+        vr.render_short(timeline, wav, [None, None], out, Path("/ff"), Path("/fp"), tmp_path,
+                        lock_path=tmp_path / "l.lock")
+    assert not out.exists() and not (tmp_path / "o.part.mp4").exists()
