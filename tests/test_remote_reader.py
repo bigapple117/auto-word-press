@@ -1,6 +1,8 @@
 import pytest
+from google.genai import errors as genai_errors
+from google.genai import types
 
-from src import source_fetcher
+from src import remote_reader, source_fetcher
 from src.ai_generator import check_content
 from src.remote_reader import GeminiPageReader
 from src.source_fetcher import BlockedUrlError, Source, SourceError, fetch_sources
@@ -9,20 +11,32 @@ from tests.test_content import SOURCES, good_data, model
 BODY = "지원대상\n(나이) 19~34세 이하, 총급여액 7,500만원 이하 " * 10
 
 
+OK = types.UrlRetrievalStatus.URL_RETRIEVAL_STATUS_SUCCESS
+ERR = types.UrlRetrievalStatus.URL_RETRIEVAL_STATUS_ERROR
+URL = "https://www.kinfa.or.kr/a"
+
+
 class Meta:
-    def __init__(self, statuses):
-        self.url_metadata = [type("U", (), {"url_retrieval_status": s})() for s in statuses]
+    def __init__(self, items):
+        self.url_metadata = [type("U", (), {"retrieved_url": u, "url_retrieval_status": s})()
+                             for u, s in items]
 
 
 class Cand:
-    def __init__(self, statuses):
-        self.url_context_metadata = Meta(statuses)
+    def __init__(self, items, finish):
+        self.url_context_metadata = Meta(items)
+        self.finish_reason = finish
 
 
 class Resp:
-    def __init__(self, text, statuses=("URL_RETRIEVAL_STATUS_SUCCESS",)):
+    def __init__(self, text, items=((URL, OK),), finish=types.FinishReason.STOP):
         self.text = text
-        self.candidates = [Cand(statuses)]
+        self.candidates = [Cand(items, finish)]
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    monkeypatch.setattr(remote_reader, "_resolve_public", lambda h, p, t: "203.0.113.1")
 
 
 class Client:
@@ -39,13 +53,15 @@ class Client:
 
 def test_reader_returns_relayed_source():
     client = Client(Resp("청년도약계좌 | 서민금융진흥원\n" + BODY))
-    src = GeminiPageReader(client)("https://www.kinfa.or.kr/a", "S2")
+    src = GeminiPageReader(client)(URL, "S2")
     assert src.via == "gemini" and src.id == "S2" and src.title.startswith("청년도약계좌")
     assert "7,500만원" in src.text and "https://www.kinfa.or.kr/a" in client.calls[0]
 
 
 @pytest.mark.parametrize("resp, msg", [
-    (Resp("제목\n" + BODY, ("URL_RETRIEVAL_STATUS_ERROR",)), "가져오지 못했습니다"),
+    (Resp("제목\n" + BODY, ((URL, ERR),)), "가져오지 못했습니다"),
+    (Resp("제목\n" + BODY, (("https://other.go.kr/x", OK), (URL, ERR))), "가져오지 못했습니다"),
+    (Resp("제목\n" + BODY, finish=types.FinishReason.MAX_TOKENS), "정상 종료"),
     (Resp("읽기 실패"), "본문을 찾지 못했습니다"),
     (Resp("제목\n짧음"), "너무 짧습니다"),
 ])
@@ -96,3 +112,42 @@ def test_relayed_source_triggers_warning():
     srcs = SOURCES[:1] + [Source("S2", "https://www.kinfa.or.kr/a", "t", "자료2 " * 50, via="gemini")]
     _, warnings = check_content(model(good_data()), srcs, 45)
     assert any("AI가 옮겨 적은 자료" in w and "kinfa" in w for w in warnings)
+
+
+def test_reader_accepts_www_and_trailing_slash_variants():
+    client = Client(Resp("제목\n" + BODY, (("https://kinfa.or.kr/a/", OK),)))
+    assert GeminiPageReader(client)(URL, "S1").via == "gemini"
+
+
+def test_reader_checks_dns_before_relaying(monkeypatch):
+    def internal(h, p, t):
+        raise BlockedUrlError("내부 주소로는 접속하지 않습니다")
+    monkeypatch.setattr(remote_reader, "_resolve_public", internal)
+    client = Client(Resp("t\n" + BODY))
+    with pytest.raises(BlockedUrlError):
+        GeminiPageReader(client)("https://sneaky.example/", "S1")
+    assert client.calls == []
+
+
+def test_quota_error_stops_relaying_for_remaining_urls(monkeypatch):
+    monkeypatch.setattr(source_fetcher, "fetch_source",
+                        lambda url, sid, **kw: (_ for _ in ()).throw(SourceError("접속 실패")))
+    err = genai_errors.APIError(429, {"error": {"code": 429, "message": "quota", "status": "X"}})
+    client = Client(exc=err)
+    sources, errors = fetch_sources(["https://a.go.kr/1", "https://a.go.kr/2", "https://a.go.kr/3"],
+                                    fallback=GeminiPageReader(client))
+    assert len(client.calls) == 1 and sources == []
+    assert "대신 읽기 중단" in errors[0] and "대신 읽기" not in errors[1]
+
+
+def test_relay_attempts_are_capped(monkeypatch):
+    monkeypatch.setattr(source_fetcher, "fetch_source",
+                        lambda url, sid, **kw: (_ for _ in ()).throw(SourceError("접속 실패")))
+    calls = []
+
+    def fallback(url, sid):
+        calls.append(url)
+        raise SourceError("실패")
+
+    fetch_sources([f"https://a.go.kr/{i}" for i in range(6)], fallback=fallback, max_fallback_attempts=2)
+    assert len(calls) == 2

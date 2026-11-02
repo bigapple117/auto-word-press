@@ -56,3 +56,19 @@
 5차 **CHANGES_REQUESTED(경미)** → Claude 판단으로 알려진 한계로 수용: HTTPS에서 TCP 연결 뒤 TLS 협상에 connect 제한이 다시 적용돼 최악의 경우 전체 제한을 CONNECT_TIMEOUT(10초)만큼 초과 가능. 무한 대기 아님, 코드 주석에 기록. 함께 지적된 timeout 하한(0.1초) 제거는 반영
 - 검증: pytest 86개 통과(실제 소켓 느린 전송 시험 3종 포함), 실제 국세청 페이지 수집, 실제 Gemini 생성 2회 성공(숫자 오탐 0)
 - 미검증: 다양한 사이트(자바스크립트로 그리는 페이지는 수집 불가로 거절됨), 워드프레스 업로드(미구현)
+
+---
+
+# 2026-11-02 해외 차단 사이트 대신 읽기(Gemini url_context) 검토 기록 (작성: Claude, 검토: Codex)
+
+대상: src/remote_reader.py(신규), src/source_fetcher.py(BlockedUrlError·RelayUnavailableError·fallback), src/ai_generator.py(경고)
+
+1차 **CHANGES_REQUESTED** → 반영
+- DNS 검증 미완료 주소가 Google로 넘어감 → reader가 호출 전 _parse + _resolve_public(공인 IP만)
+- 다른 URL 성공으로 통과 → retrieved_url을 요청 페이지와 대조, SDK enum SUCCESS만
+- 잘린 응답 채택 → finish_reason STOP만, max_output_tokens 8192
+- 대신 읽기 호출 폭주 → max_fallback_attempts=3, 400/401/403/429면 남은 주소 대신 읽기 중단
+- 수용한 한계: Google 측 리다이렉트는 통제 불가(우리 내부망은 Google에서 도달 불가), AI 옮겨 적기 환각은 via=gemini 경고 + sources.json 원문 대조로 완화
+
+2차 **PASS** (남은 실제 결함 없음)
+- 검증: pytest 130개(Claude 실행), 실제 kinfa.or.kr 대신 읽기 성공·핵심 문장 원문 표기 일치, 127.0.0.1 거절. Codex는 정적 검토만

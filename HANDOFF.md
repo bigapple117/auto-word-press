@@ -125,3 +125,12 @@
 - 결과 파일: `data/dryrun/20261102-011815/tts/`(Git 제외)
 - 진행 중: 해외 접속 차단(kinfa 등) 해결책 조사를 포크 세션이 조사만 진행(코드 변경 없음)
 - 남은 일: 자막 크기 미세 조정(필요 시), Pexels 키 받으면 stock_media.py → video_renderer.py
+
+## 2026-11-02 해외 접속 차단 공공기관 자료 대신 읽기 (지시: 사용자 / 작업: Claude / 검토: Codex 2회, 최종 PASS — REVIEW.md)
+- 문제: 서버가 일본이라 kinfa.or.kr(서민금융진흥원) 등 해외 차단 사이트 연결 시간 초과
+- 해결: 직접 읽기 실패 시 Gemini url_context(구글 서버가 가져옴, 무료 lite 모델)로 본문을 옮겨 적게 함. `src/remote_reader.py`. 결과 Source.via="gemini", 생성 경고 "AI가 옮겨 적은 자료(원문 대조 권장)"
+- 보안: 정책 거절(내부 주소·포트·형식·계정 URL)은 BlockedUrlError로 대신 읽기 안 함, 대신 읽기 전에도 공인 IP 확인, 대신 읽기 최대 3회·한도/인증 오류 시 중단
+- dry run 결과 폴더에 `sources.json`(읽어 온 자료 원문) 저장 → 사람이 대조 가능
+- 실제 검증: "청년도약계좌 가입 조건과 혜택" 재생성 → kinfa 2페이지 대신 읽기 성공, 글 도입부에 "신규 가입 2025.12.31 종료" 명시. 원문 "※ 운영 종료 상품 / 신규 가입 '25.12.31까지 운영"과 일치. 테스트 130개 통과
+- 남은 한계: 청년센터(youthcenter.go.kr)처럼 Gemini도 본문을 못 찾는 페이지 있음
+- 남은 일: tts_engine.py부터 영상 파이프라인(Pexels 키 필요: stock_media)

@@ -50,6 +50,10 @@ class BlockedUrlError(SourceError):
     """보안 정책으로 거절한 주소(내부 주소, 허용 안 된 포트·형식). 대신 읽기도 하지 않는다."""
 
 
+class RelayUnavailableError(SourceError):
+    """대신 읽기 서비스 자체를 지금 쓸 수 없음(한도 초과·인증 오류 등). 남은 주소도 대신 읽지 않는다."""
+
+
 @dataclass(frozen=True)
 class Source:
     id: str          # 글에서 출처를 가리키는 짧은 이름 (S1, S2 ...)
@@ -371,14 +375,18 @@ def fetch_sources(
     urls: list[str],
     max_sources: int | None = None,
     fallback: Callable[[str, str], Source] | None = None,
+    max_fallback_attempts: int = 3,
     **kwargs,
 ) -> tuple[list[Source], list[str]]:
     """여러 주소를 읽는다. (성공한 자료, 실패 사유 목록)을 돌려준다.
 
     같은 주소·같은 최종 주소·본문이 같은 페이지는 한 번만 쓴다. max_sources개 모이면 멈춘다.
     fallback(url, source_id): 직접 읽기에 실패했을 때(해외 차단, 자바스크립트 페이지 등) 대신 읽는 함수.
-    보안 정책으로 거절한 주소(BlockedUrlError)는 대신 읽지 않는다.
+    보안 정책으로 거절한 주소(BlockedUrlError)는 대신 읽지 않는다. 대신 읽기는 최대
+    max_fallback_attempts번, RelayUnavailableError가 나면 그 뒤로는 시도하지 않는다.
     """
+    relay_tries = 0
+    relay_down = False
     sources: list[Source] = []
     errors: list[str] = []
     seen: set[str] = set()
@@ -397,11 +405,16 @@ def fetch_sources(
             errors.append(str(exc))
             continue
         except SourceError as exc:
-            if fallback is None:
+            if fallback is None or relay_down or relay_tries >= max_fallback_attempts:
                 errors.append(str(exc))
                 continue
+            relay_tries += 1
             try:
                 src = fallback(url, source_id)
+            except RelayUnavailableError as exc2:
+                relay_down = True
+                errors.append(f"{exc} / 대신 읽기 중단: {exc2}")
+                continue
             except SourceError as exc2:
                 errors.append(f"{exc} / 대신 읽기도 실패: {exc2}")
                 continue

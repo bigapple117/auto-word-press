@@ -8,15 +8,21 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from urllib.parse import urlsplit
+
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 from src.config import Settings
-from src.source_fetcher import (DEFAULT_MAX_CHARS, BlockedUrlError, Source, SourceError, _parse)
+from src.source_fetcher import (DEFAULT_MAX_CHARS, DNS_TIMEOUT, BlockedUrlError, RelayUnavailableError,
+                                Source, SourceError, _parse, _resolve_public)
 
 log = logging.getLogger(__name__)
 
 DEFAULT_READER_MODEL = "gemini-3.5-flash-lite"
+MAX_OUTPUT_TOKENS = 8192
+_STOP_CODES = {400, 401, 403, 429}   # 다음 주소에서도 똑같이 실패할 오류 → 대신 읽기 중단
 FAILED_MARK = "읽기 실패"
 
 READ_INSTRUCTION = """\
@@ -44,23 +50,36 @@ class GeminiPageReader:
                                 http_options=types.HttpOptions(timeout=120_000)), **kwargs)
 
     def __call__(self, url: str, source_id: str) -> Source:
-        _parse(url)   # 형식·포트·계정 검사는 직접 읽기와 같게(BlockedUrlError)
+        # 직접 읽기와 같은 보안 검사: 형식·포트·계정(BlockedUrlError), 공인 IP만(조회 실패 시 넘기지 않음)
+        target = _parse(url)
+        _resolve_public(target.host, target.port, DNS_TIMEOUT)
         try:
             resp = self.client.models.generate_content(
                 model=self.model,
                 contents=READ_INSTRUCTION.format(url=url),
                 config=types.GenerateContentConfig(
-                    tools=[types.Tool(url_context=types.UrlContext())], temperature=0),
+                    tools=[types.Tool(url_context=types.UrlContext())], temperature=0,
+                    max_output_tokens=MAX_OUTPUT_TOKENS),
             )
+        except genai_errors.APIError as exc:
+            if getattr(exc, "code", None) in _STOP_CODES:
+                raise RelayUnavailableError(f"Gemini 대신 읽기 사용 불가({exc.code})") from exc
+            raise SourceError(f"Gemini 대신 읽기 실패({getattr(exc, 'code', '?')})") from exc
         except Exception as exc:  # noqa: BLE001 - 어떤 오류든 이 자료 하나의 실패로 처리
             raise SourceError(f"Gemini 대신 읽기 실패: {exc.__class__.__name__}") from exc
 
-        statuses = []
-        meta = getattr(resp.candidates[0], "url_context_metadata", None) if resp.candidates else None
-        for item in getattr(meta, "url_metadata", None) or []:
-            statuses.append(str(item.url_retrieval_status))
-        if not any(st.endswith("SUCCESS") for st in statuses):
-            raise SourceError(f"Gemini가 페이지를 가져오지 못했습니다({', '.join(statuses) or '상태 없음'}): {url}")
+        cand = resp.candidates[0] if getattr(resp, "candidates", None) else None
+        if cand is None:
+            raise SourceError(f"Gemini 응답이 비어 있습니다: {url}")
+        if getattr(cand, "finish_reason", None) != types.FinishReason.STOP:
+            raise SourceError(f"Gemini 응답이 정상 종료되지 않았습니다({cand.finish_reason}): {url}")
+        meta = getattr(cand, "url_context_metadata", None)
+        wanted = _same_page_key(url)
+        ok = [item for item in (getattr(meta, "url_metadata", None) or [])
+              if _same_page_key(item.retrieved_url or "") == wanted
+              and item.url_retrieval_status == types.UrlRetrievalStatus.URL_RETRIEVAL_STATUS_SUCCESS]
+        if not ok:
+            raise SourceError(f"Gemini가 요청한 페이지를 가져오지 못했습니다: {url}")
 
         text = (getattr(resp, "text", "") or "").strip()
         if not text or text.startswith(FAILED_MARK):
@@ -72,6 +91,13 @@ class GeminiPageReader:
         log.info("Gemini로 대신 읽음: %s (%s자)", url, len(body))
         return Source(id=source_id, url=url, title=title.strip() or url,
                       text=body[: self.max_chars], via="gemini")
+
+
+def _same_page_key(url: str) -> tuple[str, str, str]:
+    """같은 페이지인지 비교하는 열쇠(호스트 소문자, www 무시, 끝 / 무시, 쿼리 포함)."""
+    parts = urlsplit(url.strip())
+    host = (parts.hostname or "").lower().removeprefix("www.")
+    return host, parts.path.rstrip("/") or "/", parts.query
 
 
 __all__ = ["GeminiPageReader", "BlockedUrlError"]
