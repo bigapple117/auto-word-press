@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
@@ -18,7 +19,8 @@ from google.genai import types
 from pydantic import ValidationError
 
 from src.config import Settings
-from src.content_schema import MasterContent, Shorts
+from src.content_schema import (MasterContent, Shorts, paragraph_text, section_paragraphs,
+                                section_texts)
 from src.source_fetcher import Source
 from templates.prompt_template import (SHORTS_SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION, build_prompt,
                                       build_shorts_repair_prompt, narration_budget)
@@ -40,7 +42,7 @@ _MARKDOWN = re.compile(r"\*\*|__|^#{1,6}\s|^\s*[-*]\s", re.MULTILINE)
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 BANNED_PHRASES = (
     "알아보겠습니다", "알아볼까요", "결론적으로", "마무리하며", "도움이 되셨길",
-    "도움이 되셨으면", "꿀팁", "총정리", "모르면 손해",
+    "도움이 되셨으면", "꿀팁", "총정리", "모르면 손해", "한눈에",
 )
 
 
@@ -85,15 +87,120 @@ def extract_figures(text: str) -> dict[str, str]:
 
 
 def _all_texts(c: MasterContent) -> list[str]:
-    texts = [c.title, c.meta_description, c.reference_note, c.closing, *c.intro, c.shorts.title]
+    texts = [c.title, c.meta_description, c.reference_note, paragraph_text(c.closing),
+             *(paragraph_text(p) for p in c.intro), c.shorts.title]
     for s in c.sections:
-        texts += [s.heading, *s.paragraphs, *(s.checklist or [])]
-        if s.table:
-            texts += [s.table.caption, *s.table.headers, *(cell for row in s.table.rows for cell in row)]
+        texts += section_texts(s)
     for f in c.faq:
         texts += [f.question, f.answer]
     texts += [sc.narration for sc in c.shorts.scenes]
     return texts
+
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_ENDING = re.compile(r"(합니다|습니다|입니다|됩니다|있습니다|없습니다)[.!?]?$")
+_DEFINITION_START = re.compile(r"^\S+(은|는)\s.{0,60}(제도|상품|정책|사업)입니다")
+MAX_PARAGRAPH_CHARS = 300
+SOFT_PARAGRAPH_CHARS = 250
+MAX_SENTENCES = 4
+MAX_STRONG_PER_SECTION = 2
+MAX_BODY_IMAGES = 2
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[\s,]+", "", unicodedata.normalize("NFKC", text))
+
+
+_NUM_TOKEN = re.compile(r"(?<![\d.,])[+-]?\d[\d,]*(?:\.\d+)?\s*(?:억|천만|백만|만|천)?\s*(?:원|%|세|개월|년|월|일|명)?")
+
+
+def _num_tokens(text: str) -> set[str]:
+    """숫자를 단위까지 붙인 덩어리로 뽑는다('100'과 '1,000'을 다른 값으로 본다)."""
+    return {_norm(m.group(0)) for m in _NUM_TOKEN.finditer(text) if m.group(0).strip()}
+
+
+def table_repeated_in_text(rows: Sequence[Sequence[str]], texts: Sequence[str]) -> bool:
+    """문단이 표의 '행 이름 + 숫자 값'을 같은 문장 안에서 다시 나열하는지(값 3개 이상, 60% 이상)."""
+    sentences = [(_norm(x), _num_tokens(x)) for t in texts for x in _sentences(t)]
+    pairs = {(_norm(r[0]), tok) for r in rows if r for v in r[1:] for tok in _num_tokens(v)}
+    if len(pairs) < 3:
+        return False
+    hits = sum(any(k in sent and tok in toks for sent, toks in sentences) for k, tok in pairs)
+    return hits >= 3 and hits / len(pairs) >= 0.6
+
+
+def _sentences(text: str) -> list[str]:
+    return [x for x in _SENTENCE_END.split(text.strip()) if x]
+
+
+def _check_block(i: int, b, problems: list[str]) -> None:
+    where = f"소제목 {i}의 {b.type} 블록"
+    if b.type == "paragraph" and not paragraph_text(b.paragraph).strip():
+        problems.append(f"{where}에 문단 내용이 없습니다.")
+    elif b.type == "note" and (not paragraph_text(b.note).strip() or b.note_kind is None):
+        problems.append(f"{where}에 note 내용이나 note_kind가 없습니다.")
+    elif b.type == "checklist" and len(b.items or []) < 2:
+        problems.append(f"{where}의 항목이 2개 미만입니다.")
+    elif b.type == "table":
+        t = b.table
+        if t is None:
+            problems.append(f"{where}에 표가 없습니다.")
+            return
+        width = len(t.headers)
+        if not 2 <= width <= 4:
+            problems.append(f"소제목 {i} 표의 열은 2~4개로 줄여 주세요(현재 {width}개).")
+        if not t.rows or any(len(r) != width for r in t.rows):
+            problems.append(f"소제목 {i} 표의 행마다 칸 수가 열 이름 수({width})와 같아야 합니다.")
+
+
+def check_style(c: MasterContent) -> tuple[list[str], list[str]]:
+    """'AI 티' 검사: 표 반복, 긴 문단, 강조 과다, 사진 과다, 사전식 도입, 같은 어미·같은 구성 반복."""
+    problems: list[str] = []
+    warnings: list[str] = []
+    intro_first = paragraph_text(c.intro[0]) if c.intro else ""
+    if _DEFINITION_START.match(intro_first.strip()):
+        problems.append("도입부를 '○○은 ~제도입니다' 같은 정의로 시작하지 말고, 독자가 확인하려는 문제부터 써 주세요.")
+
+    paragraphs: list[tuple[str, str]] = [("도입부", paragraph_text(p)) for p in c.intro]
+    paragraphs.append(("마무리", paragraph_text(c.closing)))
+    images = sum(1 for s in c.sections if s.image_query)
+    if images > MAX_BODY_IMAGES:
+        problems.append(f"사진(image_query)은 글 전체에서 {MAX_BODY_IMAGES}곳까지만 써 주세요(현재 {images}곳).")
+    takeaways = sum(1 for s in c.sections if s.takeaway)
+    if takeaways > 3:
+        warnings.append(f"takeaway가 {takeaways}곳입니다(2~3곳 권장).")
+
+    shapes = []
+    for i, s in enumerate(c.sections, 1):
+        shown = [b.paragraph if b.type == "paragraph" else b.note for b in s.blocks if b.type in ("paragraph", "note")]
+        strong = sum(1 for p in shown if p for sp in p.spans if sp.strong)
+        if strong > MAX_STRONG_PER_SECTION:
+            problems.append(f"소제목 {i} '{s.heading}'의 강조가 {strong}곳입니다. 2곳 이하로 줄여 주세요.")
+        texts = section_paragraphs(s)
+        for b in s.blocks:
+            if b.type == "table" and b.table and table_repeated_in_text(b.table.rows, texts):
+                problems.append(f"소제목 {i} '{s.heading}'의 문단이 표 내용을 다시 나열합니다. "
+                                "문단에는 구분법·예외·주의점만 쓰고 숫자 비교는 표에 맡겨 주세요.")
+        paragraphs += [(f"소제목 {i}", t) for t in texts]
+        shapes.append(tuple(b.type for b in s.blocks))
+    for a, b, cc in zip(shapes, shapes[1:], shapes[2:]):
+        if a == b == cc:
+            warnings.append(f"같은 블록 구성 {list(a)}이 소제목 3개 연속 반복됩니다.")
+            break
+
+    for where, text in paragraphs:
+        n = len(text)
+        sentences = _sentences(text)
+        if n > MAX_PARAGRAPH_CHARS or len(sentences) > MAX_SENTENCES:
+            problems.append(f"{where}에 긴 문단이 있습니다({n}자, {len(sentences)}문장). 1~3문장으로 나눠 주세요.")
+        elif n > SOFT_PARAGRAPH_CHARS:
+            warnings.append(f"{where} 문단이 조금 깁니다({n}자).")
+
+    endings = [m.group(1) if (m := _ENDING.search(x.strip())) else "" for _w, t in paragraphs for x in _sentences(t)]
+    runs = sum(1 for a, b, cc in zip(endings, endings[1:], endings[2:]) if a and a == b == cc)
+    if runs >= 3:
+        warnings.append(f"같은 종결 표현이 3문장 연속되는 곳이 {runs}군데 있습니다.")
+    return problems, warnings
 
 
 def check_content(
@@ -114,21 +221,21 @@ def check_content(
         problems.append(f"slug는 영문 소문자·숫자·하이픈만 씁니다: {c.slug!r}")
     if not 15 <= len(c.title) <= 60:
         problems.append(f"제목 길이는 25~45자 정도로 맞춥니다(현재 {len(c.title)}자).")
+    if not c.intro:
+        problems.append("도입 문단이 없습니다.")
 
     for i, s in enumerate(c.sections, 1):
-        if not s.paragraphs:
-            problems.append(f"소제목 {i} '{s.heading}'에 문단이 없습니다.")
+        if not s.blocks:
+            problems.append(f"소제목 {i} '{s.heading}'에 내용 블록이 없습니다.")
+        elif not any(b.type in ("paragraph", "note") for b in s.blocks):
+            problems.append(f"소제목 {i} '{s.heading}'에 설명 문단이 하나도 없습니다.")
+        for b in s.blocks:
+            _check_block(i, b, problems)
         if not s.source_ids:
             problems.append(f"소제목 {i} '{s.heading}'에 근거 자료 번호가 없습니다.")
         bad = [x for x in s.source_ids if x not in valid_ids]
         if bad:
             problems.append(f"소제목 {i}에 없는 자료 번호가 있습니다: {', '.join(bad)}")
-        if s.table:
-            width = len(s.table.headers)
-            if not 2 <= width <= 5:
-                problems.append(f"소제목 {i} 표의 열은 2~5개여야 합니다.")
-            if not s.table.rows or any(len(r) != width for r in s.table.rows):
-                problems.append(f"소제목 {i} 표의 행마다 칸 수가 열 이름 수({width})와 같아야 합니다.")
     for f in c.faq:
         if not f.source_ids:
             problems.append(f"FAQ '{f.question}'에 근거 자료 번호가 없습니다.")
@@ -141,10 +248,14 @@ def check_content(
     if _EMOJI.search(joined):
         problems.append("이모지를 모두 빼 주세요.")
     if any(_MARKDOWN.search(t) for t in texts):
-        problems.append("마크다운 기호(**, #, - 목록)를 쓰지 말고 평문으로 써 주세요.")
+        problems.append("마크다운 기호(**, #, - 목록)를 쓰지 말고 평문으로 써 주세요(강조는 strong으로).")
     used = [p for p in BANNED_PHRASES if p in joined]
     if used:
         problems.append(f"금지 표현을 다른 말로 바꿔 주세요: {', '.join(used)}")
+
+    style_problems, style_warnings = check_style(c)
+    problems += style_problems
+    warnings += style_warnings
 
     low, high = narration_budget(target_seconds)
     total = sum(len(sc.narration) for sc in c.shorts.scenes)
@@ -153,7 +264,8 @@ def check_content(
             f"{NARRATION_PROBLEM}를 공백 포함 {low}~{high}자로 맞춰 주세요(현재 {total}자)."
         )
 
-    body_chars = sum(len(p) for s in c.sections for p in s.paragraphs) + sum(len(p) for p in c.intro)
+    body_chars = sum(len(t) for s in c.sections for t in section_paragraphs(s)) + \
+        sum(len(paragraph_text(p)) for p in c.intro)
     if body_chars < 1500:
         warnings.append(f"본문이 짧습니다({body_chars}자).")
     if c.unverified:
@@ -267,9 +379,9 @@ class ContentGenerator:
         self, content: MasterContent, sources: Sequence[Source], target_seconds: int
     ) -> tuple[MasterContent, list[str], list[str]]:
         """쇼츠 길이만 틀렸을 때 대본만 다시 쓴다. 블로그 글은 그대로 둔다."""
-        blog_facts = "\n".join([content.title, *content.intro] + [
-            "\n".join([s.heading, *s.paragraphs]) for s in content.sections
-        ] + [f"{f.question} {f.answer}" for f in content.faq] + [content.closing])
+        blog_facts = "\n".join([content.title, *(paragraph_text(p) for p in content.intro)] + [
+            "\n".join(section_texts(s)) for s in content.sections
+        ] + [f"{f.question} {f.answer}" for f in content.faq] + [paragraph_text(content.closing)])
         problems, warnings = check_content(content, sources, target_seconds)
         for _ in range(MAX_SHORTS_REPAIRS):
             current = sum(len(sc.narration) for sc in content.shorts.scenes)

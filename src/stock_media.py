@@ -378,10 +378,11 @@ class StockMediaPicker:
         prune_cache(self.media_dir, keep={p.path for p in picks if p})
         return picks
 
-    def pick_blog_images(self, queries: Sequence[str]) -> list[MediaPick | None]:
-        """블로그 소제목별 가로 사진(겹치지 않게). 끝나면 보관함 상한을 맞춘다(이번에 쓴 사진은 보호)."""
+    def pick_blog_images(self, queries: Sequence[str | None]) -> list[MediaPick | None]:
+        """블로그 소제목별 가로 사진(겹치지 않게). 검색어가 비어 있는 소제목은 None.
+        끝나면 보관함 상한을 맞춘다(이번에 쓴 사진은 보호)."""
         used: set[int] = set()
-        picks = [self.pick_blog_image(q, used) for q in queries]
+        picks = [self.pick_blog_image(q, used) if q and q.strip() else None for q in queries]
         prune_cache(self.media_dir, keep={p.path for p in picks if p})
         return picks
 

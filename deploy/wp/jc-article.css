@@ -1,0 +1,134 @@
+/* 잘체크 자동 글 전용 스타일 (.jc-article 안에서만 적용)
+   적용 위치: 워드프레스 사이트 편집 → 스타일 → 추가 CSS (scripts/apply_site_css.py가 넣음)
+   이 파일이 원본이다. 고칠 때는 이 파일을 고치고 스크립트로 다시 넣는다. */
+.jc-article {
+  --jc-text: #222;
+  --jc-muted: #5b6470;
+  --jc-line: #d7dce1;
+  --jc-soft: #f4f6f8;
+  --jc-accent: #2f6f8f;
+  --jc-caution: #b45309;
+  --jc-caution-bg: #fff7ed;
+  color: var(--jc-text);
+  font-size: 1.0625rem;
+  line-height: 1.85;
+  letter-spacing: -0.005em;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  min-width: 0;
+  max-width: 100%;
+}
+.jc-article p,
+.jc-article li { font-size: inherit; line-height: inherit; }
+.jc-article p { margin: 0 0 1.25em; }
+.jc-article strong { font-weight: 700; color: #111; background: linear-gradient(transparent 62%, #fde68a 62%); }
+.jc-article h2 {
+  margin: 2.4em 0 0.9em;
+  padding-bottom: 0.35em;
+  border-bottom: 2px solid var(--jc-line);
+  font-size: 1.375rem;
+  line-height: 1.45;
+  font-weight: 700;
+}
+.jc-article h3 { margin: 1.8em 0 0.5em; font-size: 1.125rem; line-height: 1.5; font-weight: 700; }
+
+/* 기준 시점 한 줄 */
+.jc-article .jc-reference {
+  font-size: 0.9375rem;
+  color: var(--jc-muted);
+  padding: 0.55em 0.9em;
+  background: var(--jc-soft);
+  border-radius: 6px;
+}
+
+/* 소제목 핵심 한 줄 */
+.jc-article .jc-summary {
+  padding: 0.9rem 1.1rem;
+  background: var(--jc-soft);
+  border-left: 4px solid var(--jc-accent);
+  border-radius: 0 6px 6px 0;
+  font-weight: 600;
+}
+
+/* 주의 / 확인 요령 상자 */
+.jc-article .jc-note {
+  padding: 0.85rem 1.1rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  line-height: 1.75;
+}
+.jc-article .jc-note--caution { background: var(--jc-caution-bg); border: 1px solid #fed7aa; }
+.jc-article .jc-note--tip { background: #eef6fa; border: 1px solid #cfe3ec; }
+.jc-article .jc-note__label {
+  display: inline-block;
+  margin-right: 0.4em;
+  padding: 0 0.5em;
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.7;
+  color: #fff;
+  background: var(--jc-accent);
+}
+.jc-article .jc-note--caution .jc-note__label { background: var(--jc-caution); }
+
+/* 표: 좁은 화면에서는 표만 가로 스크롤 */
+.jc-article .jc-scroll {
+  max-width: 100%;
+  margin: 1.4em 0 1.6em;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.jc-article .jc-scroll:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 3px; }
+.jc-article .jc-table {
+  width: 100%;
+  min-width: 22rem;
+  border-collapse: collapse;
+  background: #fff;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+.jc-article .jc-table--wide { min-width: 36rem; }
+.jc-article .jc-table caption {
+  caption-side: top;
+  padding: 0 0 0.6rem;
+  text-align: left;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--jc-text);
+}
+.jc-article .jc-table th,
+.jc-article .jc-table td {
+  border: 1px solid var(--jc-line);
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+.jc-article .jc-table thead th { background: #e9eef2; font-weight: 700; }
+.jc-article .jc-table tbody th { background: #fafbfc; font-weight: 600; }
+.jc-article .jc-table tbody tr:nth-child(even) td { background: #f8fafb; }
+.jc-article .jc-table--key tbody th,
+.jc-article .jc-table--key thead th:first-child { white-space: nowrap; }
+
+/* 체크리스트 */
+.jc-article .jc-checklist { list-style: none; margin: 1.2em 0 1.5em; padding: 1rem 1.1rem; background: var(--jc-soft); border-radius: 6px; }
+.jc-article .jc-checklist li { position: relative; padding-left: 1.6em; margin: 0.35em 0; }
+.jc-article .jc-checklist li::before { content: "✓"; position: absolute; left: 0.1em; color: var(--jc-accent); font-weight: 700; }
+
+/* 사진 */
+.jc-article figure.wp-block-image { margin: 1.4em 0 1.6em; }
+.jc-article figure.wp-block-image img { width: 100%; height: auto; border-radius: 6px; }
+.jc-article figure.wp-block-image figcaption { margin-top: 0.4em; font-size: 0.8125rem; color: var(--jc-muted); text-align: right; }
+
+/* 자주 묻는 질문, 마무리, 참고 자료 */
+.jc-article .jc-faq-q { margin-top: 1.4em; }
+.jc-article .jc-closing { margin-top: 2em; padding-top: 1.2em; border-top: 1px solid var(--jc-line); }
+.jc-article .jc-sources { padding-left: 1.2em; font-size: 0.9375rem; color: var(--jc-muted); }
+.jc-article .jc-sources a { color: var(--jc-accent); }
+
+@media (max-width: 600px) {
+  .jc-article { font-size: 1rem; line-height: 1.8; }
+  .jc-article h2 { font-size: 1.25rem; }
+}

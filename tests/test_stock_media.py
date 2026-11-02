@@ -285,3 +285,16 @@ def test_normalize_blog_image_crops_to_16_9(tmp_path):
             assert im.size == sm.BLOG_IMAGE_SIZE and im.format == "JPEG"
         assert sm.normalize_blog_image(src, tmp_path / "out") == out      # 다시 만들지 않음
     assert not list((tmp_path / "out").glob("*.part"))
+
+
+def test_blog_images_skip_empty_queries(tmp_path, monkeypatch):
+    class Client:
+        def search_images(self, q, orientation):
+            return [image_hit(1), image_hit(2)]
+
+        def download(self, url, dest, max_bytes):
+            return dest
+
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    picks = StockMediaPicker(Client(), tmp_path).pick_blog_images([None, "office desk", "  "])
+    assert picks[0] is None and picks[1].media_id == 1 and picks[2] is None

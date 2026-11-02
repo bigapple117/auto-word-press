@@ -10,7 +10,7 @@ from html import escape
 from typing import Mapping, Sequence
 from urllib.parse import urlparse
 
-from src.content_schema import MasterContent, Table
+from src.content_schema import Block, MasterContent, Paragraph, Table
 from src.source_fetcher import Source
 
 
@@ -31,25 +31,70 @@ def _safe_url(url: str) -> str | None:
     return url if urlparse(url).scheme in ("http", "https") else None
 
 
-def _p(text: str) -> str:
-    return f"<p>{escape(text)}</p>"
+def _p(text: str, cls: str = "") -> str:
+    attr = f' class="{cls}"' if cls else ""
+    return f"<p{attr}>{escape(text)}</p>"
 
 
-def _table(t: Table) -> str:
-    head = "".join(f"<th>{escape(h)}</th>" for h in t.headers)
+def _spans(p: Paragraph) -> str:
+    """문단 조각을 이어 붙인다. strong은 불리언 값만 보고 코드가 <strong>을 만든다."""
+    return "".join(f"<strong>{escape(sp.text)}</strong>" if sp.strong is True else escape(sp.text)
+                   for sp in p.spans)
+
+
+def _paragraph(p: Paragraph | None, cls: str = "") -> str:
+    if p is None or not p.spans:
+        return ""
+    attr = f' class="{cls}"' if cls else ""
+    return f"<p{attr}>{_spans(p)}</p>"
+
+
+def _table(t: Table, index: int) -> str:
+    """표 제목은 위에, 열·행 머리글 표시, 좁은 화면에서는 표만 가로로 밀어 보게 감싼다."""
+    width = len(t.headers)
+    first_col_short = all(len(r[0]) <= 10 for r in t.rows if r)
+    classes = ["jc-table"]
+    if width >= 4:
+        classes.append("jc-table--wide")
+    if first_col_short:
+        classes.append("jc-table--key")
+    head = "".join(f'<th scope="col">{escape(h)}</th>' for h in t.headers)
     body = "".join(
-        "<tr>" + "".join(f"<td>{escape(c)}</td>" for c in row) + "</tr>" for row in t.rows
+        "<tr>" + "".join(
+            f'<th scope="row">{escape(c)}</th>' if j == 0 else f"<td>{escape(c)}</td>"
+            for j, c in enumerate(row)) + "</tr>"
+        for row in t.rows
     )
+    cap_id = f"jc-table-{index}"
     return (
-        '<figure class="wp-block-table"><table>'
-        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
-        f"<figcaption>{escape(t.caption)}</figcaption></figure>"
+        f'<div class="jc-scroll" role="region" aria-labelledby="{cap_id}" tabindex="0">'
+        f'<table class="{" ".join(classes)}"><caption id="{cap_id}">{escape(t.caption)}</caption>'
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>"
     )
 
 
 def _checklist(items: Sequence[str]) -> str:
     lis = "".join(f"<li>{escape(i)}</li>" for i in items)
     return f'<ul class="jc-checklist">{lis}</ul>'
+
+
+def _note(b: Block) -> str:
+    kind = "caution" if b.note_kind == "caution" else "tip"
+    label = "주의" if kind == "caution" else "확인 요령"
+    inner = _spans(b.note) if b.note else ""
+    return f'<p class="jc-note jc-note--{kind}"><span class="jc-note__label">{label}</span> {inner}</p>'
+
+
+def _block(b: Block, table_index: int) -> str:
+    if b.type == "paragraph":
+        return _paragraph(b.paragraph)
+    if b.type == "table" and b.table:
+        return _table(b.table, table_index)
+    if b.type == "checklist" and b.items:
+        return _checklist(b.items)
+    if b.type == "note" and b.note:
+        return _note(b)
+    return ""
 
 
 def _image(img: SectionImage) -> str:
@@ -76,28 +121,36 @@ def render_blog_html(
     sources: Sequence[Source],
     images: Mapping[int, SectionImage] | None = None,
 ) -> str:
-    """본문 HTML(제목 제외)을 돌려준다. images 키는 소제목 번호(0부터)."""
-    images = images or {}
-    out: list[str] = [_p(t) for t in content.intro]
-    out.append(f'<p class="jc-reference"><strong>기준</strong>: {escape(content.reference_note)}</p>')
+    """본문 HTML(제목 제외)을 돌려준다. images 키는 소제목 번호(0부터).
 
+    전체를 <div class="jc-article">로 감싸 사이트 공통 CSS(jc-*)가 이 글에만 적용되게 한다.
+    """
+    images = images or {}
+    out: list[str] = ['<div class="jc-article">']
+    out += [_paragraph(p) for p in content.intro]
+    out.append(f'<p class="jc-reference">기준: {escape(content.reference_note)}</p>')
+
+    table_index = 0
     for i, s in enumerate(content.sections):
         out.append(f"<h2>{escape(s.heading)}</h2>")
+        if s.takeaway:
+            out.append(_p(s.takeaway, "jc-summary"))
         if i in images:
             out.append(_image(images[i]))
-        out += [_p(t) for t in s.paragraphs]
-        if s.table:
-            out.append(_table(s.table))
-        if s.checklist:
-            out.append(_checklist(s.checklist))
+        for b in s.blocks:
+            if b.type == "table":
+                table_index += 1
+            html = _block(b, table_index)
+            if html:
+                out.append(html)
 
     if content.faq:
         out.append("<h2>자주 묻는 질문</h2>")
         for f in content.faq:
-            out.append(f"<h3>{escape(f.question)}</h3>")
+            out.append(f'<h3 class="jc-faq-q">{escape(f.question)}</h3>')
             out.append(_p(f.answer))
 
-    out.append(_p(content.closing))
+    out.append(_paragraph(content.closing, "jc-closing"))
 
     used = {sid for s in content.sections for sid in s.source_ids}
     used |= {sid for f in content.faq for sid in f.source_ids}
@@ -108,4 +161,5 @@ def render_blog_html(
             for s in cited
         )
         out.append(f'<h2>참고 자료</h2><ul class="jc-sources">{items}</ul>')
+    out.append("</div>")
     return "\n".join(out)
