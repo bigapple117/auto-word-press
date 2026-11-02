@@ -93,3 +93,10 @@
 - 실제 검증: `.venv/bin/python -m pytest -q` 35 passed (동시 4~5개 연결 선점 시험 포함)
 - Codex 자동 검토 스크립트(codex-review.py)는 이 서버에서 bwrap 오류로 BLOCKED → codex-consult.py에 코드 직접 전달 방식으로 대체
 - 남은 일: wp_client에서 글에 작업 번호 표시 + 생성 전 조회(중복 초안 방지, 필수), 실행기 시작 시 recover_interrupted 1회 호출, GEMINI_MODEL 기본값(gemini-2.5-flash) 실제 사용 가능 모델로 확인, 다음 구현 templates/prompt_template.py·src/ai_generator.py
+
+## 2026-11-02 Gemini 키 등록·모델 확인 (지시: 사용자 / 작업: Claude / 검토: 없음)
+- `scripts/set_secret.sh` 추가: .env 값을 화면에 안 보이게 입력(.env.example에 있는 이름만, 파일 권한 600)
+- `.env` 생성(600, Git 제외), GEMINI_API_KEY 저장. 사용자가 채팅으로 키 전달(터미널 사용 어려움) → 결제 미연결 무료 키로 안내, 필요 시 AI Studio에서 교체
+- gemini-2.5-flash는 "새 사용자에게 제공 안 함"(404) → 기본 모델을 gemini-3.8-flash로 변경(config, .env.example, .env)
+- 실제 검증: 키로 모델 목록 조회 성공, gemini-3.8-flash 한국어 응답 성공(약 20초), gemini-3.5-flash-lite 응답 1.2초 — 글 생성은 3.8-flash, 빠른 보조 작업은 lite 후보
+- 남은 일: templates/prompt_template.py, src/ai_generator.py

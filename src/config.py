@@ -58,7 +58,7 @@ class Settings:
 
     # 글·대본 생성
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.8-flash"
 
     # 무료 스톡 이미지·영상
     pexels_api_key: str = ""
