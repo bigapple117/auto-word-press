@@ -5,3 +5,4 @@ assets/fonts/*.otf
 .env
 __pycache__/
 *.pyc
+data/

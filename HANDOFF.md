@@ -85,3 +85,11 @@
 - 실제 검증: `pip check` 충돌 없음, 전체 import 성공, edge-tts 한국어 음성(ko-KR-SunHiNeural) 합성 성공(5.04초 mp3 + 문장별 시작·끝 시간 자막 생성)
 - 참고: 한국어 성우 3종 사용 가능(SunHi 여, InJoon 남, HyunsuMultilingual 남)
 - 남은 일: PLAN.md 5절 순서로 src/config.py, .env.example, src/db.py부터 구현
+
+## 2026-11-02 설정 로더·작업 장부 구현 (지시: 사용자 / 작업: Claude / 검토: Codex 3회, 최종 PASS — REVIEW.md)
+- 추가: `src/config.py`(.env 읽기, 기능별 require(), 비밀값 repr 가림), `.env.example`, `src/db.py`(SQLite 작업 장부), `tests/`(35개), `pytest.ini`, `.gitignore`에 `data/`
+- db.py 핵심: 시트 행 등 같은 출처 중복 등록 방지(source+source_ref 고유), 상태 흐름 강제(queued→generating→tts→media→rendering→awaiting_approval→publishing→published, failed/canceled), 단계별 체크포인트 저장, 글 번호 1회 기록(record_post)·글 번호 중복 연결 금지, 발행 선점 begin_publishing(동시 승인·취소 경쟁 차단), 재시작 복구 recover_interrupted, 구조 버전(user_version=1) 불일치 DB 거부
+- 고친 버그: `.env`에 빈 값(`TTS_VOICE=`)이면 기본값 대신 빈 값이 들어가던 문제
+- 실제 검증: `.venv/bin/python -m pytest -q` 35 passed (동시 4~5개 연결 선점 시험 포함)
+- Codex 자동 검토 스크립트(codex-review.py)는 이 서버에서 bwrap 오류로 BLOCKED → codex-consult.py에 코드 직접 전달 방식으로 대체
+- 남은 일: wp_client에서 글에 작업 번호 표시 + 생성 전 조회(중복 초안 방지, 필수), 실행기 시작 시 recover_interrupted 1회 호출, GEMINI_MODEL 기본값(gemini-2.5-flash) 실제 사용 가능 모델로 확인, 다음 구현 templates/prompt_template.py·src/ai_generator.py
