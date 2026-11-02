@@ -170,6 +170,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Caption,Noto Sans CJK KR,86,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,7,2,2,60,60,560,1
+Style: Title,Noto Sans CJK KR,74,&H0000E1FF,&H0000E1FF,&H00000000,&H50000000,-1,0,0,0,100,100,0,0,3,18,0,8,70,70,230,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -188,8 +189,30 @@ def _ass_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("{", "(").replace("}", ")").replace("\n", " ")
 
 
-def write_ass(captions: Sequence[Caption], path: Path) -> None:
+TITLE_LINE_CHARS = 12
+
+
+def wrap_title(title: str, width: int = TITLE_LINE_CHARS, max_lines: int = 2) -> str:
+    """제목을 단어 단위로 최대 두 줄로 나눈다(ASS 줄바꿈 \\N)."""
+    lines: list[str] = []
+    current = ""
+    for word in title.split():
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate.replace(" ", "")) > width and len(lines) < max_lines - 1:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    lines.append(current)
+    return "\\N".join(_ass_escape(line) for line in lines)
+
+
+def write_ass(captions: Sequence[Caption], path: Path, title: str | None = None,
+              duration: float | None = None) -> None:
+    """자막 파일을 쓴다. title이 있으면 영상 내내 위쪽에 제목을 띄운다."""
     lines = [ASS_HEADER]
+    if title and duration:
+        lines.append(f"Dialogue: 1,{_ass_time(0)},{_ass_time(duration)},Title,,0,0,0,,{wrap_title(title)}\n")
     for c in captions:
         lines.append(f"Dialogue: 0,{_ass_time(c.start)},{_ass_time(c.end)},Caption,,0,0,0,,"
                      f"{_ass_escape(c.text)}\n")
