@@ -150,3 +150,10 @@
 - 렌더 공용 잠금 `data/.render.lock`(Git 제외 폴더)
 - 실제 검증: 근로장려금 쇼츠 실제 Pixabay 영상 5개로 32초 렌더(합성 87초, 배경 찾기 3~9초), 결과 7.8MB. 테스트 162개 통과
 - 남은 일: 새 규칙으로 글을 새로 만들어 쇼츠 확인, wp_client.py(워드프레스 응용 프로그램 비밀번호 필요, 작업 번호 표시로 중복 초안 방지), telegram_notifier.py, orchestrator.py
+
+## 2026-11-02 워드프레스 임시 글 저장·발행 클라이언트 (지시: 사용자 / 작업: Claude / 검토: Codex 3회, 최종 PASS — REVIEW.md)
+- 사용자가 관리자 계정(bigapple117)의 애플리케이션 비밀번호 `auto-publisher` 발급 → `.env`의 WP_USERNAME/WP_APP_PASSWORD 저장(화면 출력 없음). 인증 확인: administrator, 발행 권한 있음
+- 확인: REST API·애플리케이션 비밀번호 인증 켜짐, 업로드 한도 64MB(PHP·nginx). 사이트 이름 "테스트", 시간대 UTC → 사이트 정리 때 바꿀 것
+- 추가: `src/wp_client.py`(https 강제, 리다이렉트 거부, 작업 표시 주석으로 중복 방지, 전 페이지 검색, 작업별 잠금, 발행 글 수정 금지, 발행 두 번 눌러도 안전, 미디어 jcjob-<id>-<n> 이름으로 재업로드 방지, 오류에 비밀번호 미노출), `scripts/dry_run_publish.py`(임시 글로만 올림, 사진·출처 기록 재사용)
+- 실제 검증: 근로장려금 글을 임시 글 13번으로 저장(사진 6장·표 3개·참고 자료·대표 사진·요약·영문 주소). 4회 재실행해도 글 1개·사진 6장. 발행하지 않음. 테스트 182개 통과
+- 남은 일: 사용자에게 임시 글 13번 미리보기 확인 요청, telegram_notifier.py(미리보기·승인), orchestrator.py(장부 db.py와 전체 연결, 시작 시 recover_interrupted), 사이트 기본 정리(이름·시간대·개인정보 처리방침·예제 글)
