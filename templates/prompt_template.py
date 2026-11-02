@@ -9,8 +9,8 @@ from typing import Sequence
 
 from src.source_fetcher import Source
 
-# 한국어 성우 속도(공백 포함 글자/초). edge-tts SunHi 실측 약 5자/초.
-CHARS_PER_SECOND = 5.0
+# 한국어 성우 속도(공백 포함 글자/초). edge-tts SunHi 실측: 대본 200자 → 31.5초(장면 사이 쉼 포함) ≈ 6.3자/초.
+CHARS_PER_SECOND = 6.2
 
 SYSTEM_INSTRUCTION = """\
 너는 한국 생활 정보 블로그 '잘체크'의 편집자다. 정부 지원금, 세금, 제도, 생활비 정보를

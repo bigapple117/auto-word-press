@@ -158,6 +158,9 @@ def check_content(
         warnings.append(f"본문이 짧습니다({body_chars}자).")
     if c.unverified:
         warnings.append("자료로 확인 안 된 내용: " + " / ".join(c.unverified))
+    relayed = [f"{s.id} {s.url}" for s in sources if s.via != "direct"]
+    if relayed:
+        warnings.append("AI가 옮겨 적은 자료(원문 대조 권장): " + ", ".join(relayed))
 
     # 금액·비율이 자료에 있는지 대조. 표기 차이로 틀리게 걸릴 수 있어 경고로 남기고 사람이 확인한다.
     # 쇼츠 내레이션은 숫자를 한글로 풀어 쓰므로 대조하지 않는다.

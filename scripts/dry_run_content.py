@@ -20,6 +20,7 @@ from src.ai_generator import ContentGenerator  # noqa: E402
 from src.blog_html import render_blog_html  # noqa: E402
 from src.config import load_settings  # noqa: E402
 from src.source_fetcher import fetch_sources  # noqa: E402
+from src.remote_reader import GeminiPageReader  # noqa: E402
 from src.source_finder import NaverSearch, find_official_urls  # noqa: E402
 
 
@@ -39,7 +40,8 @@ def main() -> int:
         urls = find_official_urls(search, args.topic)
         news = search.news(args.topic, display=5)
         print("찾은 공식 주소:", *urls, sep="\n  ")
-    sources, errors = fetch_sources(urls, max_sources=args.max_sources)
+    reader = GeminiPageReader.from_settings(settings)
+    sources, errors = fetch_sources(urls, max_sources=args.max_sources, fallback=reader)
     for e in errors:
         print("자료 실패:", e)
     if not sources:
@@ -56,12 +58,16 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     c = result.content
     (out / "content.json").write_text(c.model_dump_json(indent=2), encoding="utf-8")
+    (out / "sources.json").write_text(json.dumps(
+        [{"id": s.id, "url": s.url, "title": s.title, "via": s.via, "text": s.text} for s in sources],
+        ensure_ascii=False, indent=2), encoding="utf-8")
     html = f"<h1>{c.title}</h1>\n" + render_blog_html(c, sources)
     (out / "blog.html").write_text(html, encoding="utf-8")
     narration = sum(len(s.narration) for s in c.shorts.scenes)
     report = [
         f"모델: {result.model}, 작성 횟수: {result.attempts}, 걸린 시간: {elapsed:.0f}초",
-        f"자료: " + ", ".join(f"{s.id} {s.title}" for s in sources),
+        "자료: " + ", ".join(f"{s.id} {s.title}{' (AI 대신 읽음)' if s.via != 'direct' else ''}"
+                             for s in sources),
         f"제목: {c.title}",
         f"쇼츠 내레이션: {narration}자, 장면 {len(c.shorts.scenes)}개",
         *[f"경고: {w}" for w in result.warnings],

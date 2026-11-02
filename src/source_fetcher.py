@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from typing import Callable
 from urllib.parse import urljoin, urlparse
 
 import certifi
@@ -45,12 +46,17 @@ class SourceError(RuntimeError):
     """자료를 가져오지 못했을 때."""
 
 
+class BlockedUrlError(SourceError):
+    """보안 정책으로 거절한 주소(내부 주소, 허용 안 된 포트·형식). 대신 읽기도 하지 않는다."""
+
+
 @dataclass(frozen=True)
 class Source:
     id: str          # 글에서 출처를 가리키는 짧은 이름 (S1, S2 ...)
     url: str         # 최종 주소(리다이렉트 반영)
     title: str
     text: str        # 본문 글자(잘라낸 것)
+    via: str = "direct"   # direct: 서버가 직접 읽음, gemini: 구글 서버가 대신 읽고 AI가 옮겨 적음
 
 
 class _TextExtractor(HTMLParser):
@@ -142,18 +148,18 @@ def _parse(url: str) -> _Target:
         parsed = urlparse(url)
         port = parsed.port
     except ValueError as exc:
-        raise SourceError(f"주소 형식이 잘못됐습니다: {url}") from exc
+        raise BlockedUrlError(f"주소 형식이 잘못됐습니다: {url}") from exc
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise SourceError(f"http/https 주소만 가능합니다: {url}")
+        raise BlockedUrlError(f"http/https 주소만 가능합니다: {url}")
     if parsed.username or parsed.password:
-        raise SourceError(f"계정 정보가 들어간 주소는 쓰지 않습니다: {url}")
+        raise BlockedUrlError(f"계정 정보가 들어간 주소는 쓰지 않습니다: {url}")
     port = port or (443 if parsed.scheme == "https" else 80)
     if port not in ALLOWED_PORTS:
-        raise SourceError(f"80·443 포트만 접속합니다: {url}")
+        raise BlockedUrlError(f"80·443 포트만 접속합니다: {url}")
     try:
         host = parsed.hostname.encode("idna").decode("ascii")
     except UnicodeError as exc:
-        raise SourceError(f"호스트 이름이 잘못됐습니다: {url}") from exc
+        raise BlockedUrlError(f"호스트 이름이 잘못됐습니다: {url}") from exc
     path = parsed.path or "/"
     if parsed.query:
         path += "?" + parsed.query
@@ -178,7 +184,7 @@ def _resolve_public(host: str, port: int, timeout: float) -> str:
             raise SourceError(f"주소를 찾을 수 없습니다: {host}") from exc
         addresses = list(dict.fromkeys(ipaddress.ip_address(i[4][0]) for i in infos))
     if not addresses or any(not ip.is_global for ip in addresses):
-        raise SourceError(f"내부 주소로는 접속하지 않습니다: {host}")
+        raise BlockedUrlError(f"내부 주소로는 접속하지 않습니다: {host}")
     addresses.sort(key=lambda ip: ip.version)  # IPv4 먼저
     return str(addresses[0])
 
@@ -362,11 +368,16 @@ def fetch_source(
 
 
 def fetch_sources(
-    urls: list[str], max_sources: int | None = None, **kwargs
+    urls: list[str],
+    max_sources: int | None = None,
+    fallback: Callable[[str, str], Source] | None = None,
+    **kwargs,
 ) -> tuple[list[Source], list[str]]:
     """여러 주소를 읽는다. (성공한 자료, 실패 사유 목록)을 돌려준다.
 
     같은 주소·같은 최종 주소·본문이 같은 페이지는 한 번만 쓴다. max_sources개 모이면 멈춘다.
+    fallback(url, source_id): 직접 읽기에 실패했을 때(해외 차단, 자바스크립트 페이지 등) 대신 읽는 함수.
+    보안 정책으로 거절한 주소(BlockedUrlError)는 대신 읽지 않는다.
     """
     sources: list[Source] = []
     errors: list[str] = []
@@ -379,11 +390,21 @@ def fetch_sources(
         if not url or url in seen:
             continue
         seen.add(url)
+        source_id = f"S{len(sources) + 1}"
         try:
-            src = fetch_source(url, f"S{len(sources) + 1}", **kwargs)
-        except SourceError as exc:
+            src = fetch_source(url, source_id, **kwargs)
+        except BlockedUrlError as exc:
             errors.append(str(exc))
             continue
+        except SourceError as exc:
+            if fallback is None:
+                errors.append(str(exc))
+                continue
+            try:
+                src = fallback(url, source_id)
+            except SourceError as exc2:
+                errors.append(f"{exc} / 대신 읽기도 실패: {exc2}")
+                continue
         if src.url in {s.url for s in sources} or src.text in texts:
             continue
         texts.add(src.text)
