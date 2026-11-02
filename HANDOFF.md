@@ -108,3 +108,12 @@
 - 결과 파일: `data/dryrun/20261102-011815/`(Git 제외)
 - 테스트: 86개 통과
 - 남은 일: 검색 서비스 연결(NAVER API HUB 키 대기), 표에서 일부 행만 뽑을 때 원래 기호(가·나·라…) 빼도록 지시문 보완 검토, 다음 구현 tts_engine.py(.ass 자막) → stock_media.py → video_renderer.py → wp_client.py(작업 번호 표시로 중복 초안 방지 필수)
+
+## 2026-11-02 네이버 검색 연결(공식 자료 자동 찾기) (지시: 사용자 / 작업: Claude / 검토: 없음 — 외부 검색 호출 추가, 보안 경계(source_fetcher)는 변경 없음)
+- 사용자가 NAVER API HUB(console.ncloud.com)에서 웹문서·뉴스·검색어트렌드 신청, 키를 `.env`의 NAVER_CLIENT_ID/SECRET에 저장(config SECRET_FIELDS에 secret 추가)
+- 공식 문서 확인: 호스트 `https://naverapihub.apigw.ntruss.com`, `/search/v1/webkr`, `/search/v1/news`(sort=date), `POST /search-trend/v1/search`, 헤더 `X-NCP-APIGW-API-KEY-ID`/`X-NCP-APIGW-API-KEY`. 한시 무료(유료 전환 시 사전 공지 예정), 한도 문서마다 일 25,000회/월 775,000회로 다름
+- 추가: `src/source_finder.py`(웹문서 결과 중 .go.kr·gov.kr·korea.kr·주요 공공기관만 근거 후보, websquare 등 JS 페이지 제외, 뉴스·트렌드 조회), `fetch_sources`에 본문 중복 제거·max_sources
+- 생성기 개선: 장면 수×장면당 글자 수 안내, 쇼츠 길이만 틀리면 대본만 고쳐 쓰기(블로그 재작성 없음), 최근 뉴스 제목을 "변경 신호"로 전달(숫자 근거 금지, 자료와 다르면 도입부에 확인 필요 명시)
+- 실제 검증: 주제만으로 "청년도약계좌 가입 조건과 혜택" 생성 성공. 처음엔 2024~25년 자료로 현재 가입 가능한 것처럼 씀 → 뉴스 신호 반영 후 도입부에 2025년 12월 가입 종료 언급·최신 확인 안내, 기존 가입자 중심으로 바뀜. 테스트 105개 통과
+- 알려진 한계: 서버가 일본(오라클)이라 서민금융진흥원(kinfa.or.kr) 등 일부 공공기관이 해외 접속 차단(연결 시간 초과). 청년센터 등 JS 페이지는 본문 수집 불가
+- 남은 일: 주제 선정 시 종료·개편된 제도 걸러내기(검색어트렌드·뉴스 활용), tts_engine.py부터 영상 파이프라인

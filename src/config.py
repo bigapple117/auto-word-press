@@ -18,6 +18,7 @@ SECRET_FIELDS = frozenset({
     "gemini_api_key",
     "pexels_api_key",
     "pixabay_api_key",
+    "naver_client_secret",
     "telegram_bot_token",
 })
 
@@ -63,6 +64,10 @@ class Settings:
     # 무료 스톡 이미지·영상
     pexels_api_key: str = ""
     pixabay_api_key: str = ""
+
+    # 네이버 검색 (NAVER API HUB)
+    naver_client_id: str = ""
+    naver_client_secret: str = ""
 
     # 텔레그램 알림·승인
     telegram_bot_token: str = ""
@@ -124,6 +129,8 @@ def load_settings(env_file: Path | None = None) -> Settings:
         gemini_model=_env("GEMINI_MODEL", d.gemini_model),
         pexels_api_key=_env("PEXELS_API_KEY"),
         pixabay_api_key=_env("PIXABAY_API_KEY"),
+        naver_client_id=_env("NAVER_CLIENT_ID"),
+        naver_client_secret=_env("NAVER_CLIENT_SECRET"),
         telegram_bot_token=_env("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_env("TELEGRAM_CHAT_ID"),
         google_service_account_file=_env("GOOGLE_SERVICE_ACCOUNT_FILE"),

@@ -18,15 +18,18 @@ from google.genai import types
 from pydantic import ValidationError
 
 from src.config import Settings
-from src.content_schema import MasterContent
+from src.content_schema import MasterContent, Shorts
 from src.source_fetcher import Source
-from templates.prompt_template import SYSTEM_INSTRUCTION, build_prompt, narration_budget
+from templates.prompt_template import (SHORTS_SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION, build_prompt,
+                                      build_shorts_repair_prompt, narration_budget)
 
 log = logging.getLogger(__name__)
 
 DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 RETRY_WAITS = (10, 30, 60)       # 일시적 오류 재시도 간격(초)
 MAX_QUALITY_ROUNDS = 3           # 검사 불합격 시 최대 작성 횟수
+MAX_SHORTS_REPAIRS = 2           # 쇼츠 길이만 틀렸을 때 대본만 고쳐 쓰는 횟수
+NARRATION_PROBLEM = "쇼츠 내레이션 전체 길이"
 REQUEST_TIMEOUT_MS = 300_000
 
 _TRANSIENT_CODES = {429, 500, 502, 503, 504}
@@ -147,7 +150,7 @@ def check_content(
     total = sum(len(sc.narration) for sc in c.shorts.scenes)
     if not low <= total <= high:
         problems.append(
-            f"쇼츠 내레이션 전체 길이를 공백 포함 {low}~{high}자로 맞춰 주세요(현재 {total}자)."
+            f"{NARRATION_PROBLEM}를 공백 포함 {low}~{high}자로 맞춰 주세요(현재 {total}자)."
         )
 
     body_chars = sum(len(p) for s in c.sections for p in s.paragraphs) + sum(len(p) for p in c.intro)
@@ -196,14 +199,15 @@ class ContentGenerator:
         )
         return cls(client, settings.gemini_model, **kwargs)
 
-    def _call(self, model: str, prompt: str) -> str:
+    def _call(self, model: str, prompt: str, schema: type = MasterContent,
+              system: str = SYSTEM_INSTRUCTION) -> str:
         response = self.client.models.generate_content(
             model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
+                system_instruction=system,
                 response_mime_type="application/json",
-                response_schema=MasterContent,
+                response_schema=schema,
                 temperature=0.7,
             ),
         )
@@ -212,13 +216,13 @@ class ContentGenerator:
             raise GenerationError("모델이 빈 응답을 돌려줬습니다")
         return text
 
-    def _call_with_retry(self, prompt: str) -> tuple[str, str]:
+    def _call_with_retry(self, prompt: str, **call_kwargs) -> tuple[str, str]:
         """(응답 글자, 실제 쓴 모델). 모든 모델이 일시적 오류로 실패하면 GenerationError."""
         last: Exception | None = None
         for model in self.models:
             for attempt in range(len(self.retry_waits) + 1):
                 try:
-                    return self._call(model, prompt), model
+                    return self._call(model, prompt, **call_kwargs), model
                 except Exception as exc:  # noqa: BLE001 - 종류를 보고 재시도 여부 결정
                     if not _is_transient(exc):
                         raise
@@ -231,14 +235,15 @@ class ContentGenerator:
         raise GenerationError(f"모든 모델이 일시적 오류로 실패했습니다: {last}")
 
     def generate(
-        self, topic: str, sources: Sequence[Source], target_seconds: int = 45
+        self, topic: str, sources: Sequence[Source], target_seconds: int = 45,
+        news: Sequence[tuple[str, str]] = (),
     ) -> GenerationResult:
         if not sources:
             raise GenerationError("근거 자료가 없습니다. 자료 없이 글을 쓰지 않습니다.")
         feedback: str | None = None
         last_problems: list[str] = []
         for round_no in range(1, MAX_QUALITY_ROUNDS + 1):
-            prompt = build_prompt(topic, sources, target_seconds, feedback=feedback)
+            prompt = build_prompt(topic, sources, target_seconds, feedback=feedback, news=news)
             raw, model = self._call_with_retry(prompt)
             try:
                 content = MasterContent.model_validate_json(raw)
@@ -246,9 +251,37 @@ class ContentGenerator:
                 last_problems = [f"JSON 형식 오류: {exc.errors()[:3]}"]
             else:
                 problems, warnings = check_content(content, sources, target_seconds)
+                if problems and all(p.startswith(NARRATION_PROBLEM) for p in problems):
+                    content, problems, warnings = self._repair_shorts(content, sources, target_seconds)
                 if not problems:
                     return GenerationResult(content, model, round_no, warnings)
                 last_problems = problems
             log.info("검사 불합격(%s회차): %s", round_no, last_problems)
             feedback = "\n".join(f"- {p}" for p in last_problems)
         raise GenerationError("검사를 통과하지 못했습니다: " + " / ".join(last_problems))
+
+    def _repair_shorts(
+        self, content: MasterContent, sources: Sequence[Source], target_seconds: int
+    ) -> tuple[MasterContent, list[str], list[str]]:
+        """쇼츠 길이만 틀렸을 때 대본만 다시 쓴다. 블로그 글은 그대로 둔다."""
+        blog_facts = "\n".join([content.title, *content.intro] + [
+            "\n".join([s.heading, *s.paragraphs]) for s in content.sections
+        ] + [f"{f.question} {f.answer}" for f in content.faq] + [content.closing])
+        problems, warnings = check_content(content, sources, target_seconds)
+        for _ in range(MAX_SHORTS_REPAIRS):
+            current = sum(len(sc.narration) for sc in content.shorts.scenes)
+            prompt = build_shorts_repair_prompt(blog_facts, content.shorts.model_dump_json(),
+                                                target_seconds, current)
+            raw, _model = self._call_with_retry(prompt, schema=Shorts,
+                                                system=SHORTS_SYSTEM_INSTRUCTION)
+            try:
+                shorts = Shorts.model_validate_json(raw)
+            except ValidationError:
+                continue
+            candidate = content.model_copy(update={"shorts": shorts})
+            problems, warnings = check_content(candidate, sources, target_seconds)
+            content = candidate
+            if not problems:
+                break
+            log.info("쇼츠 대본 고쳐 쓰기 불합격: %s", problems)
+        return content, problems, warnings

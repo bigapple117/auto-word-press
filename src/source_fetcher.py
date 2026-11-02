@@ -361,12 +361,20 @@ def fetch_source(
     return Source(id=source_id, url=final_url, title=title or final_url, text=text[:max_chars])
 
 
-def fetch_sources(urls: list[str], **kwargs) -> tuple[list[Source], list[str]]:
-    """여러 주소를 읽는다. (성공한 자료, 실패 사유 목록)을 돌려준다. 같은 주소는 한 번만."""
+def fetch_sources(
+    urls: list[str], max_sources: int | None = None, **kwargs
+) -> tuple[list[Source], list[str]]:
+    """여러 주소를 읽는다. (성공한 자료, 실패 사유 목록)을 돌려준다.
+
+    같은 주소·같은 최종 주소·본문이 같은 페이지는 한 번만 쓴다. max_sources개 모이면 멈춘다.
+    """
     sources: list[Source] = []
     errors: list[str] = []
     seen: set[str] = set()
+    texts: set[str] = set()
     for url in urls:
+        if max_sources is not None and len(sources) >= max_sources:
+            break
         url = url.strip()
         if not url or url in seen:
             continue
@@ -376,7 +384,8 @@ def fetch_sources(urls: list[str], **kwargs) -> tuple[list[Source], list[str]]:
         except SourceError as exc:
             errors.append(str(exc))
             continue
-        if src.url in {s.url for s in sources}:
+        if src.url in {s.url for s in sources} or src.text in texts:
             continue
+        texts.add(src.text)
         sources.append(src)
     return sources, errors

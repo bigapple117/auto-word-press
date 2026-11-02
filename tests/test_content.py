@@ -476,3 +476,51 @@ def test_watch_cuts_registered_sockets():
     a.settimeout(1)
     assert a.recv(1) == b""
     a.close(); b.close()
+
+
+def test_fetch_sources_skips_duplicate_text_and_stops_at_max(monkeypatch):
+    same = FakeResp(200, {"Content-Type": "text/html"}, PAGE)
+    same2 = FakeResp(200, {"Content-Type": "text/html"}, PAGE)
+    other = FakeResp(200, {"Content-Type": "text/html"},
+                     ("<html><main>%s</main></html>" % ("다른 본문 " * 80)).encode())
+    fake_network(monkeypatch, [same, same2, other])
+    sources, _ = source_fetcher.fetch_sources(
+        ["https://a.go.kr/1", "https://a.go.kr/2", "https://a.go.kr/3", "https://a.go.kr/4"], max_sources=2)
+    assert [s.url for s in sources] == ["https://a.go.kr/1", "https://a.go.kr/3"]
+
+
+def test_short_narration_is_repaired_without_rewriting_blog():
+    short = good_data()
+    for sc in short["shorts"]["scenes"]:
+        sc["narration"] = "짧은 대본"
+    fixed_shorts = good_data()["shorts"]
+    gen, client = make_gen([json.dumps(short), json.dumps({"title": "x", "scenes": [{"narration": "아직 짧음", "video_query": "a"}] * 4}),
+                            json.dumps(fixed_shorts)])
+    r = gen.generate("근로장려금", SOURCES, 45)
+    assert r.attempts == 1                                # 블로그 전체를 다시 쓰지 않음
+    assert len(client.calls) == 3                         # 본문 1회 + 대본만 2회
+    assert "장면마다" in client.calls[1][1] and "[블로그 글]" in client.calls[1][1]
+    assert r.content.shorts.model_dump() == fixed_shorts and r.content.title == short["title"]
+
+
+def test_narration_repair_failing_falls_back_to_full_rewrite():
+    short = good_data()
+    for sc in short["shorts"]["scenes"]:
+        sc["narration"] = "짧음"
+    bad_shorts = json.dumps({"title": "x", "scenes": [{"narration": "짧음", "video_query": "a"}] * 4})
+    gen, client = make_gen([json.dumps(short), bad_shorts, bad_shorts, json.dumps(good_data())])
+    r = gen.generate("근로장려금", SOURCES, 45)
+    assert r.attempts == 2 and len(client.calls) == 4
+
+
+def test_scene_plan_matches_budget():
+    from templates.prompt_template import scene_plan
+    scenes, per = scene_plan(45)
+    low, high = narration_budget(45)
+    assert 4 <= scenes <= 8 and low <= scenes * per <= high
+
+
+def test_news_signals_included_as_non_evidence():
+    p = build_prompt("청년도약계좌", SOURCES, 45, news=[("01 Nov 2026", "청년미래적금으로 갈아탈까")])
+    assert "[최근 뉴스 - 변경 신호, 사실 근거 아님]" in p and "청년미래적금으로 갈아탈까" in p
+    assert "[최근 뉴스" not in build_prompt("청년도약계좌", SOURCES, 45)
