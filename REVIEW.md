@@ -37,3 +37,22 @@
 3차: **PASS** (남은 실제 결함 없음)
 - 검증: pytest 35개 통과(Claude 실행). Codex는 정적 검토만, 테스트 직접 실행 안 함
 - 미검증: 실제 워드프레스·실행기와의 통합(아직 미구현)
+
+---
+
+# 2026-11-02 자료 수집·글 생성기 검토 기록 (작성: Claude, 검토: Codex — codex-consult 코드 전달 방식)
+
+대상: src/source_fetcher.py, src/content_schema.py, templates/prompt_template.py, src/ai_generator.py, src/blog_html.py
+
+1차 **CHANGES_REQUESTED** → 반영
+- DNS 재조회로 SSRF 우회 → urllib3로 검증한 IP에 직접 접속(Host·SNI·인증서는 원래 호스트), 비공인 IP 하나라도 있으면 거절, 80/443만, 계정 포함 URL 거절, 환경 프록시 미사용
+- 3xx 본문이 크기 제한 없이 읽힘 → 리다이렉트 본문 읽지 않음
+- 전체 시간 제한 없음 → DNS 타임아웃 + 전체 deadline(40초) + 감시 타이머
+- 문자셋 없는 페이지 예외 → 받은 바이트로 charset_normalizer 추정
+- URL 하나 오류로 전체 중단 → 모든 실패를 SourceError로, fetch_sources는 계속
+- 사실 검사 부족 → FAQ 빈 출처 거절, 기준 문장 검사 포함, 금액·% 출처 대조(못 찾으면 경고: 표기 차이 오탐 때문에 차단 대신 사람 승인 단계에서 확인)
+- 이미지·출처 링크 javascript: → http(s)만 허용
+2~4차 **CHANGES_REQUESTED** → 반영: 느린 전송 시 deadline 초과(감시 타이머로 소켓 shutdown, 헤더 대기 포함, Connection: close 포함), 깨진 HTML 파서 예외 변환, 끊겨서 정상 종료처럼 보이는 잘린 본문·헤더 거부, 타이머 만료 뒤 맺어진 연결 즉시 차단(_Watch 락)
+5차 **CHANGES_REQUESTED(경미)** → Claude 판단으로 알려진 한계로 수용: HTTPS에서 TCP 연결 뒤 TLS 협상에 connect 제한이 다시 적용돼 최악의 경우 전체 제한을 CONNECT_TIMEOUT(10초)만큼 초과 가능. 무한 대기 아님, 코드 주석에 기록. 함께 지적된 timeout 하한(0.1초) 제거는 반영
+- 검증: pytest 86개 통과(실제 소켓 느린 전송 시험 3종 포함), 실제 국세청 페이지 수집, 실제 Gemini 생성 2회 성공(숫자 오탐 0)
+- 미검증: 다양한 사이트(자바스크립트로 그리는 페이지는 수집 불가로 거절됨), 워드프레스 업로드(미구현)

@@ -100,3 +100,11 @@
 - gemini-2.5-flash는 "새 사용자에게 제공 안 함"(404) → 기본 모델을 gemini-3.8-flash로 변경(config, .env.example, .env)
 - 실제 검증: 키로 모델 목록 조회 성공, gemini-3.8-flash 한국어 응답 성공(약 20초), gemini-3.5-flash-lite 응답 1.2초 — 글 생성은 3.8-flash, 빠른 보조 작업은 lite 후보
 - 남은 일: templates/prompt_template.py, src/ai_generator.py
+
+## 2026-11-02 자료 기반 글·쇼츠 대본 생성기 (지시: 사용자 / 작업: Claude / 검토: Codex 5회 — REVIEW.md)
+- 결정: Gemini 구글 검색은 무료 키에서 막힘(3.x는 429, 2.5는 새 사용자 404 직접 확인) → "자료 찾기"와 "글쓰기" 분리. 자료 찾기는 NAVER API HUB(사용자 가입 진행 중) 또는 Tavily 예정, 시트 참고 주소 입력도 지원 예정
+- 추가: `src/source_fetcher.py`(공식 페이지 본문 추출, 내부 주소 차단·IP 고정·시간 제한), `src/content_schema.py`(블로그+쇼츠 JSON 형식), `templates/prompt_template.py`(사실·문체 규칙), `src/ai_generator.py`(재시도·예비 모델 gemini-3.5-flash-lite·품질 검사·숫자 대조 경고), `src/blog_html.py`(안전한 HTML, 출처 목록), `scripts/dry_run_content.py`(발행 없이 결과 파일 생성)
+- 실제 검증: 국세청 근로장려금 페이지 3개로 생성 성공 2회(55~72초, 1회차 통과). 본문 숫자·날짜·전화번호·조정률을 원문과 직접 대조해 일치. 자료 없이 물으면 신청기간을 틀리게 답함(5.31 vs 공식 6.1) → 자료 기반 필요성 확인
+- 결과 파일: `data/dryrun/20261102-011815/`(Git 제외)
+- 테스트: 86개 통과
+- 남은 일: 검색 서비스 연결(NAVER API HUB 키 대기), 표에서 일부 행만 뽑을 때 원래 기호(가·나·라…) 빼도록 지시문 보완 검토, 다음 구현 tts_engine.py(.ass 자막) → stock_media.py → video_renderer.py → wp_client.py(작업 번호 표시로 중복 초안 방지 필수)
