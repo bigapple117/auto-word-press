@@ -46,10 +46,16 @@ def test_approval_request_has_signed_buttons_and_escaped_text(tmp_path):
     tg, fake = make()
     video = tmp_path / "s.mp4"
     video.write_bytes(b"x")
-    mid = tg.send_approval_request(7, "<제목>", "요약 & 설명", "https://jalcheck.com/?p=26&preview=true",
-                                   warnings=["숫자 확인"], video_path=video)
-    assert [c[0] for c in fake.calls] == ["sendVideo", "sendMessage"] and mid == 12
-    body = fake.calls[1][1]
+    shot = tmp_path / "post26_mobile.png"
+    shot.write_bytes(b"png")
+    mid = tg.send_approval_request(7, "<제목>", "요약 & 설명",
+                                   "https://jalcheck.com/wp-admin/post.php?post=26&action=edit",
+                                   warnings=["숫자 확인"], video_path=video,
+                                   screenshots=[shot, tmp_path / "없는파일.png"])
+    assert [c[0] for c in fake.calls] == ["sendDocument", "sendVideo", "sendMessage"] and mid == 13
+    assert "(mobile)" in fake.calls[0][2]["caption"]
+    body = fake.calls[2][1]
+    assert "action=edit" in body["text"]
     assert body["chat_id"] == CHAT and "&lt;제목&gt;" in body["text"] and "요약 &amp; 설명" in body["text"]
     buttons = body["reply_markup"]["inline_keyboard"][0]
     assert [b["text"] for b in buttons] == ["발행", "보류", "취소"]

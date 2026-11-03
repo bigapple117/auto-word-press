@@ -89,14 +89,22 @@ class TelegramNotifier:
 
     # ----- 보내기 -----
     def send_approval_request(
-        self, job_id: int, title: str, summary: str, preview_url: str,
+        self, job_id: int, title: str, summary: str, edit_url: str,
         warnings: Sequence[str] = (), video_path: Path | None = None,
+        screenshots: Sequence[Path] = (),
     ) -> int:
-        """승인 요청 메시지(버튼 포함)를 보내고 메시지 번호를 돌려준다. 영상이 있으면 먼저 보낸다."""
+        """승인 요청 메시지(버튼 포함)를 보내고 메시지 번호를 돌려준다.
+
+        임시 글은 로그인해야 보이므로 글 화면 캡처를 파일로 먼저 보내 텔레그램 안에서 확인하게 한다.
+        """
+        for shot in screenshots:
+            if shot.exists():
+                self.send_document(shot, caption=f"[작업 {job_id}] 글 화면 ({shot.stem.rsplit('_', 1)[-1]})")
         if video_path and video_path.exists():
             self.send_video(video_path, caption=f"[작업 {job_id}] 쇼츠 미리보기")
         lines = [f"<b>[작업 {int(job_id)}] 발행 승인 요청</b>", "", f"<b>{html.escape(title)}</b>",
-                 html.escape(summary), "", f'<a href="{html.escape(preview_url)}">미리보기 열기</a> (관리자 로그인 필요)']
+                 html.escape(summary), "",
+                 f'<a href="{html.escape(edit_url)}">워드프레스에서 열기</a> (로그인 화면이 나오면 로그인)']
         if warnings:
             lines += ["", "<b>확인할 것</b>"] + [f"- {html.escape(w)}" for w in warnings[:8]]
         text = "\n".join(lines)
@@ -113,6 +121,15 @@ class TelegramNotifier:
 
     def send_text(self, text: str) -> int:
         msg = self._call("sendMessage", json={"chat_id": self.chat_id, "text": text[:4000]})
+        return int(msg["message_id"])
+
+    def send_document(self, path: Path, caption: str = "") -> int:
+        """파일 그대로 보낸다(긴 화면 캡처가 줄어들지 않게)."""
+        if path.stat().st_size > MAX_VIDEO_BYTES:
+            return self.send_text(f"{caption}\n(파일이 50MB를 넘어 보내지 못했습니다)")
+        with path.open("rb") as f:
+            msg = self._call("sendDocument", timeout=120, data={"chat_id": self.chat_id, "caption": caption[:1000]},
+                             files={"document": (path.name, f, "image/png")})
         return int(msg["message_id"])
 
     def send_video(self, path: Path, caption: str = "") -> int:
