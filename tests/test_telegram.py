@@ -52,7 +52,7 @@ def test_approval_request_has_signed_buttons_and_escaped_text(tmp_path):
                                    "https://jalcheck.com/wp-admin/post.php?post=26&action=edit",
                                    warnings=["숫자 확인"], video_path=video,
                                    screenshots=[shot, tmp_path / "없는파일.png"])
-    assert [c[0] for c in fake.calls] == ["sendDocument", "sendVideo", "sendMessage"] and mid == 13
+    assert [c[0] for c in fake.calls] == ["sendDocument", "sendVideo", "sendMessage"] and mid.message_id == 13
     assert "(mobile)" in fake.calls[0][2]["caption"]
     body = fake.calls[2][1]
     assert "action=edit" in body["text"]
@@ -60,14 +60,16 @@ def test_approval_request_has_signed_buttons_and_escaped_text(tmp_path):
     buttons = body["reply_markup"]["inline_keyboard"][0]
     assert [b["text"] for b in buttons] == ["발행", "보류", "취소"]
     assert all(len(b["callback_data"].encode()) <= 64 for b in buttons)
-    assert tg.parse_callback(buttons[0]["callback_data"]) == (7, "publish")
+    assert tg.parse_callback(buttons[0]["callback_data"]) == (7, "publish", mid.nonce)
+    again = tg.send_approval_request(7, "t", "s", "https://x/?a=1")
+    assert again.nonce != mid.nonce                              # 요청마다 새 요청 번호
 
 
 def test_poll_accepts_only_our_chat_user_and_signature():
     tg, _ = make()
-    good = tg.callback_data(7, "pub")
-    forged = "pub:7:0000000000000000"
-    other_bot = TelegramNotifier("999:OTHER", CHAT, session=FakeTG()).callback_data(7, "pub")
+    good = tg.callback_data(7, "p", "aabbccdd")
+    forged = "p:7:aabbccdd:0000000000000000"
+    other_bot = TelegramNotifier("999:OTHER", CHAT, session=FakeTG()).callback_data(7, "p", "aabbccdd")
     updates = [
         callback(1, good, update_id=1),
         callback(2, forged, update_id=2),
@@ -75,19 +77,22 @@ def test_poll_accepts_only_our_chat_user_and_signature():
         callback(4, good, user="666", update_id=4),
         callback(5, other_bot, update_id=5),
         {"update_id": 6, "message": {"text": "hi"}},
-        callback(7, tg.callback_data(8, "cancel"), update_id=7),
+        callback(7, tg.callback_data(8, "c", "11223344"), update_id=7),
+        callback(8, "p:1:aabbccdd:한한한한한한한한한한한한한한한한", update_id=8),   # 이상한 글자: 멈추지 않고 거름
     ]
     tg2, fake = make(updates)
     decisions, nxt = tg2.poll_decisions(None)
-    assert [(d.job_id, d.action) for d in decisions] == [(7, "publish"), (8, "cancel")]
-    assert nxt == 8
+    assert [(d.job_id, d.action, d.nonce) for d in decisions] == [(7, "publish", "aabbccdd"),
+                                                                   (8, "cancel", "11223344")]
+    assert nxt == 9
     rejected = [c for c in fake.calls if c[0] == "answerCallbackQuery"]
-    assert len(rejected) == 4                                    # 거른 버튼에는 안내만
+    assert len(rejected) == 5                                    # 거른 버튼에는 안내만
 
 
 def test_parse_callback_rejects_garbage():
     tg, _ = make()
-    for data in ["", "pub", "pub:x:abc", "delete:7:" + tg._sign("delete:7"), "pub:7"]:
+    for data in ["", "p", "p:x:aabbccdd:abc", "d:7:aabbccdd:" + tg._sign("d:7:aabbccdd"), "p:7",
+                 "p:7:aabbccdd:" + tg._sign("p:7:aabbccdd").upper()]:
         assert tg.parse_callback(data) is None
 
 
@@ -111,9 +116,19 @@ def test_errors_hide_token():
         TelegramNotifier("123:SECRET", CHAT, session=Bad()).send_text("x")
 
 
-def test_requires_settings():
+def test_requires_settings_and_private_chat():
     with pytest.raises(TelegramError):
         TelegramNotifier("", CHAT)
+    with pytest.raises(TelegramError, match="그룹"):
+        TelegramNotifier("1:x", "-1001234567")
+
+
+def test_long_fields_are_clipped_before_html(tmp_path):
+    tg, fake = make()
+    tg.send_approval_request(1, "가" * 1000 + "<b>", "나" * 2000, "https://x", warnings=["다" * 999] * 20)
+    text = fake.calls[-1][1]["text"]
+    assert len(text) < 4096 and text.count("<b>") == text.count("</b>")
+    assert "&lt;b&gt;" not in text                               # 잘린 뒤라 끝의 <b>는 없음
 
 
 def test_big_video_sends_note_instead(tmp_path, monkeypatch):
@@ -135,3 +150,12 @@ def test_mark_done_removes_buttons():
 def test_find_chat_id():
     fake = FakeTG([{"update_id": 1, "message": {"chat": {"id": 555, "type": "private", "first_name": "대홍"}}}])
     assert find_chat_id("t", session=fake) == [{"id": 555, "type": "private", "name": "대홍"}]
+
+
+def test_trailing_newline_and_zero_chat_rejected():
+    tg, _ = make()
+    good = tg.callback_data(7, "p", "aabbccdd")
+    assert tg.parse_callback(good) is not None and tg.parse_callback(good + "\n") is None
+    for bad in ("0", "0123"):
+        with pytest.raises(TelegramError):
+            TelegramNotifier("1:x", bad)

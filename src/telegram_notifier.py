@@ -2,7 +2,12 @@
 
 - 새 포트를 열지 않는다: 웹훅 대신 getUpdates로 주기적으로 묻는다(long polling).
 - 설정한 대화방(TELEGRAM_CHAT_ID)에서, 그 대화방 사용자가 누른 버튼만 받아들인다.
-- 버튼 값에는 작업 번호와 비밀 서명(HMAC)을 넣어, 다른 곳에서 만든 가짜 버튼을 거른다.
+- 버튼 값에는 작업 번호·요청 번호(nonce)·비밀 서명(HMAC)을 넣어, 가짜 버튼을 거른다.
+  요청 번호는 승인 요청마다 새로 만들므로, 호출하는 쪽(오케스트레이터)은 장부에 저장한 '현재 요청 번호'와
+  같은 버튼만 처리해야 한다(예전 메시지의 버튼 무시).
+- poll_decisions가 돌려준 다음 offset은, 받은 결정을 장부에 기록한 뒤에 넘겨야 한다
+  (텔레그램은 더 큰 offset으로 물으면 이전 기록을 지운다).
+- 개인 대화방 전용(그룹 대화방 번호는 거절).
 """
 from __future__ import annotations
 
@@ -10,6 +15,8 @@ import hashlib
 import hmac
 import html
 import logging
+import re
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -21,9 +28,10 @@ from src.config import Settings
 log = logging.getLogger(__name__)
 
 API = "https://api.telegram.org"
-ACTIONS = {"pub": "publish", "hold": "hold", "cancel": "cancel"}
+ACTIONS = {"p": "publish", "h": "hold", "c": "cancel"}
+_CALLBACK = re.compile(r"^([phc]):(\d{1,12}):([0-9a-f]{8}):([0-9a-f]{16})$")
+TITLE_MAX, SUMMARY_MAX, WARNING_MAX, WARNINGS_MAX = 200, 500, 300, 8
 MAX_VIDEO_BYTES = 49_000_000        # 봇 API 업로드 한도 50MB
-MAX_TEXT = 3800                     # 메시지 4096자 한도 여유
 
 
 class TelegramError(RuntimeError):
@@ -34,8 +42,15 @@ class TelegramError(RuntimeError):
 class Decision:
     job_id: int
     action: str            # publish / hold / cancel
+    nonce: str             # 승인 요청 번호(장부의 현재 요청 번호와 비교)
     callback_id: str
     message_id: int | None
+
+
+@dataclass(frozen=True)
+class ApprovalRequest:
+    message_id: int
+    nonce: str
 
 
 class TelegramNotifier:
@@ -43,6 +58,8 @@ class TelegramNotifier:
                  timeout: float = 30) -> None:
         if not token or not chat_id:
             raise TelegramError("TELEGRAM_BOT_TOKEN과 TELEGRAM_CHAT_ID가 필요합니다")
+        if not re.fullmatch(r"[1-9][0-9]{0,19}", str(chat_id)):
+            raise TelegramError("TELEGRAM_CHAT_ID는 개인 대화방 번호(양수)여야 합니다. 그룹 대화방은 지원하지 않습니다")
         self.base = f"{API}/bot{token}"
         self.chat_id = str(chat_id)
         self.http = session or requests.Session()
@@ -73,26 +90,26 @@ class TelegramNotifier:
     def _sign(self, payload: str) -> str:
         return hmac.new(self._key, payload.encode(), hashlib.sha256).hexdigest()[:16]
 
-    def callback_data(self, job_id: int, action_code: str) -> str:
-        payload = f"{action_code}:{int(job_id)}"
-        return f"{payload}:{self._sign(payload)}"          # 64바이트 한도 안
+    def callback_data(self, job_id: int, action_code: str, nonce: str) -> str:
+        payload = f"{action_code}:{int(job_id)}:{nonce}"
+        return f"{payload}:{self._sign(payload)}"          # 최대 약 40바이트(한도 64)
 
-    def parse_callback(self, data: str) -> tuple[int, str] | None:
-        try:
-            code, job, sig = data.split(":")
-            job_id = int(job)
-        except ValueError:
+    def parse_callback(self, data: str) -> tuple[int, str, str] | None:
+        """(작업 번호, 행동, 요청 번호). 형식이 틀리거나 서명이 안 맞으면 None."""
+        m = _CALLBACK.fullmatch(data or "")
+        if not m:
             return None
-        if code not in ACTIONS or not hmac.compare_digest(sig, self._sign(f"{code}:{job_id}")):
+        code, job, nonce, sig = m.groups()
+        if not hmac.compare_digest(sig, self._sign(f"{code}:{job}:{nonce}")):
             return None
-        return job_id, ACTIONS[code]
+        return int(job), ACTIONS[code], nonce
 
     # ----- 보내기 -----
     def send_approval_request(
         self, job_id: int, title: str, summary: str, edit_url: str,
         warnings: Sequence[str] = (), video_path: Path | None = None,
         screenshots: Sequence[Path] = (),
-    ) -> int:
+    ) -> ApprovalRequest:
         """승인 요청 메시지(버튼 포함)를 보내고 메시지 번호를 돌려준다.
 
         임시 글은 로그인해야 보이므로 글 화면 캡처를 파일로 먼저 보내 텔레그램 안에서 확인하게 한다.
@@ -102,22 +119,25 @@ class TelegramNotifier:
                 self.send_document(shot, caption=f"[작업 {job_id}] 글 화면 ({shot.stem.rsplit('_', 1)[-1]})")
         if video_path and video_path.exists():
             self.send_video(video_path, caption=f"[작업 {job_id}] 쇼츠 미리보기")
-        lines = [f"<b>[작업 {int(job_id)}] 발행 승인 요청</b>", "", f"<b>{html.escape(title)}</b>",
-                 html.escape(summary), "",
-                 f'<a href="{html.escape(edit_url)}">워드프레스에서 열기</a> (로그인 화면이 나오면 로그인)']
+        def clip(text: str, limit: int) -> str:     # 서식을 만들기 전에 원문을 자른다(태그가 잘리지 않게)
+            return text if len(text) <= limit else text[:limit] + "…"
+
+        nonce = secrets.token_hex(4)
+        lines = [f"<b>[작업 {int(job_id)}] 발행 승인 요청</b>", "", f"<b>{html.escape(clip(title, TITLE_MAX))}</b>",
+                 html.escape(clip(summary, SUMMARY_MAX)), "",
+                 f'<a href="{html.escape(edit_url, quote=True)}">워드프레스에서 열기</a> (로그인 화면이 나오면 로그인)']
         if warnings:
-            lines += ["", "<b>확인할 것</b>"] + [f"- {html.escape(w)}" for w in warnings[:8]]
+            lines += ["", "<b>확인할 것</b>"] + [f"- {html.escape(clip(w, WARNING_MAX))}"
+                                               for w in list(warnings)[:WARNINGS_MAX]]
         text = "\n".join(lines)
-        if len(text) > MAX_TEXT:
-            text = text[:MAX_TEXT] + "…"
         keyboard = {"inline_keyboard": [[
-            {"text": "발행", "callback_data": self.callback_data(job_id, "pub")},
-            {"text": "보류", "callback_data": self.callback_data(job_id, "hold")},
-            {"text": "취소", "callback_data": self.callback_data(job_id, "cancel")},
+            {"text": "발행", "callback_data": self.callback_data(job_id, "p", nonce)},
+            {"text": "보류", "callback_data": self.callback_data(job_id, "h", nonce)},
+            {"text": "취소", "callback_data": self.callback_data(job_id, "c", nonce)},
         ]]}
         msg = self._call("sendMessage", json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML",
                                               "disable_web_page_preview": True, "reply_markup": keyboard})
-        return int(msg["message_id"])
+        return ApprovalRequest(int(msg["message_id"]), nonce)
 
     def send_text(self, text: str) -> int:
         msg = self._call("sendMessage", json={"chat_id": self.chat_id, "text": text[:4000]})
@@ -158,12 +178,12 @@ class TelegramNotifier:
             msg = cq.get("message") or {}
             chat_ok = str((msg.get("chat") or {}).get("id")) == self.chat_id
             user_ok = str((cq.get("from") or {}).get("id")) == self.chat_id
-            parsed = self.parse_callback(cq.get("data", ""))
-            if not (chat_ok and user_ok and parsed):
+            parsed = self.parse_callback(cq.get("data", "")) if (chat_ok and user_ok) else None
+            if not parsed:
                 log.warning("허용되지 않은 버튼 응답을 무시했습니다(update %s)", u.get("update_id"))
                 self.answer(cq.get("id", ""), "처리할 수 없는 요청입니다")
                 continue
-            decisions.append(Decision(parsed[0], parsed[1], cq["id"], msg.get("message_id")))
+            decisions.append(Decision(parsed[0], parsed[1], parsed[2], cq["id"], msg.get("message_id")))
         return decisions, next_offset
 
     def answer(self, callback_id: str, text: str) -> None:
