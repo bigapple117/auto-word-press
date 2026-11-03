@@ -6,14 +6,14 @@ from src import stock_media as sm
 from src.stock_media import MediaError, PixabayClient, StockMediaPicker, choose_image, choose_video
 
 
-def video_hit(id_, w, h, dur=10, size=1_000_000, variant="medium"):
-    return {"id": id_, "duration": dur, "pageURL": f"https://pixabay.com/videos/{id_}/", "user": f"u{id_}",
+def video_hit(id_, w, h, dur=10, size=1_000_000, variant="medium", tags="money desk office work rare thing x"):
+    return {"id": id_, "duration": dur, "tags": tags, "pageURL": f"https://pixabay.com/videos/{id_}/", "user": f"u{id_}",
             "videos": {variant: {"url": f"https://cdn.pixabay.com/video/{id_}.mp4", "width": w,
                                  "height": h, "size": size}}}
 
 
-def image_hit(id_, h=2000):
-    return {"id": id_, "imageHeight": h, "largeImageURL": f"https://pixabay.com/get/{id_}.jpg",
+def image_hit(id_, h=2000, tags="office desk family home rare thing x"):
+    return {"id": id_, "imageHeight": h, "tags": tags, "largeImageURL": f"https://pixabay.com/get/{id_}.jpg",
             "pageURL": f"https://pixabay.com/photos/{id_}/", "user": f"p{id_}"}
 
 
@@ -298,3 +298,16 @@ def test_blog_images_skip_empty_queries(tmp_path, monkeypatch):
     monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
     picks = StockMediaPicker(Client(), tmp_path).pick_blog_images([None, "office desk", "  "])
     assert picks[0] is None and picks[1].media_id == 1 and picks[2] is None
+
+
+def test_by_relevance_prefers_tag_matches_and_drops_unrelated():
+    hits = [image_hit(1, tags="podcast, microphone"), image_hit(2, tags="laptop, office"),
+            image_hit(3, tags="laptop, desk, workspace")]
+    assert [h["id"] for h in sm.by_relevance(hits, "laptop on desk")] == [3, 2]
+    assert sm.by_relevance(hits, "") == hits
+
+
+def test_main_subject_tags_weigh_more():
+    hits = [image_hit(1, tags="podcast, microphone, record, audio, laptop, desk"),
+            image_hit(2, tags="laptop, iphone, workspace, desk")]
+    assert [h["id"] for h in sm.by_relevance(hits, "laptop on desk")] == [2, 1]

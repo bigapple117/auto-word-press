@@ -19,6 +19,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from src.config import Settings
+from src.link_check import check_action_links
 from src.content_schema import (MasterContent, Shorts, paragraph_text, section_paragraphs,
                                 section_texts)
 from src.source_fetcher import Source
@@ -253,6 +254,12 @@ def check_content(
     used = [p for p in BANNED_PHRASES if p in joined]
     if used:
         problems.append(f"금지 표현을 다른 말로 바꿔 주세요: {', '.join(used)}")
+
+    _ok_links, bad_links = check_action_links(c.action_links, sources)
+    if bad_links:
+        warnings.append("바로가기 링크에서 뺀 것: " + " / ".join(bad_links))
+    if not _ok_links:
+        warnings.append("신청·조회 바로가기 링크가 없습니다(자료에서 공식 주소를 찾지 못함).")
 
     style_problems, style_warnings = check_style(c)
     problems += style_problems

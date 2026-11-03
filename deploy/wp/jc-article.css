@@ -44,6 +44,22 @@
   border-radius: 6px;
 }
 
+/* 신청·조회 바로가기 */
+.jc-article .jc-links { margin: 1.4em 0 1.8em; padding: 1rem 1.1rem; border: 1px solid var(--jc-line); border-radius: 8px; background: #fff; }
+.jc-article .jc-links__title { margin: 0 0 0.6em; font-weight: 700; font-size: 1rem; }
+.jc-article .jc-links ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.jc-article .jc-link {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.15rem 0.6rem;
+  padding: 0.7rem 0.9rem; border-radius: 6px; background: var(--jc-soft);
+  color: var(--jc-text); text-decoration: none; line-height: 1.5;
+}
+.jc-article .jc-link:hover, .jc-article .jc-link:focus-visible { background: #e6eef3; }
+.jc-article .jc-link__tag { padding: 0 0.5em; border-radius: 4px; font-size: 0.8125rem; font-weight: 700; color: #fff; background: var(--jc-accent); }
+.jc-article .jc-link--apply .jc-link__tag { background: #1f7a4d; }
+.jc-article .jc-link__label { font-weight: 700; }
+.jc-article .jc-link__label::after { content: " →"; color: var(--jc-accent); }
+.jc-article .jc-link__note { flex-basis: 100%; font-size: 0.875rem; color: var(--jc-muted); }
+
 /* 소제목 핵심 한 줄 */
 .jc-article .jc-summary {
   padding: 0.9rem 1.1rem;

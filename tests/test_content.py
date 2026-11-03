@@ -671,3 +671,18 @@ def test_two_timeouts_switch_to_backup_model_quickly():
     r = gen.generate("근로장려금", SOURCES, 45)
     assert [m for m, _ in client.calls] == ["main-model", "main-model", "backup-model"]
     assert r.model == "backup-model"
+
+
+def test_links_box_rendered_only_with_verified_links():
+    data = good_data()
+    data["action_links"] = [
+        {"label": "국세청 안내 보기", "url": "https://www.nts.go.kr/a", "purpose": "info", "note": "공식 안내"},
+        {"label": "가짜 신청", "url": "https://www.hometax.go.kr/made-up", "purpose": "apply"},
+    ]
+    html = render_blog_html(model(data), SOURCES)
+    assert 'class="jc-links"' in html and 'href="https://www.nts.go.kr/a"' in html
+    assert "made-up" not in html
+    _, warnings = check_content(model(data), SOURCES, 45)
+    assert any("바로가기 링크에서 뺀 것" in w for w in warnings)
+    data["action_links"] = []
+    assert 'class="jc-links"' not in render_blog_html(model(data), SOURCES)

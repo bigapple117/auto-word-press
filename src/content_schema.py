@@ -65,6 +65,13 @@ class Shorts(BaseModel):
     scenes: list[Scene] = Field(description="장면 4~8개. 첫 장면은 시선을 끄는 질문이나 핵심 숫자")
 
 
+class ActionLink(BaseModel):
+    label: str = Field(description="버튼 글자. 예: '홈택스에서 신청하기', '국세청 근로장려금 안내 보기'")
+    url: str = Field(description="[자료]의 주소 또는 [자료] 본문에 적힌 공식 사이트 주소만. 지어내기 금지")
+    purpose: Literal["apply", "check", "info"] = Field(description="apply=신청, check=자격·결과 조회, info=공식 안내")
+    note: str | None = Field(default=None, description="한 줄 설명(선택). 예: '평일 9~18시 상담 가능'")
+
+
 class MasterContent(BaseModel):
     title: str = Field(description="블로그 제목 25~45자, 핵심 검색어를 앞쪽에. '총정리'·'한눈에' 같은 상투어 금지")
     slug: str = Field(description="영문 소문자와 하이픈만 쓴 주소용 이름")
@@ -73,6 +80,8 @@ class MasterContent(BaseModel):
     reference_note: str = Field(description="정보 기준 시점 설명. 예: '2026년 정기신청(2025년 소득) 기준'")
     intro: list[Paragraph] = Field(description=(
         "도입 문단 1~2개. 제도 정의로 시작하지 말고 독자가 확인하려는 문제와 이 글에서 다룰 범위를 먼저"))
+    action_links: list[ActionLink] = Field(default_factory=list, description=(
+        "독자가 바로 신청·조회할 수 있는 공식 사이트 1~4개. 도입부 아래 '바로가기' 상자로 보인다"))
     sections: list[Section] = Field(description="본문 소제목 4~6개")
     faq: list[Faq] = Field(description="본문에서 다루지 않은 궁금증 2~4개")
     closing: Paragraph = Field(description="마무리 1문단. 본문 요약 반복 금지, 다음 행동(확인처·신청처)을 안내")

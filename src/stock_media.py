@@ -223,6 +223,31 @@ def prune_cache(media_dir: Path, max_bytes: int = MEDIA_CACHE_MAX_BYTES, keep: s
     return freed
 
 
+_STOP = {"a", "an", "the", "and", "of", "on", "in", "with", "for", "to", "at"}
+
+
+def by_relevance(hits: Sequence[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """태그에 검색어 단어가 많이 든 결과를 앞으로(Pixabay 기본 순서는 인기순이라 엉뚱한 것이 먼저 올 수 있음)."""
+    words = {w for w in re.findall(r"[a-z]+", (query or "").lower()) if w not in _STOP}
+    if not words:
+        return list(hits)
+
+    def score(h: dict[str, Any]) -> int:
+        # Pixabay 태그는 앞쪽일수록 사진의 주인공 → 앞 3개 태그에 맞으면 3점, 나머지 태그는 1점
+        tag_list = [t.strip().lower() for t in str(h.get("tags", "")).split(",") if t.strip()]
+        head = set(re.findall(r"[a-z]+", " ".join(tag_list[:3])))
+        rest = set(re.findall(r"[a-z]+", " ".join(tag_list[3:])))
+        total = 0
+        for w in words:
+            forms = {w, w.rstrip("s")}
+            total += 3 if forms & head else (1 if forms & rest else 0)
+        return total
+
+    scored = [(score(h), i, h) for i, h in enumerate(hits)]
+    matched = [x for x in scored if x[0] > 0]
+    return [h for _s, _i, h in sorted(matched, key=lambda x: (-x[0], x[1]))]   # 태그가 하나도 안 맞으면 쓰지 않음
+
+
 def choose_video(hits: Sequence[dict[str, Any]], exclude: set[int]) -> tuple[dict, str] | None:
     """(결과, 화질 이름). 세로 영상 우선, 없으면 큰 가로 영상."""
     portrait, landscape = [], []
@@ -323,7 +348,7 @@ class StockMediaPicker:
         hits = self.client.search_videos(query)
         skip = set(used)
         for _ in range(MAX_VIDEO_TRIES):
-            found = choose_video(hits, skip)
+            found = choose_video(by_relevance(hits, query), skip)
             if not found:
                 return None
             hit, variant = found
@@ -345,7 +370,7 @@ class StockMediaPicker:
         hits = self.client.search_images(query, orientation)
         skip = set(used)
         for _ in range(MAX_VIDEO_TRIES):
-            hit = choose_image(hits, skip, min_height=1600 if orientation == "vertical" else 900)
+            hit = choose_image(by_relevance(hits, query), skip, min_height=1600 if orientation == "vertical" else 900)
             if not hit:
                 return None
             ext = Path(urlparse(hit["largeImageURL"]).path).suffix.lower() or ".jpg"

@@ -11,6 +11,7 @@ from typing import Mapping, Sequence
 from urllib.parse import urlparse
 
 from src.content_schema import Block, MasterContent, Paragraph, Table
+from src.link_check import CheckedLink, check_action_links
 from src.source_fetcher import Source
 
 
@@ -85,6 +86,23 @@ def _note(b: Block) -> str:
     return f'<p class="jc-note jc-note--{kind}"><span class="jc-note__label">{label}</span> {inner}</p>'
 
 
+_PURPOSE_LABEL = {"apply": "신청", "check": "조회", "info": "안내"}
+
+
+def _links_box(links: Sequence[CheckedLink]) -> str:
+    """도입부 아래 '신청·조회 바로가기' 상자. 주소는 검증을 통과한 공식 주소만 온다."""
+    if not links:
+        return ""
+    items = []
+    for link in links:
+        note = f'<span class="jc-link__note">{escape(link.note)}</span>' if link.note else ""
+        items.append(
+            f'<li><a class="jc-link jc-link--{escape(link.purpose)}" href="{escape(link.url, quote=True)}" '
+            f'target="_blank" rel="noopener"><span class="jc-link__tag">{_PURPOSE_LABEL.get(link.purpose, "안내")}</span>'
+            f'<span class="jc-link__label">{escape(link.label)}</span>{note}</a></li>')
+    return f'<nav class="jc-links" aria-label="신청·조회 바로가기"><p class="jc-links__title">신청·조회 바로가기</p><ul>{"".join(items)}</ul></nav>'
+
+
 def _block(b: Block, table_index: int) -> str:
     if b.type == "paragraph":
         return _paragraph(b.paragraph)
@@ -129,6 +147,9 @@ def render_blog_html(
     out: list[str] = ['<div class="jc-article">']
     out += [_paragraph(p) for p in content.intro]
     out.append(f'<p class="jc-reference">기준: {escape(content.reference_note)}</p>')
+    links, _rejected = check_action_links(content.action_links, sources)
+    if links:
+        out.append(_links_box(links))
 
     table_index = 0
     for i, s in enumerate(content.sections):
