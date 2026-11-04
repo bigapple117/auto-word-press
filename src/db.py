@@ -353,6 +353,19 @@ def stale_publishing(conn: sqlite3.Connection, older_than_seconds: int) -> list[
             if datetime.fromisoformat(r["updated_at"]).timestamp() < cutoff]
 
 
+def requeue_busy(conn: sqlite3.Connection, job_id: int, note: str) -> bool:
+    """글 쓰는 단계(generating)에서 모델이 바빠 멈춘 작업을 한 번에 대기열로 되돌린다.
+
+    체크포인트·글 번호는 그대로 둔다. 다른 상태면 아무것도 바꾸지 않고 False.
+    """
+    with _write(conn):
+        cur = conn.execute(
+            "UPDATE jobs SET status = 'queued', error = ?, updated_at = ? WHERE id = ? AND status = 'generating'",
+            (note, _now(), job_id),
+        )
+        return cur.rowcount == 1
+
+
 def recover_interrupted(conn: sqlite3.Connection) -> list[int]:
     """실행기가 멈췄다가 다시 켜질 때 한 번 부른다. 다른 실행기가 돌고 있을 때는 부르면 안 된다.
 

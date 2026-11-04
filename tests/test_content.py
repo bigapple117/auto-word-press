@@ -4,7 +4,7 @@ import pytest
 from google.genai import errors as genai_errors
 
 from src import source_fetcher
-from src.ai_generator import ContentGenerator, GenerationError, check_content
+from src.ai_generator import ContentGenerator, GenerationError, ModelBusyError, check_content
 from src.blog_html import SectionImage, render_blog_html
 from src.content_schema import MasterContent
 from src.source_fetcher import Source, SourceError, fetch_source, html_to_text
@@ -155,10 +155,22 @@ def test_generate_success_first_try():
     assert len(client.calls) == 1
 
 
-def test_transient_errors_retry_then_fallback_model():
-    gen, client = make_gen([api_error(503), api_error(503), api_error(429), json.dumps(good_data())])
+def test_transient_errors_retry_then_succeed_on_main_model():
+    gen, client = make_gen([api_error(503), api_error(429), json.dumps(good_data())])
     r = gen.generate("근로장려금", SOURCES, 45)
-    assert [m for m, _ in client.calls] == ["main-model"] * 3 + ["backup-model"]
+    assert [m for m, _ in client.calls] == ["main-model"] * 3 and r.model == "main-model"
+
+
+def test_busy_main_model_never_falls_back_for_blog():
+    gen, client = make_gen([api_error(503)] * 3)
+    with pytest.raises(ModelBusyError):
+        gen.generate("근로장려금", SOURCES, 45)
+    assert {m for m, _ in client.calls} == {"main-model"}
+
+
+def test_blog_fallback_option_still_available():
+    gen, client = make_gen([api_error(503)] * 3 + [json.dumps(good_data())], blog_fallback=True)
+    r = gen.generate("근로장려금", SOURCES, 45)
     assert r.model == "backup-model"
 
 
@@ -666,11 +678,17 @@ def test_table_repeat_keeps_sign():
     assert table_repeated_in_text(rows, ["가는 100원입니다. 나는 200원입니다. 다는 300원입니다."]) is False
 
 
-def test_two_timeouts_switch_to_backup_model_quickly():
+def test_two_timeouts_give_up_quickly_as_busy():
     gen, client = make_gen([api_error(504), api_error(504), json.dumps(good_data())])
+    with pytest.raises(ModelBusyError):
+        gen.generate("근로장려금", SOURCES, 45)
+    assert [m for m, _ in client.calls] == ["main-model", "main-model"]
+
+
+def test_two_timeouts_switch_to_backup_when_fallback_allowed():
+    gen, client = make_gen([api_error(504), api_error(504), json.dumps(good_data())], blog_fallback=True)
     r = gen.generate("근로장려금", SOURCES, 45)
     assert [m for m, _ in client.calls] == ["main-model", "main-model", "backup-model"]
-    assert r.model == "backup-model"
 
 
 def test_links_box_rendered_only_with_verified_links():

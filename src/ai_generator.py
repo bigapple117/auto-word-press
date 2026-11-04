@@ -53,6 +53,10 @@ class GenerationError(RuntimeError):
     """여러 번 시도해도 쓸 만한 결과를 못 얻었을 때."""
 
 
+class ModelBusyError(GenerationError):
+    """모델이 계속 바쁘거나 한도에 걸려(일시 오류) 지금은 못 씀 → 실행기가 잠시 뒤 다시 시도한다."""
+
+
 @dataclass
 class GenerationResult:
     content: MasterContent
@@ -317,9 +321,13 @@ class ContentGenerator:
         fallback_model: str | None = DEFAULT_FALLBACK_MODEL,
         sleep: Callable[[float], None] = time.sleep,
         retry_waits: Sequence[float] = RETRY_WAITS,
+        blog_fallback: bool = False,
     ) -> None:
         self.client = client
         self.models = [m for m in (model, fallback_model) if m]
+        # 블로그 본문은 기본 모델로만 쓴다(예비 모델 글은 짧고 얕아 품질 검사를 자주 못 넘음).
+        # 예비 모델은 쇼츠 대본 고쳐 쓰기처럼 가벼운 일에만 쓴다.
+        self.blog_models = self.models if blog_fallback else self.models[:1]
         self.sleep = sleep
         self.retry_waits = tuple(retry_waits)
 
@@ -349,10 +357,11 @@ class ContentGenerator:
             raise GenerationError("모델이 빈 응답을 돌려줬습니다")
         return text
 
-    def _call_with_retry(self, prompt: str, **call_kwargs) -> tuple[str, str]:
-        """(응답 글자, 실제 쓴 모델). 모든 모델이 일시적 오류로 실패하면 GenerationError."""
+    def _call_with_retry(self, prompt: str, models: Sequence[str] | None = None,
+                         **call_kwargs) -> tuple[str, str]:
+        """(응답 글자, 실제 쓴 모델). 모든 모델이 일시적 오류로 실패하면 ModelBusyError."""
         last: Exception | None = None
-        for model in self.models:
+        for model in models or self.models:
             timeouts = 0
             for attempt in range(len(self.retry_waits) + 1):
                 try:
@@ -371,7 +380,7 @@ class ContentGenerator:
                         log.warning("%s 일시 오류(%s), %s초 후 재시도", model, exc, wait)
                         self.sleep(wait)
             log.warning("%s 계속 실패, 다음 모델로 넘어감", model)
-        raise GenerationError(f"모든 모델이 일시적 오류로 실패했습니다: {last}")
+        raise ModelBusyError(f"모든 모델이 일시적 오류로 실패했습니다: {last}")
 
     def generate(
         self, topic: str, sources: Sequence[Source], target_seconds: int = 45,
@@ -383,7 +392,7 @@ class ContentGenerator:
         last_problems: list[str] = []
         for round_no in range(1, MAX_QUALITY_ROUNDS + 1):
             prompt = build_prompt(topic, sources, target_seconds, feedback=feedback, news=news)
-            raw, model = self._call_with_retry(prompt)
+            raw, model = self._call_with_retry(prompt, models=self.blog_models)
             try:
                 content = MasterContent.model_validate_json(raw)
             except ValidationError as exc:

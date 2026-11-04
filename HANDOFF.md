@@ -244,3 +244,10 @@
 - 사이트 아이콘: `assets/brand/site-icon.png`(초록 바탕 "잘" + 체크) 미디어 51, site_icon 설정 → 파비콘·구조화 데이터 logo에 쓰임
 - 검증: /, /about/, /contact/, /privacy-policy/, /category/support-tax/ 모두 200, 화면 캡처로 메뉴 확인. 이메일은 Cloudflare 이메일 보호로 페이지 원문에서 가려지고 브라우저에서만 보임(스팸 수집 방지, 정상)
 - 남은 작업: 35번 글 발행 결정 → 기본 글 "안녕하세요!" 삭제, 글 5~10개 쌓은 뒤 검색엔진 차단 해제 + 서치 콘솔 등록
+
+## 2026-11-04 모델 바쁨 → 30분 뒤 자동 재시도(예비 모델로 블로그 안 씀)
+- 지시자: 사용자(1번 승인) / 작업자: Claude / 검토자: Codex(2회, 지적 반영: 되돌리기 한 트랜잭션·DB 실패 시 다음 차례 재시도·generating 단계만)
+- 원인: 주제 10개 첫 작업(2번) 중 gemini-3.8-flash가 503 연속 → 예비 모델(flash-lite)이 954~1,056자로 짧게 써 3회 불합격 → 실패
+- 변경: ai_generator `ModelBusyError`, 블로그 본문은 기본 모델로만(blog_fallback=False, 쇼츠 고쳐 쓰기는 예비 모델 허용). orchestrator가 ModelBusyError면 `db.requeue_busy`(generating→queued 한 번에)로 되돌리고 30분(BUSY_WAIT_SECONDS) 새 작업 쉼, 텔레그램 알림은 바쁨 구간당 1회
+- 검증: 시험 248개 통과(바쁨→대기→재시도, DB 실패 복구, generating 외 거절). 실행기 재시작, 2번 retry
+- 대기열: 작업 2~11(주제 10개, 2026-11-04 등록). 발행은 하루 1~2개 권장(사용자 합의)

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import sqlite3
 import pytest
 
 from src import db
@@ -399,3 +400,63 @@ def test_draft_gets_tags_editorial_box_and_alt(env):
     html = svc.wp.drafts[job_id][1]
     assert 'class="jc-editorial"' in html and "자료 확인일:" in html and 'href="/about/"' in html
     assert svc.wp.tag_names[0] == good_data()["focus_keyword"] and svc.wp.last_tags
+
+
+def test_busy_model_requeues_and_pauses_queue(env):
+    from src.ai_generator import ModelBusyError
+    from src.orchestrator import BUSY_WAIT_SECONDS
+    orch, svc, conn, _ = env
+    now = [1000.0]
+    orch.clock = lambda: now[0]
+    real = svc.generator.generate
+    state = {"busy": 2}
+
+    def generate(*a, **kw):
+        if state["busy"]:
+            state["busy"] -= 1
+            raise ModelBusyError("503")
+        return real(*a, **kw)
+
+    svc.generator.generate = generate
+    first = db.create_job(conn, "A")
+    second = db.create_job(conn, "B")
+    assert orch.run_once() == first
+    job = db.get_job(conn, first)
+    assert job["status"] == "queued" and "자동 재시도" in job["error"]
+    assert orch.run_once() is None and db.get_job(conn, second)["status"] == "queued"   # 쉬는 중
+    now[0] += BUSY_WAIT_SECONDS + 1
+    assert orch.run_once() == first and db.get_job(conn, first)["status"] == "queued"  # 또 바쁨
+    assert sum("붐벼서" in t for t in svc.telegram.texts) == 1                          # 알림은 한 번만
+    now[0] += BUSY_WAIT_SECONDS + 1
+    orch.run_once()
+    assert db.get_job(conn, first)["status"] == "awaiting_approval"
+    assert not any("실패" in t for t in svc.telegram.texts)
+
+
+def test_busy_requeue_db_failure_is_retried_before_next_claim(env, monkeypatch):
+    from src.ai_generator import ModelBusyError
+    orch, svc, conn, _ = env
+    svc.generator.generate = lambda *a, **k: (_ for _ in ()).throw(ModelBusyError("503"))
+    job_id = db.create_job(conn, "A")
+    real = db.requeue_busy
+    state = {"fail": True}
+
+    def flaky(c, jid, note):
+        if state["fail"]:
+            raise sqlite3.OperationalError("locked")
+        return real(c, jid, note)
+
+    monkeypatch.setattr(db, "requeue_busy", flaky)
+    orch.run_once()
+    assert db.get_job(conn, job_id)["status"] == "generating" and job_id in orch._pending_requeue
+    state["fail"] = False
+    orch.run_once()
+    assert db.get_job(conn, job_id)["status"] == "queued" and not orch._pending_requeue
+
+
+def test_requeue_busy_only_from_generating(env):
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "A")
+    assert db.requeue_busy(conn, job_id, "x") is False          # queued 상태면 안 바뀜
+    db.claim_next(conn)
+    assert db.requeue_busy(conn, job_id, "x") is True

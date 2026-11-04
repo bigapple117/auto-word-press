@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from src import db
+from src.ai_generator import ModelBusyError
 from src.content_schema import MasterContent
 from src.pipeline import (PipelineError, Services, make_content, make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
@@ -34,14 +35,20 @@ from src.wp_client import WPError
 log = logging.getLogger(__name__)
 
 IDLE_SECONDS = 15
+BUSY_WAIT_SECONDS = 30 * 60     # 글 쓰는 모델이 바쁠 때 대기열 전체를 쉬는 시간
 POLL_WAIT_SECONDS = 25
 NAMES = {"publish": "발행", "hold": "보류", "cancel": "취소"}
 
 
 class Orchestrator:
-    def __init__(self, conn: sqlite3.Connection, services: Services) -> None:
+    def __init__(self, conn: sqlite3.Connection, services: Services,
+                 clock=time.monotonic) -> None:
         self.conn = conn
         self.svc = services
+        self.clock = clock
+        self.busy_until = 0.0                     # 모델이 바빠 쉬는 중이면 이 시각까지 새 작업을 안 가져감
+        self._busy_notified = False
+        self._pending_requeue: dict[int, tuple[dict[str, Any], Exception, str]] = {}  # 대기열 되돌리기 기록에 실패한 작업 → 다음 작업 전에 다시
         self._unrecorded: dict[int, str] = {}     # 실패 기록에 실패한 작업 → 다음 작업 전에 다시 기록
 
     # ---------- 작업 처리 ----------
@@ -106,21 +113,54 @@ class Orchestrator:
         for job_id, message in list(self._unrecorded.items()):
             db.set_status(self.conn, job_id, "failed", error=message)   # 실패하면 예외 → 루프가 잠시 뒤 재시도
             del self._unrecorded[job_id]
+        for job_id, (job, exc, note) in list(self._pending_requeue.items()):
+            requeued = db.requeue_busy(self.conn, job_id, note)         # 실패하면 예외 → 루프가 잠시 뒤 재시도
+            del self._pending_requeue[job_id]
+            if not requeued:                                             # 글 쓰는 단계가 아니었음 → 보통 실패로
+                self._record_failure(job, exc)
+        if self.clock() < self.busy_until:
+            return None
         job = db.claim_next(self.conn)
         if job is None:
             return None
         try:
             self.process(job)
+            self._busy_notified = False
+        except ModelBusyError as exc:
+            if not self._requeue_busy(job, exc):
+                self._record_failure(job, exc)
         except Exception as exc:  # noqa: BLE001 - 어떤 실패든 장부에 남기고 알린다
-            log.exception("작업 %s번 실패", job["id"])
-            message = f"{exc.__class__.__name__}: {exc}"[:500]
-            try:
-                db.set_status(self.conn, job["id"], "failed", error=message)
-            except Exception:  # noqa: BLE001 - 다음 작업을 가져오기 전에 다시 기록한다
-                log.exception("작업 %s번 실패 기록 실패(다음 차례에 다시 기록)", job["id"])
-                self._unrecorded[job["id"]] = message
-            self._notify(f"[작업 {job['id']}] 실패: {job['topic']}\n{message}\n다시 하려면: jobctl retry {job['id']}")
+            self._record_failure(job, exc)
         return job["id"]
+
+    def _record_failure(self, job: dict[str, Any], exc: Exception) -> None:
+        log.error("작업 %s번 실패", job["id"], exc_info=exc)
+        message = f"{exc.__class__.__name__}: {exc}"[:500]
+        try:
+            db.set_status(self.conn, job["id"], "failed", error=message)
+        except Exception:  # noqa: BLE001 - 다음 작업을 가져오기 전에 다시 기록한다
+            log.exception("작업 %s번 실패 기록 실패(다음 차례에 다시 기록)", job["id"])
+            self._unrecorded[job["id"]] = message
+        self._notify(f"[작업 {job['id']}] 실패: {job['topic']}\n{message}\n다시 하려면: jobctl retry {job['id']}")
+
+    def _requeue_busy(self, job: dict[str, Any], exc: Exception) -> bool:
+        """글 쓰는 모델이 바쁘면 실패로 끝내지 않고 대기열로 되돌린 뒤, 정해진 시간 동안 새 작업을 쉰다.
+        글 쓰는 단계(generating)가 아니면 False → 보통 실패로 기록한다."""
+        minutes = BUSY_WAIT_SECONDS // 60
+        note = f"모델 바쁨, {minutes}분 뒤 자동 재시도"
+        try:
+            if not db.requeue_busy(self.conn, job["id"], note):
+                return False
+        except Exception:  # noqa: BLE001 - 다음 작업을 가져오기 전에 다시 되돌린다
+            log.exception("작업 %s번 대기열 되돌리기 실패(다음 차례에 다시)", job["id"])
+            self._pending_requeue[job["id"]] = (job, exc, note)
+        log.warning("작업 %s번: 글 쓰는 모델이 바빠 %s분 뒤 다시 시도(%s)", job["id"], minutes, exc)
+        self.busy_until = self.clock() + BUSY_WAIT_SECONDS
+        if not self._busy_notified:
+            self._busy_notified = True
+            self._notify(f"[작업 {job['id']}] 구글 Gemini가 붐벼서 글을 못 썼습니다. {minutes}분마다 자동으로 다시 "
+                         "시도합니다(예비 모델로 대충 쓰지 않음). 따로 하실 일은 없습니다.")
+        return True
 
     def _notify(self, text: str) -> None:
         try:
