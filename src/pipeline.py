@@ -11,6 +11,8 @@ import logging
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -150,15 +152,19 @@ def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list
         if not pick:
             continue
         fitted = normalize_blog_image(Path(pick["file"]), svc.settings.data_dir / "media_cache" / "blog")
-        up = svc.wp.upload_media(fitted, job_id, i, alt=section.heading, caption=pick["credit"])
+        alt = (section.image_alt or section.heading).strip()
+        up = svc.wp.upload_media(fitted, job_id, i, alt=alt, caption=pick["credit"])
         if featured is None:
             featured = up.id
             continue
-        images[i] = SectionImage(up.url, section.heading, f"사진: {pick['credit']}", pick["page"],
+        images[i] = SectionImage(up.url, alt, f"사진: {pick['credit']}", pick["page"],
                                  width=w, height=h, media_id=up.id)
-    html = render_blog_html(content, sources, images)
+    checked_on = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %-m월 %-d일")
+    html = render_blog_html(content, sources, images, checked_on=checked_on)
+    tag_ids = svc.wp.ensure_tags([content.focus_keyword, *content.tags][:5])
     post = svc.wp.save_draft(job_id, content.title, html, slug=content.slug,
-                             excerpt=content.meta_description, featured_media=featured, post_id=post_id)
+                             excerpt=content.meta_description, featured_media=featured, post_id=post_id,
+                             tags=tag_ids)
     return {"post_id": post.id, "status": post.status, "link": post.link, "featured": featured}
 
 

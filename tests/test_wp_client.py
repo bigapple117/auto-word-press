@@ -26,10 +26,17 @@ class FakeWP:
         self.next_id = 100
         self.calls = []
         self.page_size = 100
+        self.tags = [{"id": 1, "name": "자녀장려금 신청"}]
 
     def request(self, method, url, auth=None, params=None, json=None, data=None, headers=None, **kw):
         path = url.split("/wp-json/wp/v2", 1)[1]
         self.calls.append((method, path, params, json, headers, auth))
+        if path == "/tags" and method == "GET":
+            return self._page([t for t in self.tags if params["search"] in t["name"]], params)
+        if path == "/tags" and method == "POST":
+            t = {"id": 700 + len(self.tags), "name": json["name"]}
+            self.tags.append(t)
+            return FakeResp(201, t)
         if path == "/users/me":
             return FakeResp(200, {"id": 1, "name": "관리자", "roles": ["administrator"],
                                   "capabilities": {"publish_posts": True}})
@@ -270,3 +277,12 @@ def test_delete_job_media_only_exact_names(wp, tmp_path):
     fake.media[4] = {"url": "https://jalcheck.com/u/jcjob-7-photo.jpg"}
     assert sorted(client.delete_job_media(7)) == [1, 2]
     assert sorted(fake.media) == [3, 4]
+
+
+def test_ensure_tags_exact_match_and_create(wp):
+    client, fake = wp
+    ids = client.ensure_tags(["자녀장려금", "자녀장려금", " 홈택스 ", ""])
+    assert len(ids) == 2 and [t["name"] for t in fake.tags] == ["자녀장려금 신청", "자녀장려금", "홈택스"]
+    assert client.ensure_tags(["자녀장려금 신청"]) == [1]
+    post = client.save_draft(3, "t", "<p>x</p>", tags=ids)
+    assert fake.posts[post.id]["tags"] == ids

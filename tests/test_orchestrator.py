@@ -79,7 +79,12 @@ class FakeWP:
         self.uploads.append((job_id, index))
         return WPMedia(100 + index, f"https://jalcheck.com/wp-content/uploads/jcjob-{job_id}-{index}.jpg")
 
-    def save_draft(self, job_id, title, html, slug="", excerpt="", featured_media=None, post_id=None):
+    def ensure_tags(self, names):
+        self.tag_names = list(names)
+        return [900 + i for i, _ in enumerate(names)]
+
+    def save_draft(self, job_id, title, html, slug="", excerpt="", featured_media=None, post_id=None, tags=None):
+        self.last_tags = tags
         pid = post_id or self.drafts.get(job_id, (500 + job_id,))[0]
         self.drafts[job_id] = (pid, html)
         return WPPost(pid, "draft", f"https://jalcheck.com/?p={pid}")
@@ -385,3 +390,12 @@ def test_redo_clears_checkpoints_keeps_post(env):
     job = db.get_job(conn, job_id)
     assert svc.generator.calls == 2 and job["post_id"] == old_post and job["status"] == "awaiting_approval"
     assert "지난 승인 요청" in orch.handle_decision(decision(job_id, "publish", old_nonce))
+
+
+def test_draft_gets_tags_editorial_box_and_alt(env):
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "주제")
+    orch.run_once()
+    html = svc.wp.drafts[job_id][1]
+    assert 'class="jc-editorial"' in html and "자료 확인일:" in html and 'href="/about/"' in html
+    assert svc.wp.tag_names[0] == good_data()["focus_keyword"] and svc.wp.last_tags

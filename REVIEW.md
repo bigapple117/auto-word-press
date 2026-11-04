@@ -163,3 +163,13 @@
 3차 **PASS**
 - 검증: pytest 234개(오케스트레이터 15개: 전체 흐름·재발행·nonce·보류/취소·실패 재시도·발행 실패 복구·블로그만·재시작·원자 nonce·장부 실패 재조정·불확실 발행·answer 실패·실패 기록 재시도)
 - 미검증: 실제 작업 1건 처리 중(Gemini 503 재시도), 상시 실행(systemd) 미적용
+
+---
+
+# 2026-11-04 SEO mu-plugin 검토 기록 (작성: Claude, 검토: Codex — codex-consult 코드 전달)
+
+대상: deploy/wp/mu-plugins/jalcheck-seo.php(→ /var/www/html/wp-content/mu-plugins/)
+1차 **CHANGES_REQUESTED** → 반영: 비공개·임시 글 미리보기·비밀번호 글에서 메타 출력(공개 글만으로 제한), 작성자 타입(단일 조직 명의 계정이라 Organization 유지, url은 작성자 페이지), 별도 글 목록에서 og:url 홈 출력(is_front_page && !is_paged), SEO 플러그인 감지 확대+비활성화 필터
+- 확인: 속성 이스케이프·JSON-LD </script> 차단 정상, WP7 mb_* 대체 구현 있음, 기본 코어·TT5와 중복 출력 없음
+2차 **PASS**
+- 검증: php -l, 실제 첫 화면(WebSite)·글(Article) 출력 확인

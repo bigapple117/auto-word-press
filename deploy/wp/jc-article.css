@@ -141,6 +141,12 @@
 .jc-article figure.wp-block-image img { width: 100%; height: auto; border-radius: 6px; }
 .jc-article figure.wp-block-image figcaption { margin-top: 0.4em; font-size: 0.8125rem; color: var(--jc-muted); text-align: right; }
 
+/* 편집 기준 상자 */
+.jc-article .jc-editorial { margin: 2em 0 0; padding: 1rem 1.1rem; border: 1px dashed var(--jc-line); border-radius: 8px; font-size: 0.9375rem; color: var(--jc-muted); }
+.jc-article .jc-editorial__title { margin: 0 0 0.3em; font-weight: 700; color: var(--jc-text); }
+.jc-article .jc-editorial p:last-child { margin-bottom: 0; }
+.jc-article .jc-editorial a { color: var(--jc-accent); }
+
 /* 자주 묻는 질문, 마무리, 참고 자료 */
 .jc-article .jc-faq-q { margin-top: 1.4em; }
 .jc-article .jc-closing { margin-top: 2em; padding-top: 1.2em; border-top: 1px solid var(--jc-line); }

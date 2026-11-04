@@ -167,8 +167,27 @@ class WordPressClient:
                 return WPPost(p["id"], p["status"], p.get("link", ""))
         return self.find_post_by_job(job_id)
 
+    def ensure_tags(self, names: list[str]) -> list[int]:
+        """이름이 정확히 같은 태그를 찾고, 없으면 만든다. 태그 번호 목록."""
+        ids: list[int] = []
+        for name in dict.fromkeys(n.strip()[:40] for n in names if n and n.strip()):
+            found = [t for t in self._get_all("/tags", {"search": name, "_fields": "id,name"}) if t["name"] == name]
+            if found:
+                ids.append(found[0]["id"])
+                continue
+            try:
+                ids.append(self._request("POST", "/tags", json={"name": name})["id"])
+            except WPError as exc:
+                if exc.code == "term_exists":     # 동시에 만들어진 경우
+                    found = [t for t in self._get_all("/tags", {"search": name, "_fields": "id,name"}) if t["name"] == name]
+                    ids += [found[0]["id"]] if found else []
+                else:
+                    raise
+        return ids
+
     def save_draft(self, job_id: int, title: str, html: str, slug: str = "", excerpt: str = "",
-                   featured_media: int | None = None, post_id: int | None = None) -> WPPost:
+                   featured_media: int | None = None, post_id: int | None = None,
+                   tags: list[int] | None = None) -> WPPost:
         """임시 글로 저장한다. 이 작업의 기존 글이 있으면 그 글을 고친다.
 
         - 이미 발행된 글은 고치지 않는다.
@@ -186,6 +205,8 @@ class WordPressClient:
                 body["slug"] = slug
             if featured_media:
                 body["featured_media"] = featured_media
+            if tags:
+                body["tags"] = tags
             if existing:
                 data = self._request("POST", f"/posts/{existing.id}", json=body)
             else:

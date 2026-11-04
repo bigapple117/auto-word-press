@@ -136,10 +136,25 @@ def _image(img: SectionImage) -> str:
     )
 
 
+ABOUT_PATH = "/about/"
+
+
+def _editorial_box(checked_on: str | None) -> str:
+    """글 끝 '편집 기준' 상자(신뢰 정보). 지어낸 경험 대신 확인 방법을 투명하게 밝힌다."""
+    when = f" 자료 확인일: {escape(checked_on)}." if checked_on else ""
+    return (
+        '<aside class="jc-editorial" aria-label="편집 기준"><p class="jc-editorial__title">잘체크 편집 기준</p>'
+        "<p>이 글은 정부·공공기관의 공식 안내 자료를 직접 확인해 정리했습니다." + when +
+        " 제도는 바뀔 수 있고 개인 상황에 따라 결과가 다를 수 있으니, 신청 전에 담당 기관에서 최종 확인하세요. "
+        f'<a href="{ABOUT_PATH}">잘체크 소개와 편집 원칙 보기</a></p></aside>'
+    )
+
+
 def render_blog_html(
     content: MasterContent,
     sources: Sequence[Source],
     images: Mapping[int, SectionImage] | None = None,
+    checked_on: str | None = None,
 ) -> str:
     """본문 HTML(제목 제외)을 돌려준다. images 키는 소제목 번호(0부터).
 
@@ -184,5 +199,6 @@ def render_blog_html(
             for s in cited
         )
         out.append(f'<h2>참고 자료</h2><ul class="jc-sources">{items}</ul>')
+    out.append(_editorial_box(checked_on))
     out.append("</div>")
     return "\n".join(out)

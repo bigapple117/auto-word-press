@@ -41,6 +41,8 @@ class Section(BaseModel):
         "이 소제목에서 가장 중요한 해석이나 주의점 한 문장. 정말 필요한 소제목에만(글 전체 2~3곳)"))
     blocks: list[Block] = Field(description="이 소제목의 내용 블록 1~5개. 필요한 것만, 순서 자유")
     source_ids: list[str] = Field(description="이 소제목의 사실 근거가 된 자료 번호(S1 등)")
+    image_alt: str | None = Field(default=None, description=(
+        "image_query를 쓸 때 사진 대체 텍스트. 사진에 보일 장면을 한국어로 구체적으로(예: '노트북으로 서류를 확인하는 손')"))
     image_query: str | None = Field(default=None, description=(
         "사진이 이해를 도울 때만 영어 검색어 2~4단어. 글 전체에서 최대 2곳, 나머지는 null. "
         "특정 나라 지폐, 달력, 국기, 글자가 보이는 장면은 피한다"))
@@ -77,6 +79,7 @@ class MasterContent(BaseModel):
     slug: str = Field(description="영문 소문자와 하이픈만 쓴 주소용 이름")
     meta_description: str = Field(description="검색 결과 설명 80~150자")
     focus_keyword: str = Field(description="핵심 검색어 하나")
+    tags: list[str] = Field(default_factory=list, description="글 태그 2~4개(짧은 명사, 예: '자녀장려금', '홈택스')")
     reference_note: str = Field(description="정보 기준 시점 설명. 예: '2026년 정기신청(2025년 소득) 기준'")
     intro: list[Paragraph] = Field(description=(
         "도입 문단 1~2개. 제도 정의로 시작하지 말고 독자가 확인하려는 문제와 이 글에서 다룰 범위를 먼저"))
