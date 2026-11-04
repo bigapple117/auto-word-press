@@ -76,7 +76,7 @@ class ActionLink(BaseModel):
 
 class MasterContent(BaseModel):
     title: str = Field(description="블로그 제목 25~45자, 핵심 검색어를 앞쪽에. '총정리'·'한눈에' 같은 상투어 금지")
-    slug: str = Field(description="영문 소문자와 하이픈만 쓴 주소용 이름")
+    slug: str = Field(description="주소용 이름. 주제를 영어 단어로 옮겨 영문 소문자·숫자·하이픈만 쓴다(한글 금지). 예: 2026-year-end-tax-preview")
     meta_description: str = Field(description="검색 결과 설명 80~150자")
     focus_keyword: str = Field(description="핵심 검색어 하나")
     tags: list[str] = Field(default_factory=list, description="글 태그 2~4개(짧은 명사, 예: '자녀장려금', '홈택스')")
