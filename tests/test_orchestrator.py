@@ -404,7 +404,7 @@ def test_draft_gets_tags_editorial_box_and_alt(env):
 
 def test_busy_model_requeues_and_pauses_queue(env):
     from src.ai_generator import ModelBusyError
-    from src.orchestrator import BUSY_WAIT_SECONDS
+    from src.orchestrator import BUSY_WAITS
     orch, svc, conn, _ = env
     now = [1000.0]
     orch.clock = lambda: now[0]
@@ -424,13 +424,41 @@ def test_busy_model_requeues_and_pauses_queue(env):
     job = db.get_job(conn, first)
     assert job["status"] == "queued" and "자동 재시도" in job["error"]
     assert orch.run_once() is None and db.get_job(conn, second)["status"] == "queued"   # 쉬는 중
-    now[0] += BUSY_WAIT_SECONDS + 1
+    now[0] += BUSY_WAITS[0] + 1
     assert orch.run_once() == first and db.get_job(conn, first)["status"] == "queued"  # 또 바쁨
     assert sum("붐벼서" in t for t in svc.telegram.texts) == 1                          # 알림은 한 번만
-    now[0] += BUSY_WAIT_SECONDS + 1
+    assert "60분" in db.get_job(conn, first)["error"]                                  # 두 번째는 더 오래 쉼
+    now[0] += BUSY_WAITS[0] + 1
+    assert orch.run_once() is None                                                     # 아직 1시간 안 됨
+    now[0] += BUSY_WAITS[1]
     orch.run_once()
     assert db.get_job(conn, first)["status"] == "awaiting_approval"
-    assert not any("실패" in t for t in svc.telegram.texts)
+    assert not any("] 실패:" in t for t in svc.telegram.texts)
+
+
+def test_busy_gives_up_after_limit_and_moves_on(env):
+    from src.ai_generator import ModelBusyError
+    from src.orchestrator import BUSY_GIVE_UP_SECONDS, BUSY_WAITS
+    orch, svc, conn, _ = env
+    now = [1000.0]
+    orch.clock = lambda: now[0]
+    svc.generator.generate = lambda *a, **k: (_ for _ in ()).throw(ModelBusyError("503"))
+    first = db.create_job(conn, "A")
+    second = db.create_job(conn, "B")
+    seen = []
+    while db.get_job(conn, first)["status"] == "queued":
+        assert orch.run_once() == first
+        seen.append(orch.busy_until - now[0])
+        now[0] = max(now[0], orch.busy_until) + 1
+    job = db.get_job(conn, first)
+    assert job["status"] == "failed" and "12시간" in job["error"]
+    assert seen[:4] == [BUSY_WAITS[0], BUSY_WAITS[1], BUSY_WAITS[2], BUSY_WAITS[2]]
+    assert sum(seen[:-1]) >= BUSY_GIVE_UP_SECONDS - BUSY_WAITS[2]
+    assert any("] 실패:" in t and "12시간" in t for t in svc.telegram.texts)
+    assert db.get_job(conn, second)["status"] == "queued"
+    assert orch.run_once() == second                                  # 바로 다음 작업으로
+    assert db.get_job(conn, second)["status"] == "queued" and "30분" in db.get_job(conn, second)["error"]
+    assert sum("붐벼서" in t for t in svc.telegram.texts) == 2         # 새 작업도 한 번 안내
 
 
 def test_busy_requeue_db_failure_is_retried_before_next_claim(env, monkeypatch):

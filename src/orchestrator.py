@@ -35,7 +35,8 @@ from src.wp_client import WPError
 log = logging.getLogger(__name__)
 
 IDLE_SECONDS = 15
-BUSY_WAIT_SECONDS = 30 * 60     # 글 쓰는 모델이 바쁠 때 대기열 전체를 쉬는 시간
+BUSY_WAITS = (30 * 60, 60 * 60, 120 * 60)   # 글 쓰는 모델이 바쁠 때 대기열 전체를 쉬는 시간(연속될수록 늘림)
+BUSY_GIVE_UP_SECONDS = 12 * 60 * 60        # 한 작업이 처음 바빠진 뒤 이만큼 지나도 계속 바쁘면 실패로 알림
 POLL_WAIT_SECONDS = 25
 NAMES = {"publish": "발행", "hold": "보류", "cancel": "취소"}
 
@@ -48,6 +49,7 @@ class Orchestrator:
         self.clock = clock
         self.busy_until = 0.0                     # 모델이 바빠 쉬는 중이면 이 시각까지 새 작업을 안 가져감
         self._busy_notified = False
+        self._busy_streak: dict[int, tuple[float, int]] = {}  # 작업 번호 → (처음 바빴던 시각, 연속 바쁨 횟수)
         self._pending_requeue: dict[int, tuple[dict[str, Any], Exception, str]] = {}  # 대기열 되돌리기 기록에 실패한 작업 → 다음 작업 전에 다시
         self._unrecorded: dict[int, str] = {}     # 실패 기록에 실패한 작업 → 다음 작업 전에 다시 기록
 
@@ -126,6 +128,7 @@ class Orchestrator:
         try:
             self.process(job)
             self._busy_notified = False
+            self._busy_streak.pop(job["id"], None)
         except ModelBusyError as exc:
             if not self._requeue_busy(job, exc):
                 self._record_failure(job, exc)
@@ -135,6 +138,8 @@ class Orchestrator:
 
     def _record_failure(self, job: dict[str, Any], exc: Exception) -> None:
         log.error("작업 %s번 실패", job["id"], exc_info=exc)
+        self._busy_streak.pop(job["id"], None)    # 바쁨 기록 정리: 다시 시도하면 처음부터, 다음 작업은 새로 안내
+        self._busy_notified = False
         message = f"{exc.__class__.__name__}: {exc}"[:500]
         try:
             db.set_status(self.conn, job["id"], "failed", error=message)
@@ -144,9 +149,18 @@ class Orchestrator:
         self._notify(f"[작업 {job['id']}] 실패: {job['topic']}\n{message}\n다시 하려면: jobctl retry {job['id']}")
 
     def _requeue_busy(self, job: dict[str, Any], exc: Exception) -> bool:
-        """글 쓰는 모델이 바쁘면 실패로 끝내지 않고 대기열로 되돌린 뒤, 정해진 시간 동안 새 작업을 쉰다.
+        """글 쓰는 모델이 바쁘면 실패로 끝내지 않고 대기열로 되돌린 뒤 잠시 새 작업을 쉰다.
+        쉬는 시간은 연속될수록 30분 → 1시간 → 2시간으로 늘린다.
+        처음 바빠진 뒤 BUSY_GIVE_UP_SECONDS가 지나도 계속 바쁘면 실패로 기록·알림하고 다음 작업으로 넘어간다.
         글 쓰는 단계(generating)가 아니면 False → 보통 실패로 기록한다."""
-        minutes = BUSY_WAIT_SECONDS // 60
+        now = self.clock()
+        first, count = self._busy_streak.get(job["id"], (now, 0))
+        if now - first >= BUSY_GIVE_UP_SECONDS:
+            hours = BUSY_GIVE_UP_SECONDS // 3600
+            self._record_failure(job, ModelBusyError(f"{hours}시간 넘게 Gemini가 계속 붐벼 중단했습니다. {exc}"))
+            return True
+        wait = BUSY_WAITS[min(count, len(BUSY_WAITS) - 1)]
+        minutes = wait // 60
         note = f"모델 바쁨, {minutes}분 뒤 자동 재시도"
         try:
             if not db.requeue_busy(self.conn, job["id"], note):
@@ -155,11 +169,13 @@ class Orchestrator:
             log.exception("작업 %s번 대기열 되돌리기 실패(다음 차례에 다시)", job["id"])
             self._pending_requeue[job["id"]] = (job, exc, note)
         log.warning("작업 %s번: 글 쓰는 모델이 바빠 %s분 뒤 다시 시도(%s)", job["id"], minutes, exc)
-        self.busy_until = self.clock() + BUSY_WAIT_SECONDS
+        self.busy_until = now + wait
+        self._busy_streak[job["id"]] = (first, count + 1)
         if not self._busy_notified:
             self._busy_notified = True
-            self._notify(f"[작업 {job['id']}] 구글 Gemini가 붐벼서 글을 못 썼습니다. {minutes}분마다 자동으로 다시 "
-                         "시도합니다(예비 모델로 대충 쓰지 않음). 따로 하실 일은 없습니다.")
+            self._notify(f"[작업 {job['id']}] 구글 Gemini가 붐벼서 글을 못 썼습니다. 30분, 1시간, 2시간 간격으로 "
+                         f"자동으로 다시 시도합니다(예비 모델로 대충 쓰지 않음). {BUSY_GIVE_UP_SECONDS // 3600}시간 넘게 "
+                         "계속 붐비면 실패로 알려 드립니다. 따로 하실 일은 없습니다.")
         return True
 
     def _notify(self, text: str) -> None:
