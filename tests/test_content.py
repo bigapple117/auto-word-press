@@ -628,7 +628,7 @@ def test_render_blocks_strong_note_summary_and_table_structure():
     assert 'jc-note--caution' in html and '<span class="jc-note__label">주의</span> <strong>부채</strong>' in html
     assert '<div class="jc-scroll" role="region" aria-labelledby="jc-table-1" tabindex="0">' in html
     assert '<caption id="jc-table-1">가구별 기준</caption>' in html
-    assert '<th scope="col">구분</th>' in html and '<th scope="row">단독</th>' in html
+    assert '<th scope="col">구분</th>' in html and '<th scope="row" data-label="구분">단독</th>' in html
     assert 'class="jc-table jc-table--key"' in html                    # 짧은 첫 열 → 줄바꿈 방지
     assert 'class="jc-table jc-table--wide"' in html                   # 4열 → 넓은 표, 긴 첫 열은 줄바꿈 허용
     assert 'class="jc-closing"' in html
@@ -694,3 +694,24 @@ def test_too_short_body_is_problem():
         sec["blocks"] = [para("짧습니다. 정말 짧아요.")]
     problems, _ = check_content(model(data), SOURCES, 45)
     assert any("너무 짧습니다" in p for p in problems)
+
+
+def test_fraction_is_ratio_not_money():
+    from src.ai_generator import extract_figures
+    assert extract_figures("가산세(1일 22/100,000)") == {"ratio:22/100000": "22/100,000"}
+    got = extract_figures("1일당 10만 분의 22가 붙습니다")
+    assert list(got) == ["ratio:22/100000"]
+    data = good_data()
+    data["intro"].append(P("허위 신청은 가산세(1일당 10만 분의 22)가 붙습니다."))
+    srcs = [Source("S1", "https://www.nts.go.kr/a", "t", "환수액 : 지급액 + 가산세(1일 22/100,000)")]
+    _, warnings = check_content(model(data), srcs, 45)
+    assert not any("10만" in w for w in warnings if "못 찾은 숫자" in w)
+
+
+def test_table_cells_carry_column_labels():
+    data = good_data()
+    data["sections"][0]["blocks"][1]["table"] = {"caption": "c", "headers": ["가구", "소득 \"구간\"", "지급액", "비고"],
+                                                 "rows": [["홑벌이", "2,100만 원 이하", "100만 원", "-"]]}
+    html = render_blog_html(model(data), SOURCES)
+    assert '<th scope="row" data-label="가구">홑벌이</th>' in html
+    assert 'data-label="소득 &quot;구간&quot;"' in html and 'jc-table--wide' in html

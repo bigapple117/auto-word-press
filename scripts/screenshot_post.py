@@ -55,7 +55,15 @@ def main() -> int:
                 }""",
                 [post["title"]["raw"], post["content"]["rendered"], featured],
             )
-            page.wait_for_timeout(1500)
+            # 사진은 화면에 들어와야 불러오는 방식(지연 로딩)이라, 캡처 전에 모두 즉시 불러온다
+            page.evaluate("""async () => {
+                const imgs = [...document.images];
+                imgs.forEach(i => { i.loading = 'eager'; i.removeAttribute('loading'); });
+                await Promise.all(imgs.map(i => i.complete ? null :
+                    new Promise(r => { i.addEventListener('load', r, {once: true});
+                                       i.addEventListener('error', r, {once: true}); setTimeout(r, 8000); })));
+            }""")
+            page.wait_for_timeout(500)
             path = args.out / f"post{args.post_id}_{name}.png"
             page.screenshot(path=str(path), full_page=True)
             width = page.evaluate("(() => { const c = document.querySelector('.jc-article'); "

@@ -150,4 +150,17 @@
 @media (max-width: 600px) {
   .jc-article { font-size: 1rem; line-height: 1.8; }
   .jc-article h2 { font-size: 1.25rem; }
+  /* 열 4개 이상 표: 휴대폰에서는 옆으로 밀지 않게 행마다 카드로 쌓는다 */
+  .jc-article .jc-table--wide { min-width: 0; }
+  .jc-article .jc-table--wide thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .jc-article .jc-table--wide tr { display: block; margin-bottom: 0.8rem; border: 1px solid var(--jc-line); border-radius: 6px; overflow: hidden; }
+  .jc-article .jc-table--wide tbody th,
+  .jc-article .jc-table--wide td { display: block; border: 0; border-bottom: 1px solid var(--jc-line); white-space: normal; }
+  .jc-article .jc-table--wide tbody th { background: #e9eef2; }
+  .jc-article .jc-table--wide td:last-child { border-bottom: 0; }
+  .jc-article .jc-table--wide tbody tr:nth-child(even) td { background: #fff; }
+  .jc-article .jc-table--wide td::before {
+    content: attr(data-label); display: block; margin-bottom: 0.15rem;
+    font-size: 0.8125rem; font-weight: 700; color: var(--jc-muted);
+  }
 }

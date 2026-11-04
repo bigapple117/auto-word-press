@@ -38,7 +38,7 @@ def main() -> int:
     a.add_argument("--ref", default=None, help="중복 등록 방지용 출처 번호(예: 시트 행)")
     lst = sub.add_parser("list")
     lst.add_argument("--status", default=None)
-    for name in ("show", "retry", "cancel", "redo"):
+    for name in ("show", "retry", "cancel", "redo", "redraft"):
         sub.add_parser(name).add_argument("job_id", type=int)
     sub.add_parser("once")
     sub.add_parser("run")
@@ -83,6 +83,26 @@ def main() -> int:
         db.clear_checkpoint(conn, args.job_id, ("content", "tts", "media", "video", "draft", "approval"))
         db.set_status(conn, args.job_id, "queued")
         print(f"작업 {args.job_id}번을 다시 쓰기 대기열에 넣었습니다(예전 사진 {len(removed)}장 삭제, 임시 글 번호 유지)")
+    elif args.cmd == "redraft":
+        # 글 내용·쇼츠는 그대로 두고 HTML(디자인)만 다시 만들어 같은 임시 글에 반영, 승인 요청은 새로
+        from src.ai_generator import check_content
+        from src.content_schema import MasterContent
+        from src.pipeline import sources_from
+        j = db.get_job(conn, args.job_id)
+        if not j or j["status"] in ("published", "publishing") or "content" not in j["checkpoint"]:
+            print("다시 만들 수 없는 작업입니다(없거나 이미 발행, 또는 글이 아직 없음)")
+            return 1
+        cp = j["checkpoint"]["content"]
+        content = MasterContent.model_validate(cp["content"])
+        _problems, warnings = check_content(content, sources_from(cp["sources"]), j["target_seconds"])
+        if cp.get("fallback_model"):
+            warnings.insert(0, next(w for w in cp["warnings"] if w.startswith("예비 모델")))
+        db.save_checkpoint(conn, args.job_id, "content", {**cp, "warnings": warnings})
+        if j["status"] not in ("failed", "canceled"):
+            db.set_status(conn, args.job_id, "canceled")
+        db.clear_checkpoint(conn, args.job_id, ("draft", "approval"))
+        db.set_status(conn, args.job_id, "queued")
+        print(f"작업 {args.job_id}번: 화면만 다시 만들도록 대기열에 넣었습니다(글 내용 유지, 새 승인 요청 예정)")
     elif args.cmd == "cancel":
         db.set_status(conn, args.job_id, "canceled")
         print(f"작업 {args.job_id}번을 취소했습니다")

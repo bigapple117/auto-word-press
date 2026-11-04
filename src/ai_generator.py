@@ -65,6 +65,9 @@ _EOK = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*억(?:\s*(\d)\s*천)?(?:\s*(\d[\d,]*)
 _MAN = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(천만|백만|만)\s*원?")
 _WON = re.compile(r"(\d[\d,]*)\s*원")
 _PCT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_FRAC_SLASH = re.compile(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)")
+_FRAC_KO = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(천만|백만|만|천)?\s*분의\s*(\d[\d,]*)")
+_KO_UNIT = {"천만": 10_000_000, "백만": 1_000_000, "만": 10_000, "천": 1_000, None: 1}
 _UNIT = {"천만": 10_000_000, "백만": 1_000_000, "만": 10_000}
 
 
@@ -82,6 +85,9 @@ def extract_figures(text: str) -> dict[str, str]:
             found.setdefault(value_of(m), m.group(0).strip())
         text = pattern.sub(" ", text)   # 이미 센 부분은 다음 규칙에서 다시 세지 않음
 
+    # 분수는 금액보다 먼저: '10만 분의 22'를 10만 원으로 오해하지 않게
+    take(_FRAC_KO, lambda m: f"ratio:{_num(m.group(3)):g}/{round(_num(m.group(1)) * _KO_UNIT[m.group(2)])}")
+    take(_FRAC_SLASH, lambda m: f"ratio:{_num(m.group(1)):g}/{round(_num(m.group(2)))}")
     take(_EOK, lambda m: f"won:{round(_num(m.group(1)) * 1e8 + int(m.group(2) or 0) * 1e7 + _num(m.group(3) or '0') * 1e4)}")
     take(_MAN, lambda m: f"won:{round(_num(m.group(1)) * _UNIT[m.group(2)])}")
     take(_WON, lambda m: f"won:{round(_num(m.group(1)))}")

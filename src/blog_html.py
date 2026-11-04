@@ -60,9 +60,11 @@ def _table(t: Table, index: int) -> str:
     if first_col_short:
         classes.append("jc-table--key")
     head = "".join(f'<th scope="col">{escape(h)}</th>' for h in t.headers)
+    labels = [escape(h, quote=True) for h in t.headers]
     body = "".join(
         "<tr>" + "".join(
-            f'<th scope="row">{escape(c)}</th>' if j == 0 else f"<td>{escape(c)}</td>"
+            f'<th scope="row" data-label="{labels[j]}">{escape(c)}</th>' if j == 0
+            else f'<td data-label="{labels[j] if j < len(labels) else ""}">{escape(c)}</td>'
             for j, c in enumerate(row)) + "</tr>"
         for row in t.rows
     )
