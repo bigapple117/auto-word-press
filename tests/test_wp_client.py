@@ -64,6 +64,9 @@ class FakeWP:
             self.media[self.next_id] = {"url": f"https://jalcheck.com/wp-content/uploads/2026/11/{name}",
                                         "size": len(body), "type": headers["Content-Type"]}
             return FakeResp(201, {"id": self.next_id, "source_url": self.media[self.next_id]["url"]})
+        if path.startswith("/media/") and method == "DELETE":
+            self.media.pop(int(path.split("/")[2]), None)
+            return FakeResp(200, {"deleted": True})
         if path.startswith("/media/") and method == "POST":
             self.media[int(path.split("/")[2])].update(json)
             return FakeResp(200, {"id": int(path.split("/")[2])})
@@ -257,3 +260,13 @@ def test_job_lock_serializes(tmp_path):
     for t in ts:
         t.join()
     assert order[1].endswith("-out")
+
+
+def test_delete_job_media_only_exact_names(wp, tmp_path):
+    client, fake = wp
+    fake.media[1] = {"url": "https://jalcheck.com/u/jcjob-7-0.jpg"}
+    fake.media[2] = {"url": "https://jalcheck.com/u/jcjob-7-1-1.jpg"}
+    fake.media[3] = {"url": "https://jalcheck.com/u/jcjob-70-0.jpg"}
+    fake.media[4] = {"url": "https://jalcheck.com/u/jcjob-7-photo.jpg"}
+    assert sorted(client.delete_job_media(7)) == [1, 2]
+    assert sorted(fake.media) == [3, 4]

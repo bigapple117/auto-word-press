@@ -230,6 +230,16 @@ class WordPressClient:
             return WPMedia(m["id"], m["source_url"])
         return None
 
+    def delete_job_media(self, job_id: int) -> list[int]:
+        """이 작업이 올린 미디어(파일 이름 jcjob-<번호>-<순서>)만 영구 삭제한다. 다시 쓰기 전에 사용."""
+        pattern = re.compile(rf"^{re.escape(job_marker(job_id))}-\d+(-\d+)?$")
+        with job_lock(job_id, self.lock_dir):
+            items = self._get_all("/media", {"search": f"{job_marker(job_id)}-", "_fields": "id,source_url"})
+            ids = [m["id"] for m in items if pattern.match(Path(urlparse(m.get("source_url", "")).path).stem)]
+            for media_id in ids:
+                self._request("DELETE", f"/media/{media_id}", params={"force": "true"})
+        return ids
+
     def upload_media(self, path: Path, job_id: int, index: int, alt: str = "",
                      caption: str = "") -> WPMedia:
         """작업 번호·순서가 든 파일 이름으로 올린다. 같은 이름이 이미 있으면 다시 올리지 않는다."""

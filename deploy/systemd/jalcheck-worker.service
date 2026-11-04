@@ -1,0 +1,30 @@
+# 잘체크 자동 발행 실행기 (작업 처리 + 텔레그램 버튼 수신)
+# 설치: sudo cp deploy/systemd/jalcheck-worker.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#       sudo systemctl enable --now jalcheck-worker
+# 로그: journalctl -u jalcheck-worker -f      멈춤: sudo systemctl stop jalcheck-worker
+[Unit]
+Description=Jalcheck auto-publisher worker
+After=network-online.target mariadb.service nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/auto-word-press
+ExecStart=/home/ubuntu/auto-word-press/.venv/bin/python scripts/jobctl.py run
+Environment=PYTHONUNBUFFERED=1
+Environment=PLAYWRIGHT_BROWSERS_PATH=/home/ubuntu/auto-word-press/tools/pw-browsers
+# CPU 1개 서버: 워드프레스가 느려지지 않게 낮은 우선순위·작은 CPU 몫
+Nice=15
+CPUWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryMax=3G
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

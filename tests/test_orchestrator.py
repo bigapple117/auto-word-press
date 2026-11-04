@@ -31,9 +31,11 @@ class FakeGenerator:
     def __init__(self):
         self.calls = 0
 
+    model = "gemini-3.8-flash"
+
     def generate(self, topic, sources, seconds, news=()):
         self.calls += 1
-        return GenerationResult(MasterContent.model_validate(good_data()), "fake-model", 1, ["경고 하나"])
+        return GenerationResult(MasterContent.model_validate(good_data()), self.model, 1, ["경고 하나"])
 
 
 @dataclass
@@ -359,3 +361,27 @@ def test_failure_record_retried_before_next_job(env, monkeypatch):
     db.create_job(conn, "B")
     orch.run_once()
     assert db.get_job(conn, first)["status"] == "failed" and not orch._unrecorded
+
+
+def test_fallback_model_is_flagged_and_notified(env):
+    orch, svc, conn, _ = env
+    svc.generator.model = "gemini-3.5-flash-lite"
+    job_id = db.create_job(conn, "주제")
+    orch.run_once()
+    assert any("예비 모델" in t for t in svc.telegram.texts)
+    assert svc.telegram.requests[0][2][0].startswith("예비 모델(gemini-3.5-flash-lite) 작성")
+
+
+def test_redo_clears_checkpoints_keeps_post(env):
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "주제")
+    orch.run_once()
+    old_post = db.get_job(conn, job_id)["post_id"]
+    old_nonce = db.get_job(conn, job_id)["checkpoint"]["approval"]["nonce"]
+    db.set_status(conn, job_id, "canceled")
+    db.clear_checkpoint(conn, job_id, ("content", "tts", "media", "video", "draft", "approval"))
+    db.set_status(conn, job_id, "queued")
+    orch.run_once()
+    job = db.get_job(conn, job_id)
+    assert svc.generator.calls == 2 and job["post_id"] == old_post and job["status"] == "awaiting_approval"
+    assert "지난 승인 요청" in orch.handle_decision(decision(job_id, "publish", old_nonce))

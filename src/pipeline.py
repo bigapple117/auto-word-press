@@ -89,9 +89,14 @@ def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
         raise PipelineError("읽을 수 있는 공식 자료를 찾지 못했습니다: " + " / ".join(errors[:3]))
     result = svc.generator.generate(topic, sources, target_seconds,
                                     news=[(n.published[5:16], n.title) for n in news])
+    warnings = list(result.warnings)
+    fallback = result.model != svc.settings.gemini_model
+    if fallback:
+        warnings.insert(0, f"예비 모델({result.model}) 작성 — 최신 모델이 바빠서 대신 썼습니다. 품질 확인 필요")
     return {
         "content": json.loads(result.content.model_dump_json()),
-        "warnings": list(result.warnings),
+        "warnings": warnings,
+        "fallback_model": fallback,
         "source_errors": errors,
         "model": result.model,
         "sources": [{"id": s.id, "url": s.url, "title": s.title, "via": s.via, "text": s.text} for s in sources],

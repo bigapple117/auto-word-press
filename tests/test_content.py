@@ -388,7 +388,7 @@ def test_figures_found_in_sources_produce_no_warning():
     data = good_data()
     data["sections"][0]["blocks"] = [para("재산은 2억 4천만 원 미만, 300만 원, 2,200만 원 미만, 55%입니다.")]
     for s in data["sections"][1:]:
-        s["blocks"] = [para("숫자 없는 문장입니다. 이것도 숫자가 없습니다.")]
+        s["blocks"] = [para("숫자 없는 문장입니다. 이것도 숫자가 없습니다. 설명을 조금 더 붙여 둡니다.")] * 9
     for s in data["sections"]:
         s["source_ids"] = ["S1"]
     for f in data["faq"]:
@@ -686,3 +686,11 @@ def test_links_box_rendered_only_with_verified_links():
     assert any("바로가기 링크에서 뺀 것" in w for w in warnings)
     data["action_links"] = []
     assert 'class="jc-links"' not in render_blog_html(model(data), SOURCES)
+
+
+def test_too_short_body_is_problem():
+    data = good_data()
+    for sec in data["sections"]:
+        sec["blocks"] = [para("짧습니다. 정말 짧아요.")]
+    problems, _ = check_content(model(data), SOURCES, 45)
+    assert any("너무 짧습니다" in p for p in problems)

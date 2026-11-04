@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 RETRY_WAITS = (10, 30, 60)       # 일시적 오류 재시도 간격(초)
 MAX_QUALITY_ROUNDS = 3           # 검사 불합격 시 최대 작성 횟수
+MIN_BODY_CHARS = 1200          # 이보다 짧으면 다시 쓰게 함(얇은 글 방지)
 MAX_TIMEOUTS_PER_MODEL = 2      # 같은 모델에서 시간 초과가 이만큼 나면 예비 모델로
 MAX_SHORTS_REPAIRS = 2           # 쇼츠 길이만 틀렸을 때 대본만 고쳐 쓰는 횟수
 NARRATION_PROBLEM = "쇼츠 내레이션 전체 길이"
@@ -274,7 +275,10 @@ def check_content(
 
     body_chars = sum(len(t) for s in c.sections for t in section_paragraphs(s)) + \
         sum(len(paragraph_text(p)) for p in c.intro)
-    if body_chars < 1500:
+    if body_chars < MIN_BODY_CHARS:
+        problems.append(f"본문(문단·주의·요약 글자)이 {body_chars}자로 너무 짧습니다. 소제목마다 구분법·예외·"
+                        f"다음 행동 설명을 보강해 {MIN_BODY_CHARS}자 이상으로 써 주세요(표 내용 반복은 금지).")
+    elif body_chars < 1500:
         warnings.append(f"본문이 짧습니다({body_chars}자).")
     if c.unverified:
         warnings.append("자료로 확인 안 된 내용: " + " / ".join(c.unverified))

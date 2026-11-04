@@ -257,6 +257,16 @@ def save_checkpoint(
         )
 
 
+def clear_checkpoint(conn: sqlite3.Connection, job_id: int, stages: tuple[str, ...]) -> None:
+    """다시 만들 단계의 체크포인트를 지운다(글 번호·다른 단계는 그대로)."""
+    with _write(conn):
+        checkpoint = json.loads(_get_for_update(conn, job_id)["checkpoint"])
+        for stage in stages:
+            checkpoint.pop(stage, None)
+        conn.execute("UPDATE jobs SET checkpoint = ?, updated_at = ? WHERE id = ?",
+                     (json.dumps(checkpoint, ensure_ascii=False), _now(), job_id))
+
+
 def update_fields(conn: sqlite3.Connection, job_id: int, **values: Any) -> None:
     """제목·영상 경로 같은 결과 칸을 채운다. 상태·글 번호는 여기서 바꾸지 않는다."""
     allowed = {"title", "video_path"}

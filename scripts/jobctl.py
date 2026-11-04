@@ -38,7 +38,7 @@ def main() -> int:
     a.add_argument("--ref", default=None, help="중복 등록 방지용 출처 번호(예: 시트 행)")
     lst = sub.add_parser("list")
     lst.add_argument("--status", default=None)
-    for name in ("show", "retry", "cancel"):
+    for name in ("show", "retry", "cancel", "redo"):
         sub.add_parser(name).add_argument("job_id", type=int)
     sub.add_parser("once")
     sub.add_parser("run")
@@ -70,6 +70,19 @@ def main() -> int:
     elif args.cmd == "retry":
         db.set_status(conn, args.job_id, "queued")
         print(f"작업 {args.job_id}번을 다시 대기열에 넣었습니다")
+    elif args.cmd == "redo":
+        # 글을 처음부터 다시 쓴다: 같은 워드프레스 임시 글을 고쳐 쓰고, 예전 승인 요청 버튼은 무효가 된다
+        from src.wp_client import WordPressClient
+        j = db.get_job(conn, args.job_id)
+        if not j or j["status"] in ("published", "publishing"):
+            print("다시 쓸 수 없는 작업입니다(없거나 이미 발행)")
+            return 1
+        if j["status"] not in ("failed", "canceled"):
+            db.set_status(conn, args.job_id, "canceled")
+        removed = WordPressClient.from_settings(settings).delete_job_media(args.job_id)
+        db.clear_checkpoint(conn, args.job_id, ("content", "tts", "media", "video", "draft", "approval"))
+        db.set_status(conn, args.job_id, "queued")
+        print(f"작업 {args.job_id}번을 다시 쓰기 대기열에 넣었습니다(예전 사진 {len(removed)}장 삭제, 임시 글 번호 유지)")
     elif args.cmd == "cancel":
         db.set_status(conn, args.job_id, "canceled")
         print(f"작업 {args.job_id}번을 취소했습니다")
