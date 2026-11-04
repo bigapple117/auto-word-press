@@ -173,3 +173,13 @@
 - 확인: 속성 이스케이프·JSON-LD </script> 차단 정상, WP7 mb_* 대체 구현 있음, 기본 코어·TT5와 중복 출력 없음
 2차 **PASS**
 - 검증: php -l, 실제 첫 화면(WebSite)·글(Article) 출력 확인
+
+---
+
+# 2026-11-04 본문 분량 지시·고쳐 쓰기 분량 유지 검토 기록 (작성: Claude, 검토: Codex — diff stdin 전달)
+
+대상: f928902, 5dba78b, 1896162, b411a0a (templates/prompt_template.py, src/ai_generator.py, src/content_schema.py, tests/test_content.py)
+1차 **BLOCKED** — 확정 버그 지적 없음. 샌드박스 오류(bwrap loopback)로 Codex가 파일 열람·시험 실행을 못 함
+- Codex 미검증 2건은 Claude가 직접 확인: section_paragraphs는 문단·주의·요약만 세서 지시문 범위와 같음(src/content_schema.py:119), JSON 깨짐 시 draft의 안내를 재사용하는 경로는 시험 추가(b411a0a)로 확인
+- 모델 호출을 늘리는 코드 없음(Codex도 같은 의견)
+- 검증: pytest 259개 통과. 미검증: 실제 Gemini 글 생성(API 키 만료로 보류)
