@@ -231,6 +231,28 @@ def test_quality_problem_triggers_rewrite_with_feedback():
     assert "이모지" in client.calls[2][1] and "금지 표현" in client.calls[2][1]
 
 
+def test_failed_draft_is_fixed_not_rewritten():
+    bad = good_data()
+    bad["slug"] = "잘못된 슬러그"
+    gen, client = make_gen([json.dumps(bad), json.dumps(good_data())])
+    r = gen.generate("근로장려금", SOURCES, 45)
+    assert r.attempts == 2
+    assert "[이전 결과" not in client.calls[0][1]
+    second = client.calls[1][1]
+    assert "[이전 결과 - 이것을 고쳐서" in second and "처음부터 새로 쓰지 않는다" in second
+    assert "잘못된 슬러그" in second and "slug" in second
+
+
+def test_broken_fix_retries_previous_draft_with_same_problems():
+    bad = good_data()
+    bad["slug"] = "잘못된 슬러그"
+    gen, client = make_gen([json.dumps(bad), "{not json", json.dumps(good_data())])
+    r = gen.generate("근로장려금", SOURCES, 45)
+    assert r.attempts == 3
+    third = client.calls[2][1]
+    assert "잘못된 슬러그" in third and "slug" in third and "JSON 형식 오류" not in third
+
+
 def test_gives_up_after_max_rounds():
     bad = good_data()
     bad["slug"] = "잘못된 슬러그"

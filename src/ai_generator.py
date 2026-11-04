@@ -398,22 +398,28 @@ class ContentGenerator:
             raise GenerationError("근거 자료가 없습니다. 자료 없이 글을 쓰지 않습니다.")
         feedback: str | None = None
         last_problems: list[str] = []
+        # 마지막으로 형식이 맞았던 결과와 그 불합격 이유. 다음 회차는 이것을 고치게 한다(새로 쓰면 잘된 부분까지 버려짐).
+        draft: tuple[str, list[str]] | None = None
         for round_no in range(1, MAX_QUALITY_ROUNDS + 1):
-            prompt = build_prompt(topic, sources, target_seconds, feedback=feedback, news=news)
+            prompt = build_prompt(topic, sources, target_seconds, feedback=feedback, news=news,
+                                  previous=draft[0] if draft else None)
             raw, model = self._call_with_retry(prompt, models=self.blog_models)
             try:
                 content = MasterContent.model_validate_json(raw)
             except ValidationError as exc:
                 last_problems = [f"JSON 형식 오류: {exc.errors()[:3]}"]
+                # 고친 결과의 형식이 깨졌으면 앞의 결과를 같은 지적으로 다시 고치게 한다
+                problems_for_next = draft[1] if draft else last_problems
             else:
                 problems, warnings = check_content(content, sources, target_seconds)
                 if problems and all(p.startswith(NARRATION_PROBLEM) for p in problems):
                     content, problems, warnings = self._repair_shorts(content, sources, target_seconds)
                 if not problems:
                     return GenerationResult(content, model, round_no, warnings)
-                last_problems = problems
+                last_problems = problems_for_next = problems
+                draft = (content.model_dump_json(), problems)
             log.info("검사 불합격(%s회차): %s", round_no, last_problems)
-            feedback = "\n".join(f"- {p}" for p in last_problems)
+            feedback = "\n".join(f"- {p}" for p in problems_for_next)
         raise GenerationError("검사를 통과하지 못했습니다: " + " / ".join(last_problems))
 
     def _repair_shorts(

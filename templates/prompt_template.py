@@ -90,10 +90,12 @@ def build_prompt(
     today: date | None = None,
     feedback: str | None = None,
     news: Sequence[tuple[str, str]] = (),
+    previous: str | None = None,
 ) -> str:
     """사용자 지시문을 만든다. feedback은 이전 결과가 검사에 걸렸을 때 고칠 점.
 
     news: (날짜, 제목) 목록. 변경 신호로만 쓴다.
+    previous: 검사에 걸린 이전 결과 JSON. 있으면 새로 쓰지 않고 고칠 점만 고치게 한다.
     """
     today = today or date.today()
     low, high = narration_budget(target_seconds)
@@ -115,6 +117,15 @@ def build_prompt(
         parts.append(f"[최근 뉴스 - 변경 신호, 사실 근거 아님]\n{lines}")
     if feedback:
         parts.append(f"[이전 결과에서 고칠 점]\n{feedback}")
+    if previous:
+        parts.append(
+            "[이전 결과 - 이것을 고쳐서 돌려준다]\n"
+            "처음부터 새로 쓰지 않는다. 위 [이전 결과에서 고칠 점]에 적힌 곳만 고치고, 나머지 제목·문장·표·구성은 "
+            "그대로 둔다. 단, 사실 규칙이 이 지시보다 우선한다. 고치는 중에 [자료]로 확인되지 않는 숫자·조건이 "
+            "보이면 그대로 두지 말고 자료에 맞게 고치거나 빼고 unverified에 적는다. 내용을 보강할 때도 [자료]에 있는 "
+            "사실만 쓴다. 고친 결과는 빠짐없이 전체 JSON으로 돌려준다.\n"
+            + previous
+        )
     return "\n\n".join(parts)
 
 
