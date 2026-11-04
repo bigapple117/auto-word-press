@@ -59,7 +59,8 @@ class Settings:
 
     # 글·대본 생성
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.8-flash"
+    gemini_model: str = "gemini-3.8-flash"          # 1순위
+    gemini_second_model: str = "gemini-3.6-flash"   # 1순위가 한도 초과·혼잡일 때 블로그를 쓰는 차선
 
     # 무료 스톡 이미지·영상
     pexels_api_key: str = ""
@@ -127,6 +128,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         wp_app_password=_env("WP_APP_PASSWORD"),
         gemini_api_key=_env("GEMINI_API_KEY"),
         gemini_model=_env("GEMINI_MODEL", d.gemini_model),
+        gemini_second_model=_env("GEMINI_SECOND_MODEL", d.gemini_second_model),
         pexels_api_key=_env("PEXELS_API_KEY"),
         pixabay_api_key=_env("PIXABAY_API_KEY"),
         naver_client_id=_env("NAVER_CLIENT_ID"),

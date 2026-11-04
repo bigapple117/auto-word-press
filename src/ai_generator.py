@@ -318,16 +318,19 @@ class ContentGenerator:
         self,
         client: Any,
         model: str,
+        second_model: str | None = None,
         fallback_model: str | None = DEFAULT_FALLBACK_MODEL,
         sleep: Callable[[float], None] = time.sleep,
         retry_waits: Sequence[float] = RETRY_WAITS,
         blog_fallback: bool = False,
     ) -> None:
         self.client = client
-        self.models = [m for m in (model, fallback_model) if m]
-        # 블로그 본문은 기본 모델로만 쓴다(예비 모델 글은 짧고 얕아 품질 검사를 자주 못 넘음).
-        # 예비 모델은 쇼츠 대본 고쳐 쓰기처럼 가벼운 일에만 쓴다.
-        self.blog_models = self.models if blog_fallback else self.models[:1]
+        self.models = list(dict.fromkeys(m for m in (model, second_model, fallback_model) if m))
+        # 블로그 본문은 1순위 모델 → 차선 모델 순서로만 쓴다(매번 1순위부터 시도하므로
+        # 1순위 한도가 다시 채워지면 자동으로 1순위로 돌아감). 가장 가벼운 예비 모델 글은
+        # 짧고 얕아 품질 검사를 자주 못 넘으므로 쇼츠 대본 고쳐 쓰기처럼 가벼운 일에만 쓴다.
+        blog = [m for m in (model, second_model) if m and m != fallback_model]
+        self.blog_models = self.models if blog_fallback else list(dict.fromkeys(blog))
         self.sleep = sleep
         self.retry_waits = tuple(retry_waits)
 
@@ -338,6 +341,7 @@ class ContentGenerator:
             api_key=settings.gemini_api_key,
             http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS),
         )
+        kwargs.setdefault("second_model", settings.gemini_second_model or None)
         return cls(client, settings.gemini_model, **kwargs)
 
     def _call(self, model: str, prompt: str, schema: type = MasterContent,
@@ -370,6 +374,10 @@ class ContentGenerator:
                     if not _is_transient(exc):
                         raise
                     last = exc
+                    # 사용 한도 초과(429)는 몇 분 기다려도 안 풀리는 경우가 많아 바로 다음 모델로
+                    if getattr(exc, "code", None) == 429:
+                        log.warning("%s 사용 한도 초과, 다음 모델로 넘어감", model)
+                        break
                     # 시간 초과(504·타임아웃)는 한 번에 수 분씩 걸리므로 두 번 나면 바로 다음 모델로
                     if getattr(exc, "code", None) == 504 or "timeout" in exc.__class__.__name__.lower():
                         timeouts += 1

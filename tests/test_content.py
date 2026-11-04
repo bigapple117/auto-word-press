@@ -143,7 +143,7 @@ def api_error(code):
 
 def make_gen(outcomes, **kw):
     client = FakeClient(outcomes)
-    gen = ContentGenerator(client, "main-model", "backup-model", sleep=lambda s: None,
+    gen = ContentGenerator(client, "main-model", fallback_model="backup-model", sleep=lambda s: None,
                            retry_waits=(1, 1), **kw)
     return gen, client
 
@@ -156,9 +156,43 @@ def test_generate_success_first_try():
 
 
 def test_transient_errors_retry_then_succeed_on_main_model():
-    gen, client = make_gen([api_error(503), api_error(429), json.dumps(good_data())])
+    gen, client = make_gen([api_error(503), api_error(503), json.dumps(good_data())])
     r = gen.generate("근로장려금", SOURCES, 45)
     assert [m for m, _ in client.calls] == ["main-model"] * 3 and r.model == "main-model"
+
+
+def test_quota_exceeded_skips_to_second_model_without_waiting():
+    waits = []
+    client = FakeClient([api_error(429), json.dumps(good_data())])
+    gen = ContentGenerator(client, "main-model", second_model="second-model",
+                           fallback_model="backup-model", sleep=waits.append, retry_waits=(1, 1))
+    r = gen.generate("근로장려금", SOURCES, 45)
+    assert [m for m, _ in client.calls] == ["main-model", "second-model"]
+    assert r.model == "second-model" and waits == []
+
+
+def test_blog_tries_main_then_second_but_never_lite():
+    client = FakeClient([api_error(503)] * 3 + [api_error(429)])
+    gen = ContentGenerator(client, "main-model", second_model="second-model",
+                           fallback_model="backup-model", sleep=lambda s: None, retry_waits=(1, 1))
+    with pytest.raises(ModelBusyError):
+        gen.generate("근로장려금", SOURCES, 45)
+    assert [m for m, _ in client.calls] == ["main-model"] * 3 + ["second-model"]
+
+
+def test_main_model_used_again_when_available():
+    client = FakeClient([api_error(429), json.dumps(good_data()), json.dumps(good_data())])
+    gen = ContentGenerator(client, "main-model", second_model="second-model",
+                           fallback_model="backup-model", sleep=lambda s: None, retry_waits=(1, 1))
+    assert gen.generate("근로장려금", SOURCES, 45).model == "second-model"
+    assert gen.generate("근로장려금", SOURCES, 45).model == "main-model"
+
+
+def test_quota_exceeded_on_only_model_is_busy():
+    gen, client = make_gen([api_error(429)])
+    with pytest.raises(ModelBusyError):
+        gen.generate("근로장려금", SOURCES, 45)
+    assert len(client.calls) == 1
 
 
 def test_busy_main_model_never_falls_back_for_blog():

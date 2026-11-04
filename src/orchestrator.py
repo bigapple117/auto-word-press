@@ -72,7 +72,7 @@ class Orchestrator:
             db.save_checkpoint(self.conn, job_id, "content", cp["content"])
             db.update_fields(self.conn, job_id, title=cp["content"]["content"]["title"])
             if cp["content"].get("fallback_model"):
-                self._notify(f"[작업 {job_id}] 최신 모델이 바빠 예비 모델({cp['content']['model']})로 글을 썼습니다. "
+                self._notify(f"[작업 {job_id}] 1순위 모델이 한도 초과·혼잡이라 예비 모델({cp['content']['model']})로 글을 썼습니다. "
                              "승인 요청이 오면 품질을 꼭 확인해 주세요. 마음에 안 들면 취소 후 다시 쓰기를 요청하세요.")
         content = MasterContent.model_validate(cp["content"]["content"])
         sources = sources_from(cp["content"]["sources"])

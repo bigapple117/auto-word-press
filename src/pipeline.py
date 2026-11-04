@@ -94,7 +94,7 @@ def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
     warnings = list(result.warnings)
     fallback = result.model != svc.settings.gemini_model
     if fallback:
-        warnings.insert(0, f"예비 모델({result.model}) 작성 — 최신 모델이 바빠서 대신 썼습니다. 품질 확인 필요")
+        warnings.insert(0, f"예비 모델({result.model}) 작성 — {svc.settings.gemini_model}이(가) 한도 초과·혼잡이라 대신 썼습니다. 품질 확인 필요")
     return {
         "content": json.loads(result.content.model_dump_json()),
         "warnings": warnings,
