@@ -24,7 +24,7 @@ from src.content_schema import (MasterContent, Shorts, paragraph_text, section_p
                                 section_texts)
 from src.source_fetcher import Source
 from templates.prompt_template import (SHORTS_SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION, build_prompt,
-                                      build_shorts_repair_prompt, narration_budget)
+                                      build_shorts_repair_prompt, narration_budget, BODY_TARGET_CHARS)
 
 log = logging.getLogger(__name__)
 
@@ -288,7 +288,7 @@ def check_content(
     if body_chars < MIN_BODY_CHARS:
         problems.append(f"본문(문단·주의·요약 글자)이 {body_chars}자로 너무 짧습니다. 소제목마다 구분법·예외·"
                         f"다음 행동 설명을 보강해 {MIN_BODY_CHARS}자 이상으로 써 주세요(표 내용 반복은 금지).")
-    elif body_chars < 1500:
+    elif body_chars < BODY_TARGET_CHARS[0]:
         warnings.append(f"본문이 짧습니다({body_chars}자).")
     if c.unverified:
         warnings.append("자료로 확인 안 된 내용: " + " / ".join(c.unverified))

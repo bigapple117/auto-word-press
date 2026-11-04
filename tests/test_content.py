@@ -114,6 +114,16 @@ def test_prompt_contains_sources_budget_and_feedback():
     assert f"{low}~{high}자" in p and "이모지를 빼 주세요" in p
 
 
+def test_prompt_body_target_matches_checker_scope():
+    """지시문의 본문 분량은 검사와 같은 범위(표·FAQ 제외)를 말하고, 하한이 검사 기준 이상이어야 한다."""
+    from src.ai_generator import MIN_BODY_CHARS
+    from templates.prompt_template import BODY_TARGET_CHARS
+    p = build_prompt("근로장려금", SOURCES, 45)
+    assert f"{BODY_TARGET_CHARS[0]:,}~{BODY_TARGET_CHARS[1]:,}자" in p
+    assert "표·체크리스트·FAQ·마무리는 이 글자 수에" in p
+    assert BODY_TARGET_CHARS[0] > MIN_BODY_CHARS
+
+
 # ---------- 생성기 (가짜 Gemini) ----------
 
 class FakeResponse:

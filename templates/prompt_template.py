@@ -12,6 +12,12 @@ from src.source_fetcher import Source
 # 한국어 성우 속도(공백 포함 글자/초). edge-tts SunHi 실측: 대본 200자 → 31.5초(장면 사이 쉼 포함) ≈ 6.3자/초.
 CHARS_PER_SECOND = 6.2
 
+# 블로그 본문 목표 글자 수(공백 포함). 검사(ai_generator.check_content)와 같은 범위만 센다:
+# 도입 문단 + 소제목의 문단·주의·요약. 표·체크리스트·FAQ·마무리는 넣지 않는다.
+# 모델은 한국어 글자 수를 짧게 잡는 경향이 있어 소제목당 분량도 함께 알려 준다.
+BODY_TARGET_CHARS = (1500, 2500)
+SECTION_TARGET_CHARS = (300, 450)
+
 SYSTEM_INSTRUCTION = """\
 너는 한국 생활 정보 블로그 '잘체크'의 편집자다. 정부 지원금, 세금, 제도, 생활비 정보를
 독자가 스스로 판단할 수 있게 정확하고 쉽게 정리한다.
@@ -107,7 +113,10 @@ def build_prompt(
         f"주제: {topic}",
         f"쇼츠 목표 길이: {target_seconds}초 → 모든 장면 narration을 합쳐 공백 포함 {low}~{high}자"
         f" (권장: {scene_plan(target_seconds)[0]}장면 × 장면당 약 {scene_plan(target_seconds)[1]}자)",
-        "블로그 본문은 소제목 4~6개, 전체 2,000~3,500자 정도로 쓴다.",
+        f"블로그 본문은 소제목 4~6개. 도입 문단과 소제목의 문단·주의(note)·요약(takeaway) 글자만 합쳐"
+        f" 공백 포함 {BODY_TARGET_CHARS[0]:,}~{BODY_TARGET_CHARS[1]:,}자로 쓴다. 표·체크리스트·FAQ·마무리는 이 글자 수에"
+        f" 들어가지 않으므로, 표가 있는 소제목도 문단으로 구분법·예외·다음 행동을 설명한다"
+        f" (권장: 소제목마다 문단·주의·요약 합계 약 {SECTION_TARGET_CHARS[0]}~{SECTION_TARGET_CHARS[1]}자).",
         "아래 [자료]만 근거로 마스터 콘텐츠 JSON을 만든다. 자료 밖 지식으로 숫자나 기준을 채우지 않는다.",
         "[자료]",
         "\n\n".join(blocks),
