@@ -31,6 +31,8 @@ log = logging.getLogger(__name__)
 DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 RETRY_WAITS = (10, 30, 60)       # 일시적 오류 재시도 간격(초)
 MAX_QUALITY_ROUNDS = 3           # 검사 불합격 시 최대 작성 횟수
+BODY_SHORT_PROBLEM = "본문(문단·주의·요약 글자)"   # 분량 부족 지적의 앞부분
+BODY_KEEP_PROBLEM = "[분량 유지]"                  # 다른 지적을 고칠 때 붙이는 분량 유지 안내
 MIN_BODY_CHARS = 1200          # 이보다 짧으면 다시 쓰게 함(얇은 글 방지)
 MAX_TIMEOUTS_PER_MODEL = 2      # 같은 모델에서 시간 초과가 이만큼 나면 예비 모델로
 MAX_SHORTS_REPAIRS = 2           # 쇼츠 길이만 틀렸을 때 대본만 고쳐 쓰는 횟수
@@ -283,10 +285,9 @@ def check_content(
             f"{NARRATION_PROBLEM}를 공백 포함 {low}~{high}자로 맞춰 주세요(현재 {total}자)."
         )
 
-    body_chars = sum(len(t) for s in c.sections for t in section_paragraphs(s)) + \
-        sum(len(paragraph_text(p)) for p in c.intro)
+    body_chars = count_body_chars(c)
     if body_chars < MIN_BODY_CHARS:
-        problems.append(f"본문(문단·주의·요약 글자)이 {body_chars}자로 너무 짧습니다. 소제목마다 구분법·예외·"
+        problems.append(f"{BODY_SHORT_PROBLEM}이 {body_chars}자로 너무 짧습니다. 소제목마다 구분법·예외·"
                         f"다음 행동 설명을 보강해 {MIN_BODY_CHARS}자 이상으로 써 주세요(표 내용 반복은 금지).")
     elif body_chars < BODY_TARGET_CHARS[0]:
         warnings.append(f"본문이 짧습니다({body_chars}자).")
@@ -311,6 +312,12 @@ def _is_transient(exc: Exception) -> bool:
         return getattr(exc, "code", None) in _TRANSIENT_CODES
     name = exc.__class__.__name__.lower()
     return "timeout" in name or "connect" in name
+
+
+def count_body_chars(c: MasterContent) -> int:
+    """검사에서 세는 본문 글자 수: 도입 문단 + 소제목의 문단·주의·요약(표·체크리스트·FAQ 제외)."""
+    return sum(len(t) for s in c.sections for t in section_paragraphs(s)) + \
+        sum(len(paragraph_text(p)) for p in c.intro)
 
 
 class ContentGenerator:
@@ -416,8 +423,13 @@ class ContentGenerator:
                     content, problems, warnings = self._repair_shorts(content, sources, target_seconds)
                 if not problems:
                     return GenerationResult(content, model, round_no, warnings)
-                last_problems = problems_for_next = problems
-                draft = (content.model_dump_json(), problems)
+                last_problems = problems_for_next = list(problems)
+                if not any(p.startswith(BODY_SHORT_PROBLEM) for p in problems):
+                    # 다른 곳을 고치다가 본문을 줄여 다시 불합격하는 일을 막는다(불합격 이유 기록에는 넣지 않음)
+                    problems_for_next = problems_for_next + [
+                        f"{BODY_KEEP_PROBLEM} 지금 {BODY_SHORT_PROBLEM}은 {count_body_chars(content)}자입니다. "
+                        f"고치면서 이보다 줄이지 말고 {MIN_BODY_CHARS}자 이상을 유지해 주세요."]
+                draft = (content.model_dump_json(), problems_for_next)
             log.info("검사 불합격(%s회차): %s", round_no, last_problems)
             feedback = "\n".join(f"- {p}" for p in problems_for_next)
         raise GenerationError("검사를 통과하지 못했습니다: " + " / ".join(last_problems))

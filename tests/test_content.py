@@ -253,6 +253,37 @@ def test_failed_draft_is_fixed_not_rewritten():
     assert "잘못된 슬러그" in second and "slug" in second
 
 
+def test_fix_round_asks_to_keep_body_length():
+    """분량 말고 다른 곳만 걸렸으면, 고치면서 본문을 줄이지 말라고 현재 글자 수를 알려 준다."""
+    from src.ai_generator import BODY_KEEP_PROBLEM, count_body_chars
+    bad = good_data()
+    bad["slug"] = "잘못된 슬러그"
+    gen, client = make_gen([json.dumps(bad), json.dumps(good_data())])
+    gen.generate("근로장려금", SOURCES, 45)
+    second = client.calls[1][1]
+    assert BODY_KEEP_PROBLEM in second and f"{count_body_chars(model(bad))}자" in second
+
+
+def test_keep_length_hint_is_not_a_failure_reason():
+    """분량 유지 안내는 고칠 지시일 뿐, 최종 불합격 이유에는 들어가지 않는다."""
+    bad = good_data()
+    bad["slug"] = "잘못된 슬러그"
+    gen, _ = make_gen([json.dumps(bad)] * 3)
+    with pytest.raises(GenerationError) as exc:
+        gen.generate("근로장려금", SOURCES, 45)
+    assert "분량 유지" not in str(exc.value)
+
+
+def test_short_body_round_has_no_keep_length_hint():
+    from src.ai_generator import BODY_KEEP_PROBLEM
+    short = good_data()
+    for s in short["sections"]:
+        s["blocks"] = [b for b in s["blocks"] if b["type"] != "paragraph"][:1] or s["blocks"][:1]
+    gen, client = make_gen([json.dumps(short), json.dumps(good_data())])
+    gen.generate("근로장려금", SOURCES, 45)
+    assert "너무 짧습니다" in client.calls[1][1] and BODY_KEEP_PROBLEM not in client.calls[1][1]
+
+
 def test_broken_fix_retries_previous_draft_with_same_problems():
     bad = good_data()
     bad["slug"] = "잘못된 슬러그"
