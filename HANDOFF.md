@@ -225,3 +225,13 @@
 - ③ 캡처에서 사진이 빈칸 → 실제 사진은 정상(200), 지연 로딩 전에 캡처된 것. 캡처 전 모든 img를 즉시 로딩·완료 대기
 - `jobctl redraft <번호>`: 글·쇼츠는 그대로, 경고 재계산 후 임시 글 HTML만 다시 만들고 새 승인 요청
 - 실행기 서비스 재시작(새 코드 반영) 후 1번 redraft. 테스트 240개 통과
+
+## 2026-11-04 사이트 이름·시간대·SEO 기본 설정 (지시: 사용자 "사이트 이름 잘체크, 시간대 한국, 나머지 알아서·구글 SEO" / 작업: Claude / 검토: Codex(SEO 코드) PASS)
+- 백업: `~/backups/2026-11-04-site-seo/wordpress-full.sql`
+- 설정(REST): 사이트 이름 "잘체크", 설명 "지원금·세금·생활 제도, 공식 자료로 확인한 체크리스트", 시간대 Asia/Seoul, 날짜 "Y년 n월 j일", 시간 "H:i"
+- 카테고리 1 "미분류" → "지원금·세금"(slug support-tax, 기본 카테고리), 작성자 표시 "잘체크 편집팀"(slug jalcheck-editor, 로그인 아이디 노출 방지)
+- 글 주소 `/%year%/%monthnum%/%day%/%postname%/` → `/%postname%/`(DB permalink_structure 변경, rewrite_rules 재생성). ?p= 주소는 301로 새 주소 이동 확인
+- SEO mu-plugin 설치(`wp-content/mu-plugins/jalcheck-seo.php`, sudo install, www-data 소유): 공개 글 meta description(요약문)·OG·Twitter·JSON-LD Article, 첫 화면 WebSite, 카테고리 설명. 다른 SEO 플러그인 있으면 꺼짐
+- 글 생성: 태그(핵심 검색어+AI 태그 2~4개, ensure_tags), 사진 대체 텍스트는 image_alt(사진 내용 설명), 글 끝 '잘체크 편집 기준' 상자(공식 자료 확인·확인일·최종 확인 안내·소개 링크)
+- 페이지: 소개와 편집 원칙 `/about/` 공개(41), 개인정보 처리방침(3) 초안 임시 저장 — 연락처 이메일 필요(사용자 확인 대기), 예제 페이지(2) 휴지통
+- 남은 일: 연락처 확정 → 개인정보 처리방침·문의 페이지 공개, 첫 실제 글 발행 후 기본 글 "안녕하세요!"(1) 삭제(현재 화면 캡처 틀로 사용 중), 검색엔진 차단 해제 시점 결정(지금은 noindex라 사이트 지도 꺼짐) → 해제 후 구글 서치 콘솔 등록·사이트 지도 제출(사용자 구글 계정 필요)
