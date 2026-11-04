@@ -197,3 +197,10 @@
 - 사진 관련성: Pixabay 인기순 결과로 엉뚱한 사진(노트북→팟캐스트 마이크) → 태그 관련도 순(앞 3개 태그 3점, 나머지 1점, 하나도 안 맞으면 제외)
 - 실제 검증: 근로장려금 재생성(3분, 1회 통과) → 링크 [신청] 홈택스 https://www.hometax.go.kr/, [안내] 국세청 페이지, 쇼츠 숫자 표기. 임시 글 31번(작업 900004)·쇼츠 39초 렌더(81초)·텔레그램 승인 요청(시험) 전송. 테스트 219개 통과
 - 정리 대기: 이전 시험 임시 글 26번(작업 900003)과 사진은 남아 있음
+
+## 2026-11-04 전체 자동 실행기 (지시: 사용자 / 작업: Claude / 검토: Codex 3회, 최종 PASS — REVIEW.md)
+- 사용자 승인으로 시험 임시 글 26번·사진 2장 삭제
+- 추가: `src/pipeline.py`(단계 함수·Services), `src/orchestrator.py`(장부 상태 진행, 체크포인트로 이어 하기, 텔레그램 버튼 처리, 상시 실행: 작업 스레드+버튼 수신 스레드, 단일 실행 잠금, offset 파일 data/telegram_offset.json), `scripts/jobctl.py`(add/list/show/retry/cancel/once/run), db에 begin_publishing(nonce)·cancel_if_current·stale_publishing
+- 첫 실제 작업: 1번 "2026년 자녀장려금 신청 자격과 지급액" → 21분(Gemini 3.8 Flash 503으로 예비 모델 전환, 성우 접속 1회 재시도) → 쇼츠 36초, 임시 글 35번, 텔레그램 승인 요청(nonce 6045e5cd). 경고: 본문 짧음(803자), takeaway 4곳
+- 실행: 상시 실행기(jobctl run)는 아직 켜지 않음 → 버튼 처리 안 됨. systemd 서비스 등록은 사용자 승인 필요
+- 남은 일: 1번 글 발행 여부 결정, 상시 실행 서비스 등록, 예비 모델 글 품질(본문 짧음) 대응, 사이트 기본 정리(이름·시간대·개인정보 처리방침), 구글 시트 연동(sheet_manager)·웹 대시보드(web_ui)
