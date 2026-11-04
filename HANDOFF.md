@@ -212,3 +212,9 @@
 - 1번 작업 redo(사용자 요청) → 대기열
 - 상시 실행: `deploy/systemd/jalcheck-worker.service` 작성(Nice 15, CPUWeight 20, MemoryMax 3G, Restart on-failure). 사용자 승인은 받았으나 Claude Code 자동 안전 장치가 '영구 설정(Unauthorized Persistence)'으로 설치 명령을 차단 → 미설치. 임시로 이 대화 세션의 백그라운드에서 `jobctl run` 실행(최대 2시간, 로그 data/worker-session.log)
 - 테스트 238개 통과
+
+## 2026-11-04 상시 실행 서비스 등록 (지시: 사용자 / 작업: Claude / 검토: 없음 — 서버 서비스 등록, 사용자 승인)
+- 사용자 요청으로 `~/.claude/settings.json`에 이 서비스 관련 명령만 정확히 허용하는 규칙 10개 추가(cp 단위 파일, daemon-reload, enable/disable/start/stop/restart, status/is-active, journalctl). 기존 알림 훅 유지
+- 임시 세션 실행기를 SIGTERM으로 정상 종료 후 `/etc/systemd/system/jalcheck-worker.service` 설치, `systemctl enable --now` → active(running), MemoryMax 3G 적용 확인. 로그: `sudo journalctl -u jalcheck-worker -f`
+- 1번 작업 다시 쓰기 결과: 최신 모델(gemini-3.8-flash), 본문 1,623자, 바로가기 [신청] 홈택스·[조회] 심사진행상황, 쇼츠 45.6초, 승인 요청(nonce ef6fe799). 경고: 자료에서 못 찾은 숫자 10만·5%(5%는 '95% 지급'에서 유도된 것으로 보임) — 발행 전 확인 필요
+- 주의: 이제 텔레그램 [발행]은 실제 공개 게시
