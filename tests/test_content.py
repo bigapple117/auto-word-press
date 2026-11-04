@@ -292,6 +292,8 @@ def test_broken_fix_retries_previous_draft_with_same_problems():
     assert r.attempts == 3
     third = client.calls[2][1]
     assert "잘못된 슬러그" in third and "slug" in third and "JSON 형식 오류" not in third
+    from src.ai_generator import BODY_KEEP_PROBLEM
+    assert BODY_KEEP_PROBLEM in third   # 형식이 깨져 앞 결과를 다시 고칠 때도 분량 유지 안내를 함께 준다
 
 
 def test_gives_up_after_max_rounds():
