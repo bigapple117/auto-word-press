@@ -1,0 +1,274 @@
+"""전체 자동 실행기: 장부(db)의 작업을 한 건씩 처리하고, 텔레그램 버튼으로 발행·보류·취소한다.
+
+흐름(블로그+쇼츠):
+  queued → generating(자료·글) → tts(성우·자막) → media(사진·배경) → rendering(쇼츠 합성
+  + 임시 글 + 승인 요청) → awaiting_approval → [발행] publishing → published
+블로그만: generating → media(사진 + 임시 글 + 승인 요청) → awaiting_approval
+단계 결과는 체크포인트에 저장되어, 다시 실행하면 끝난 단계는 건너뛴다.
+
+안전장치:
+- 실행기는 서버에서 하나만(파일 잠금). 시작할 때 멈춰 있던 작업을 recover_interrupted로 되돌림.
+- 버튼은 장부에 저장한 '현재 승인 요청 번호(nonce)'와 같을 때만 처리(예전 메시지 버튼 무시).
+- 발행은 begin_publishing으로 먼저 선점한 한 번만, 워드프레스 발행도 두 번 눌러도 안전.
+- 텔레그램 offset은 결정을 처리한 뒤에 파일로 저장.
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import logging
+import sqlite3
+import threading
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterator
+
+from src import db
+from src.content_schema import MasterContent
+from src.pipeline import (PipelineError, Services, make_content, make_draft, make_tts, make_video,
+                          pick_media, request_approval, sources_from)
+from src.telegram_notifier import Decision, TelegramError
+from src.wp_client import WPError
+
+log = logging.getLogger(__name__)
+
+IDLE_SECONDS = 15
+POLL_WAIT_SECONDS = 25
+NAMES = {"publish": "발행", "hold": "보류", "cancel": "취소"}
+
+
+class Orchestrator:
+    def __init__(self, conn: sqlite3.Connection, services: Services) -> None:
+        self.conn = conn
+        self.svc = services
+        self._unrecorded: dict[int, str] = {}     # 실패 기록에 실패한 작업 → 다음 작업 전에 다시 기록
+
+    # ---------- 작업 처리 ----------
+    def _advance(self, job_id: int, status: str) -> None:
+        """다음 상태로. 체크포인트로 건너뛸 때도 상태는 순서대로 지나간다."""
+        if db.get_job(self.conn, job_id)["status"] != status:
+            db.set_status(self.conn, job_id, status)
+
+    def process(self, job: dict[str, Any]) -> None:
+        """claim_next로 가져온 작업 한 건(상태 generating)을 승인 대기까지 진행한다."""
+        job_id, mode, seconds = job["id"], job["mode"], job["target_seconds"]
+        if mode == "shorts":
+            raise PipelineError("'쇼츠만' 작업은 아직 지원하지 않습니다(유튜브 업로드 연결 후 지원)")
+        with_shorts = mode == "blog_shorts"
+        cp = job["checkpoint"]
+
+        if "content" not in cp:
+            cp["content"] = make_content(self.svc, job["topic"], seconds)
+            db.save_checkpoint(self.conn, job_id, "content", cp["content"])
+            db.update_fields(self.conn, job_id, title=cp["content"]["content"]["title"])
+        content = MasterContent.model_validate(cp["content"]["content"])
+        sources = sources_from(cp["content"]["sources"])
+
+        if with_shorts:
+            self._advance(job_id, "tts")
+            if "tts" not in cp:
+                cp["tts"] = make_tts(self.svc, job_id, content, seconds)
+                db.save_checkpoint(self.conn, job_id, "tts", cp["tts"])
+
+        self._advance(job_id, "media")
+        if "media" not in cp:
+            cp["media"] = pick_media(self.svc, content, with_shorts)
+            db.save_checkpoint(self.conn, job_id, "media", cp["media"])
+
+        video_path = None
+        if with_shorts:
+            self._advance(job_id, "rendering")
+            if "video" not in cp:
+                cp["video"] = make_video(self.svc, job_id, content, cp["tts"], cp["media"])
+                db.save_checkpoint(self.conn, job_id, "video", cp["video"])
+                db.update_fields(self.conn, job_id, video_path=cp["video"]["path"])
+            video_path = Path(cp["video"]["path"])
+
+        current = db.get_job(self.conn, job_id)
+        if "draft" not in cp:
+            cp["draft"] = make_draft(self.svc, job_id, content, sources, cp["media"], current["post_id"])
+            db.save_checkpoint(self.conn, job_id, "draft", cp["draft"])
+        post_id = cp["draft"]["post_id"]
+        db.record_post(self.conn, job_id, post_id, cp["draft"]["link"])
+
+        # 승인 요청은 매번 새로 보낸다(재시작 후 다시 보내도 새 요청 번호만 유효)
+        approval = request_approval(self.svc, job_id, content, cp["content"]["warnings"], post_id, video_path)
+        db.save_checkpoint(self.conn, job_id, "approval", approval)
+        db.set_status(self.conn, job_id, "awaiting_approval")
+        log.info("작업 %s번 승인 대기(글 %s번)", job_id, post_id)
+
+    def run_once(self) -> int | None:
+        """대기 작업 하나를 처리한다. 처리한 작업 번호(없으면 None)."""
+        for job_id, message in list(self._unrecorded.items()):
+            db.set_status(self.conn, job_id, "failed", error=message)   # 실패하면 예외 → 루프가 잠시 뒤 재시도
+            del self._unrecorded[job_id]
+        job = db.claim_next(self.conn)
+        if job is None:
+            return None
+        try:
+            self.process(job)
+        except Exception as exc:  # noqa: BLE001 - 어떤 실패든 장부에 남기고 알린다
+            log.exception("작업 %s번 실패", job["id"])
+            message = f"{exc.__class__.__name__}: {exc}"[:500]
+            try:
+                db.set_status(self.conn, job["id"], "failed", error=message)
+            except Exception:  # noqa: BLE001 - 다음 작업을 가져오기 전에 다시 기록한다
+                log.exception("작업 %s번 실패 기록 실패(다음 차례에 다시 기록)", job["id"])
+                self._unrecorded[job["id"]] = message
+            self._notify(f"[작업 {job['id']}] 실패: {job['topic']}\n{message}\n다시 하려면: jobctl retry {job['id']}")
+        return job["id"]
+
+    def _notify(self, text: str) -> None:
+        try:
+            self.svc.telegram.send_text(text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("텔레그램 알림 실패: %s", exc)
+
+    # ---------- 버튼 처리 ----------
+    def handle_decision(self, d: Decision) -> str:
+        """버튼 하나를 처리하고, 사용자 화면에 띄울 짧은 안내를 돌려준다."""
+        tg = self.svc.telegram
+        job = db.get_job(self.conn, d.job_id)
+        approval = (job or {}).get("checkpoint", {}).get("approval") or {}
+        if not job or approval.get("nonce") != d.nonce:
+            return "지난 승인 요청입니다. 가장 최근 메시지의 버튼을 눌러 주세요"
+        if job["status"] == "published":
+            return "이미 발행된 글입니다"
+        if d.action == "hold":
+            return "보류했습니다. 나중에 [발행]을 눌러도 됩니다"
+        if d.action == "cancel":
+            # 요청 번호 확인과 취소를 장부에서 한 번에(그사이 새 승인 요청이 끼어들어도 안전)
+            if not db.cancel_if_current(self.conn, d.job_id, d.nonce):
+                return "취소할 수 없는 상태이거나 지난 요청입니다"
+            tg.mark_done(d.message_id, f"[작업 {d.job_id}] 취소했습니다. 워드프레스 임시 글은 그대로 남겨 두었습니다.")
+            return "취소했습니다"
+        # 발행: 요청 번호 확인과 선점을 장부에서 한 번에
+        if not db.begin_publishing(self.conn, d.job_id, nonce=d.nonce):
+            return "이미 처리 중이거나 발행할 수 없는 상태입니다"
+        post_id = db.get_job(self.conn, d.job_id)["post_id"]
+        try:
+            post = self.svc.wp.publish(d.job_id, post_id)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("작업 %s번 발행 요청 실패", d.job_id)
+            definite = isinstance(exc, WPError) and exc.status is not None and 400 <= exc.status < 500
+            if definite:   # 워드프레스가 분명히 거절 → 승인 대기로 되돌려 다시 누를 수 있게
+                db.set_status(self.conn, d.job_id, "awaiting_approval")
+                self._notify(f"[작업 {d.job_id}] 발행 실패: {exc}\n문제를 고친 뒤 같은 메시지의 [발행]을 다시 누르세요.")
+                return "발행에 실패했습니다"
+            # 응답이 끊기는 등 결과가 불확실 → '발행 중'으로 두고 실제 상태를 확인해 맞춘다
+            self._notify(f"[작업 {d.job_id}] 발행 결과를 확인하지 못했습니다({exc.__class__.__name__}). "
+                         "몇 분 안에 워드프레스 실제 상태를 확인해 정리합니다.")
+            return "발행 결과 확인 중입니다"
+        try:
+            db.mark_published(self.conn, d.job_id, post.id, post.link)
+        except Exception:  # noqa: BLE001 - 발행은 됐으니 장부는 reconcile_publishing이 나중에 맞춘다
+            log.exception("작업 %s번: 발행됐지만 장부 기록 실패(나중에 다시 맞춤)", d.job_id)
+        tg.mark_done(d.message_id, f"[작업 {d.job_id}] 발행했습니다.\n{post.link}")
+        return "발행했습니다"
+
+    def reconcile_publishing(self, older_than_seconds: int = 180) -> list[int]:
+        """'발행 중'으로 오래 멈춘 작업을 워드프레스 실제 상태와 맞춘다(버튼 수신 스레드에서 주기적으로)."""
+        fixed = []
+        for job in db.stale_publishing(self.conn, older_than_seconds):
+            try:
+                post = self.svc.wp.get_post(job["post_id"])
+                if post and post.status == "publish":
+                    db.mark_published(self.conn, job["id"], post.id, post.link)
+                else:
+                    db.set_status(self.conn, job["id"], "awaiting_approval")
+                fixed.append(job["id"])
+            except Exception:  # noqa: BLE001
+                log.exception("작업 %s번 발행 상태 맞추기 실패", job["id"])
+        return fixed
+
+    def poll_once(self, offset: int | None, wait: int = POLL_WAIT_SECONDS) -> int | None:
+        decisions, next_offset = self.svc.telegram.poll_decisions(offset, wait_seconds=wait)
+        for d in decisions:
+            try:
+                note = self.handle_decision(d)
+            except Exception as exc:  # noqa: BLE001 - 버튼 하나의 실패가 수신을 멈추지 않게
+                log.exception("버튼 처리 실패")
+                note = f"처리 중 오류: {exc.__class__.__name__}"
+            try:   # 화면 안내 실패가 이미 처리한 결정의 offset 저장을 막지 않게
+                self.svc.telegram.answer(d.callback_id, f"[{NAMES.get(d.action, d.action)}] {note}")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("버튼 화면 안내 실패: %s", exc)
+        return next_offset
+
+
+# ---------- 상시 실행 ----------
+
+def _load_offset(path: Path) -> int | None:
+    try:
+        return int(json.loads(path.read_text())["offset"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _save_offset(path: Path, offset: int | None) -> None:
+    if offset is None:
+        return
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"offset": offset}))
+    tmp.replace(path)
+
+
+@contextmanager
+def single_instance(lock_path: Path) -> Iterator[None]:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit("실행기가 이미 돌고 있습니다(중복 실행 방지)") from None
+        yield
+
+
+def run_forever(services: Services, stop: threading.Event | None = None) -> None:
+    """작업 처리(본 스레드)와 버튼 수신(별도 스레드)을 함께 돌린다. Ctrl+C·종료 신호로 멈춘다."""
+    stop = stop or threading.Event()
+    settings = services.settings
+    with single_instance(settings.data_dir / ".worker.lock"):
+        main_conn = db.connect(settings.db_path)
+        recovered = db.recover_interrupted(main_conn)
+        if recovered:
+            log.info("멈춰 있던 작업 되돌림: %s", recovered)
+        offset_file = settings.data_dir / "telegram_offset.json"
+
+        def listen() -> None:
+            conn = db.connect(settings.db_path)
+            orch = Orchestrator(conn, services)
+            offset = _load_offset(offset_file)
+            while not stop.is_set():
+                try:
+                    orch.reconcile_publishing()
+                    new = orch.poll_once(offset)
+                    if new != offset:
+                        _save_offset(offset_file, new)    # 결정을 처리한 뒤에 저장
+                        offset = new
+                except TelegramError as exc:
+                    log.warning("텔레그램 수신 오류: %s", exc)
+                    stop.wait(10)
+                except Exception:  # noqa: BLE001
+                    log.exception("버튼 수신 스레드 오류")
+                    stop.wait(10)
+
+        listener = threading.Thread(target=listen, name="telegram-listener", daemon=True)
+        listener.start()
+        worker = Orchestrator(main_conn, services)
+        log.info("실행기 시작")
+        try:
+            while not stop.is_set():
+                try:
+                    if worker.run_once() is None:
+                        stop.wait(IDLE_SECONDS)
+                except Exception:  # noqa: BLE001 - 장부 일시 오류 등: 실행기는 멈추지 않고 잠시 뒤 다시
+                    log.exception("작업 처리 루프 오류, 30초 뒤 다시 시도")
+                    stop.wait(30)
+        except KeyboardInterrupt:
+            log.info("종료 요청")
+        finally:
+            stop.set()
+            listener.join(timeout=POLL_WAIT_SECONDS + 20)
+            log.info("실행기 종료")

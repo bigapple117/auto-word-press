@@ -300,13 +300,20 @@ def record_post(
             raise JobError(f"글 {post_id}번은 다른 작업에 이미 기록돼 있습니다") from exc
 
 
-def begin_publishing(conn: sqlite3.Connection, job_id: int) -> bool:
+def _approval_nonce(job: sqlite3.Row) -> str | None:
+    return (json.loads(job["checkpoint"]).get("approval") or {}).get("nonce")
+
+
+def begin_publishing(conn: sqlite3.Connection, job_id: int, nonce: str | None = None) -> bool:
     """승인 대기 → 발행 중으로 선점한다. 성공한 호출 하나만 True를 받아 실제 발행을 진행한다.
 
+    nonce를 주면 같은 트랜잭션 안에서 '현재 승인 요청 번호'와 같은지도 확인한다(예전 버튼 차단).
     워드프레스 호출은 이 함수가 끝난 뒤(트랜잭션 밖에서) 한다.
     """
     with _write(conn):
         job = _get_for_update(conn, job_id)
+        if nonce is not None and _approval_nonce(job) != nonce:
+            return False
         if job["post_id"] is None:
             raise JobError(f"작업 {job_id}번에는 발행할 워드프레스 글이 없습니다")
         cur = conn.execute(
@@ -315,6 +322,25 @@ def begin_publishing(conn: sqlite3.Connection, job_id: int) -> bool:
             (_now(), job_id),
         )
         return cur.rowcount == 1
+
+
+def cancel_if_current(conn: sqlite3.Connection, job_id: int, nonce: str) -> bool:
+    """승인 대기 중이고 현재 승인 요청 번호가 같을 때만 취소한다(확인과 변경을 한 트랜잭션에서)."""
+    with _write(conn):
+        job = _get_for_update(conn, job_id)
+        if _approval_nonce(job) != nonce or job["status"] != "awaiting_approval":
+            return False
+        conn.execute("UPDATE jobs SET status = 'canceled', error = NULL, updated_at = ? WHERE id = ?",
+                     (_now(), job_id))
+        return True
+
+
+def stale_publishing(conn: sqlite3.Connection, older_than_seconds: int) -> list[dict[str, Any]]:
+    """'발행 중'으로 오래 멈춘 작업(발행 후 장부 기록 실패 등) — 실제 상태와 맞춰야 한다."""
+    cutoff = (datetime.now(timezone.utc).timestamp() - older_than_seconds)
+    rows = conn.execute("SELECT * FROM jobs WHERE status = 'publishing'").fetchall()
+    return [_row_to_dict(r) for r in rows
+            if datetime.fromisoformat(r["updated_at"]).timestamp() < cutoff]
 
 
 def recover_interrupted(conn: sqlite3.Connection) -> list[int]:

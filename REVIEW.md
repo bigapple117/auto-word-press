@@ -147,3 +147,19 @@
 3차 **CHANGES_REQUESTED(경미)** → 반영: |·^·백틱에서 잘림 → 보이는 ASCII 전체를 덩어리로
 - 렌더링 XSS: href·class 탈출 경로 없음(1차 확인)
 - 검증: pytest 219개(Claude 실행), 실제 생성 글에서 홈택스·국세청 링크 통과(지어낸 주소 0), 임시 글 31번 화면 캡처로 바로가기 상자 확인
+
+---
+
+# 2026-11-04 전체 자동 실행기 검토 기록 (작성: Claude, 검토: Codex — codex-consult 코드 전달)
+
+대상: src/pipeline.py, src/orchestrator.py, scripts/jobctl.py, src/db.py(begin_publishing nonce, cancel_if_current, stale_publishing)
+1차 **CHANGES_REQUESTED** → 반영
+- nonce 확인과 발행 선점이 원자적이지 않음 → db.begin_publishing(nonce)·cancel_if_current가 한 트랜잭션에서 현재 승인 요청 번호 확인+상태 변경
+- once가 실행기 잠금 우회 → once도 .worker.lock
+- 발행 후 장부 기록 실패 시 publishing 고착 → 수신 스레드가 reconcile_publishing(180초)으로 워드프레스 실제 상태와 맞춤
+- 화면 안내 실패가 offset 진행을 막음 → answer 개별 예외 처리
+- 작업 획득·실패 기록 오류가 실행기 전체 종료 → 메인 루프 예외 시 30초 뒤 재시도
+2차 **CHANGES_REQUESTED** → 반영: 발행 응답만 끊긴 경우 승인 대기로 되돌려 '공개됐는데 취소' 가능 → WPError 4xx만 되돌리고 불확실하면 publishing 유지+재조정, 실패 기록 실패 작업은 다음 작업 전에 재기록
+3차 **PASS**
+- 검증: pytest 234개(오케스트레이터 15개: 전체 흐름·재발행·nonce·보류/취소·실패 재시도·발행 실패 복구·블로그만·재시작·원자 nonce·장부 실패 재조정·불확실 발행·answer 실패·실패 기록 재시도)
+- 미검증: 실제 작업 1건 처리 중(Gemini 503 재시도), 상시 실행(systemd) 미적용
