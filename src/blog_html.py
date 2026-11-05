@@ -164,6 +164,8 @@ def render_blog_html(
     out: list[str] = ['<div class="jc-article">']
     out += [_paragraph(p) for p in content.intro]
     out.append(f'<p class="jc-reference">기준: {escape(content.reference_note)}</p>')
+    if content.eligibility.strip():
+        out.append(f'<p class="jc-reference">대상: {escape(content.eligibility.strip())}</p>')
     links, _rejected = check_action_links(content.action_links, sources)
     if links:
         out.append(_links_box(links))

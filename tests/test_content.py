@@ -107,6 +107,17 @@ def test_unverified_becomes_warning():
     assert problems == [] and any("자녀장려금" in w for w in warnings)
 
 
+def test_missing_eligibility_is_warned_and_given_one_is_shown():
+    data = good_data()
+    problems, warnings = check_content(model(data), SOURCES, 45)
+    assert problems == [] and any("지원 대상" in w for w in warnings)
+    data["eligibility"] = "근로·사업소득이 있는 <가구>"
+    _, warnings = check_content(model(data), SOURCES, 45)
+    assert not any("지원 대상" in w for w in warnings)
+    html = render_blog_html(model(data), SOURCES)
+    assert '<p class="jc-reference">대상: 근로·사업소득이 있는 &lt;가구&gt;</p>' in html
+
+
 def test_prompt_contains_sources_budget_and_feedback():
     p = build_prompt("근로장려금", SOURCES, 45, feedback="- 이모지를 빼 주세요.")
     low, high = narration_budget(45)

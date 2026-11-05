@@ -81,6 +81,9 @@ class MasterContent(BaseModel):
     focus_keyword: str = Field(description="핵심 검색어 하나")
     tags: list[str] = Field(default_factory=list, description="글 태그 2~4개(짧은 명사, 예: '자녀장려금', '홈택스')")
     reference_note: str = Field(description="정보 기준 시점 설명. 예: '2026년 정기신청(2025년 소득) 기준'")
+    eligibility: str = Field(default="", description=(
+        "누가 받을 수 있는지(지원 대상) 한 문장. [자료]에 적힌 대로. 예: '만 6세 이상 기초생활수급자와 차상위계층'. "
+        "지원금·바우처·감면처럼 대상이 정해진 제도면 반드시 채운다. 누구나 해당하는 주제일 때만 빈 문자열"))
     intro: list[Paragraph] = Field(description=(
         "도입 문단 1~2개. 제도 정의로 시작하지 말고 독자가 확인하려는 문제와 이 글에서 다룰 범위를 먼저"))
     action_links: list[ActionLink] = Field(default_factory=list, description=(

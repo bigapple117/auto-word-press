@@ -268,6 +268,9 @@ def check_content(
     if used:
         problems.append(f"금지 표현을 다른 말로 바꿔 주세요: {', '.join(used)}")
 
+    if not c.eligibility.strip():
+        warnings.append("지원 대상(eligibility)이 비어 있습니다. 대상이 정해진 제도라면 누가 받을 수 있는지 확인하세요.")
+
     _ok_links, bad_links = check_action_links(c.action_links, sources)
     if bad_links:
         warnings.append("바로가기 링크에서 뺀 것: " + " / ".join(bad_links))
