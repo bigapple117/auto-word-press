@@ -320,3 +320,10 @@
 - 변경: deploy/wp/jc-article.css `.jc-article h2` margin-top 2.4em → 3.4em(약 68px), `scripts/apply_site_css.py`로 적용. 백업 ~/backups/2026-11-05-site-css/global-styles-6-000927.json
 - 검증: 실제 사이트에서 소제목 7곳 모두 68px, 문단 사이 20px 그대로, Cloudflare 캐시 DYNAMIC(바로 반영)
 - 되돌리기: 2.4em으로 고쳐 같은 스크립트 재실행, 또는 백업 JSON 복원
+
+## 2026-11-05 유튜브 채널 프로필 사진·배너 제작
+- 지시자: 사용자(유튜브 채널 만들기, 계정 jalcheck.help@gmail.com) / 작업자: Claude / 검토자: 없음(이미지 파일만, 운영 영향 없음)
+- 파일: `scripts/make_youtube_brand.py` → `assets/brand/youtube/profile.png`(800x800, 원형으로 잘려도 글자·체크가 안에 들어가게), `banner.png`(2560x1440, 글자는 모든 기기에서 보이는 가운데 1546x423 안), `banner-safe-area-check.png`(확인용 빨간 선)
+- 블로그 주소는 https://jalcheck.com (jalcheck.help는 Gmail 아이디일 뿐, 도메인 아님)
+- 채널 쪽 상태: 새 계정이라 2단계 인증·전화번호 인증이 "본인 인증을 할 수 없습니다"로 막힘 → 처음 만든 기기·집 와이파이로 며칠 뒤 재시도 안내
+- 남은 일: 채널 핸들이 정해지면 블로그 소개 페이지에 유튜브 링크 추가
