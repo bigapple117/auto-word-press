@@ -25,7 +25,7 @@ PAGES = [  # (slug, 제목, 원본 파일)
     ("privacy-policy", "개인정보 처리방침", "privacy.html"),
 ]
 PARTS = ["header", "footer"]
-TEMPLATES = ["home", "single"]  # deploy/wp/templates/<이름>.html
+TEMPLATES = ["home", "single", "archive", "search"]  # deploy/wp/templates/<이름>.html
 THEME = "twentytwentyfive"
 
 

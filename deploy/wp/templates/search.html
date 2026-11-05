@@ -1,0 +1,58 @@
+<!-- wp:template-part {"slug":"header"} /-->
+
+<!-- wp:group {"tagName":"main","className":"jc-home jc-list","layout":{"type":"constrained"}} -->
+<main class="wp-block-group jc-home jc-list">
+	<!-- wp:group {"align":"wide","className":"jc-list-head","layout":{"type":"default"}} -->
+	<div class="wp-block-group alignwide jc-list-head">
+		<!-- wp:query-title {"type":"search","className":"jc-list-head__title"} /-->
+
+		<!-- wp:search {"label":"검색","showLabel":false,"placeholder":"제도 이름 검색","buttonText":"검색","className":"jc-list-search"} /-->
+	</div>
+	<!-- /wp:group -->
+
+	<!-- wp:group {"align":"wide","className":"jc-home-sec","layout":{"type":"default"}} -->
+	<div class="wp-block-group alignwide jc-home-sec">
+		<!-- wp:query {"queryId":21,"query":{"perPage":12,"pages":0,"offset":0,"postType":"post","order":"desc","orderBy":"date","inherit":true},"className":"jc-card-query"} -->
+		<div class="wp-block-query jc-card-query">
+			<!-- wp:post-template {"className":"jc-cards","layout":{"type":"grid","columnCount":3}} -->
+				<!-- wp:group {"className":"jc-card","layout":{"type":"default"}} -->
+				<div class="wp-block-group jc-card">
+					<!-- wp:post-featured-image {"isLink":true,"aspectRatio":"16/9","className":"jc-card__img"} /-->
+
+					<!-- wp:group {"className":"jc-card-meta","layout":{"type":"flex","flexWrap":"wrap"}} -->
+					<div class="wp-block-group jc-card-meta">
+						<!-- wp:post-terms {"term":"category","className":"jc-card-meta__cat"} /-->
+						<!-- wp:post-date {"format":"Y.m.d","className":"jc-card-meta__date"} /-->
+					</div>
+					<!-- /wp:group -->
+
+					<!-- wp:post-title {"level":2,"isLink":true,"className":"jc-card__title"} /-->
+
+					<!-- wp:post-excerpt {"excerptLength":35,"className":"jc-card__excerpt"} /-->
+				</div>
+				<!-- /wp:group -->
+			<!-- /wp:post-template -->
+
+			<!-- wp:query-pagination {"className":"jc-pagination","layout":{"type":"flex","justifyContent":"center"}} -->
+				<!-- wp:query-pagination-previous {"label":"이전"} /-->
+				<!-- wp:query-pagination-numbers /-->
+				<!-- wp:query-pagination-next {"label":"다음"} /-->
+			<!-- /wp:query-pagination -->
+
+			<!-- wp:query-no-results -->
+				<!-- wp:paragraph {"className":"jc-card-empty"} -->
+				<p class="jc-card-empty">찾는 제도의 글이 아직 없습니다. 다른 이름으로 검색하거나 홈에서 최신 글을 확인해 보세요.</p>
+				<!-- /wp:paragraph -->
+
+				<!-- wp:paragraph {"className":"jc-home-sec__more"} -->
+				<p class="jc-home-sec__more"><a href="/">홈으로 가기 →</a></p>
+				<!-- /wp:paragraph -->
+			<!-- /wp:query-no-results -->
+		</div>
+		<!-- /wp:query -->
+	</div>
+	<!-- /wp:group -->
+</main>
+<!-- /wp:group -->
+
+<!-- wp:template-part {"slug":"footer"} /-->

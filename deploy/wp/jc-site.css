@@ -112,6 +112,7 @@ main.jc-home { margin-top: 0; padding-bottom: 0; }
 .jc-home .jc-card__title { font-size: 1.125rem; font-weight: 700; line-height: 1.45; }
 .jc-card__excerpt { font-size: 0.906rem; line-height: 1.65; }
 .jc-card-empty { margin: 0; color: var(--jc-muted); font-size: 0.9375rem; }
+.jc-card-empty + .jc-home-sec__more { margin-top: 12px; }
 
 /* 제도별로 찾기 (태그) */
 .jc-tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
@@ -132,6 +133,21 @@ main.jc-home { margin-top: 0; padding-bottom: 0; }
 }
 .jc-principles__list strong { display: block; color: var(--jc-text); font-size: 1rem; margin-bottom: 2px; }
 .jc-principles__more { margin: 0; font-size: 0.875rem; }
+
+/* 카테고리·태그·검색 결과 목록 */
+.jc-list-head { padding-top: 28px; padding-bottom: 4px; }
+.jc-list-head > * { margin: 0 !important; }
+.jc-list .jc-list-head__title { font-size: clamp(1.4rem, 4.5vw, 1.875rem); font-weight: 700; line-height: 1.35; }
+.jc-list-head__desc { margin-top: 8px !important; color: var(--jc-muted); font-size: 0.9375rem; }
+.jc-list-head__desc p { margin: 0; }
+.jc-list-search { margin-top: 16px !important; max-width: 560px; }
+.jc-list-search .wp-block-search__inside-wrapper { gap: 8px; }
+.jc-list-search .wp-block-search__input { height: 48px; padding: 0 16px; font-size: 16px; border: 1.5px solid var(--jc-line); border-radius: var(--jc-radius); background: var(--jc-soft); }
+.jc-list-search .wp-block-search__button { height: 48px; margin: 0; padding: 0 20px; border: 0; border-radius: var(--jc-radius); background: var(--jc-accent); color: var(--jc-accent-ink); font-weight: 700; white-space: nowrap; }
+.jc-pagination { margin-top: 36px !important; gap: 6px; font-size: 0.9375rem; }
+.jc-pagination a, .jc-pagination .page-numbers { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 40px; padding: 0 10px; border-radius: 8px; text-decoration: none; color: var(--jc-text); }
+.jc-pagination a:hover { background: var(--jc-soft); }
+.jc-pagination .page-numbers.current { background: var(--jc-accent); color: var(--jc-accent-ink); font-weight: 700; }
 
 /* 글 화면 머리 */
 main.jc-single { margin-top: 0; padding-top: 28px; padding-bottom: 48px; }

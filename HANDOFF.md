@@ -383,3 +383,10 @@
 - 검증: 홈·글·소개 200, /wp-admin/ 302(정상 로그인 이동), 구글 폰트 link·preconnect 출력, 휴대폰 화면에서 IBM Plex Sans KR 글꼴 조각 로드 확인(홈 33·글 43개 조각), 가로 넘침 없음, 댓글 직접 접수(wp-comments-post.php) 403으로 막힘
 - 되돌리기: sudo rm /var/www/html/wp-content/mu-plugins/jalcheck-theme.php
 - 남은 일: 카테고리·검색 결과 화면(테마 기본) 정리
+
+## 2026-11-05 카테고리·태그·검색 결과 화면 정리
+- 지시자: 사용자(1번) / 작업자: Claude / 검토자: 없음(화면 틀·CSS)
+- 파일: deploy/wp/templates/archive.html·search.html(새로, 홈과 같은 카드 + 쪽 번호), jc-site.css(목록 머리·검색창·쪽 번호 규칙), apply_site_pages.py TEMPLATES에 archive·search 추가
+- 바뀐 점: 제목 '[카테고리:]' 표기 제거(카테고리·태그 이름만), 카테고리 설명 표시, 검색 결과 화면에 검색창, 결과 없을 때 안내 문장 + 홈으로 가기
+- 백업: data/backups/site-pages-20261105-212540·212619, ~/backups/2026-11-05-site-css/global-styles-6-212540.json
+- 검증(390·1280): 카테고리 카드 3, 태그(자녀장려금) 1, 검색 '연말정산' 3, 결과 없음 안내, 모두 200·가로 넘침 없음
