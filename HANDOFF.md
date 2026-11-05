@@ -327,3 +327,10 @@
 - 블로그 주소는 https://jalcheck.com (jalcheck.help는 Gmail 아이디일 뿐, 도메인 아님)
 - 채널 쪽 상태: 새 계정이라 2단계 인증·전화번호 인증이 "본인 인증을 할 수 없습니다"로 막힘 → 처음 만든 기기·집 와이파이로 며칠 뒤 재시도 안내
 - 남은 일: 채널 핸들이 정해지면 블로그 소개 페이지에 유튜브 링크 추가
+
+## 2026-11-05 블로그에 유튜브 채널 링크 추가
+- 지시자: 사용자(핸들 @jalcheck 전달, 1번 승인) / 작업자: Claude / 검토자: 없음(링크 2곳 추가, 로그인·DB 구조 무관)
+- 채널: https://www.youtube.com/@jalcheck (채널 ID UC7GknL7CWLKh0pm08AmPKxg)
+- 변경: deploy/wp/parts/footer.html 꼬리말 메뉴에 "유튜브"(새 창), deploy/wp/pages/about.html에 "짧은 영상으로도 정리합니다" 문단. `scripts/apply_site_pages.py`로 적용(문의·개인정보·머리말은 원본과 같아 내용 변화 없음)
+- 백업: data/backups/site-pages-20261105-005106
+- 검증: /about/·/ 200, 본문·꼬리말 링크 각 1개(target=_blank), 모바일(390) 캡처로 확인
