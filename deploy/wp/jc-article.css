@@ -174,6 +174,33 @@
 .jc-article .jc-editorial p { margin: 0; }
 .jc-article .jc-editorial__title { margin: 0 0 4px !important; font-weight: 700; color: var(--jc-text); }
 
+/* 목차(접고 펴기) — mu-plugin jalcheck-reading.php가 신청·조회 바로가기 아래에 넣는다 */
+.jc-article h2[id] { scroll-margin-top: 24px; }
+.jc-article .jc-toc { margin: 0 0 1.6em; border: 1px solid var(--jc-line); border-radius: var(--jc-radius); line-height: 1.6; background: #fff; }
+.jc-article .jc-toc summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 48px; padding: 0 16px; font-weight: 700; font-size: 0.9375rem; }
+.jc-article .jc-toc summary::-webkit-details-marker { display: none; }
+.jc-article .jc-toc summary::after { content: "펼치기 ▾"; flex: none; font-size: 0.8125rem; font-weight: 500; color: var(--jc-muted); }
+.jc-article .jc-toc[open] summary::after { content: "접기 ▴"; }
+.jc-article .jc-toc summary:focus-visible { outline: 2px solid var(--jc-accent); outline-offset: 2px; border-radius: var(--jc-radius); }
+.jc-article .jc-toc ol { margin: 0; padding: 0 16px 14px 2.2em; display: grid; gap: 6px; font-size: 0.9375rem; }
+.jc-article .jc-toc li { margin: 0; }
+.jc-article .jc-toc a { color: var(--jc-muted); text-decoration: none; }
+.jc-article .jc-toc a:hover { color: var(--jc-accent); text-decoration: underline; }
+
+/* 함께 보면 좋은 제도 — mu-plugin이 글 끝에 넣는다 */
+.jc-article.jc-related { margin-top: 2.4em !important; padding-top: 1.4em; border-top: 1px solid var(--jc-line); }
+.jc-article .jc-related__title { margin: 0 0 0.7em; font-size: 1.125rem; font-weight: 700; letter-spacing: -0.02em; }
+.jc-article.jc-related ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.jc-article.jc-related li { margin: 0; }
+.jc-article .jc-related__link { display: flex; gap: 14px; align-items: center; padding: 12px; border-radius: var(--jc-radius); background: var(--jc-soft); color: var(--jc-text); text-decoration: none; min-width: 0; }
+.jc-article .jc-related__link:hover,
+.jc-article .jc-related__link:focus-visible { background: var(--jc-soft-2); }
+.jc-article .jc-related__img { flex: none; width: 64px; height: 64px; border-radius: 8px; object-fit: cover; }
+.jc-article .jc-related__img--empty { display: grid; place-items: center; padding: 4px; text-align: center; font-size: 0.75rem; font-weight: 700; line-height: 1.3; color: var(--jc-accent); background: var(--jc-accent-soft); }
+.jc-article .jc-related__body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.jc-article .jc-related__name { font-size: 0.97rem; font-weight: 700; line-height: 1.45; }
+.jc-article .jc-related__meta { font-size: 0.78rem; color: var(--jc-muted); line-height: 1.5; }
+
 @media (max-width: 600px) {
   .jc-article { font-size: 1.03rem; line-height: 1.8; }
   .jc-article h2 { font-size: 1.25rem; }
