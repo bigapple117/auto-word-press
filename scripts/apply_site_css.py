@@ -1,4 +1,4 @@
-"""deploy/wp/jc-article.css를 워드프레스 '추가 CSS'(사이트 편집 → 스타일)에 넣는다.
+"""deploy/wp/jc-site.css + jc-article.css를 합쳐 워드프레스 '추가 CSS'(사이트 편집 → 스타일)에 넣는다.
 
 - 우리 구간(/* jalcheck:start */ ~ /* jalcheck:end */)만 넣거나 바꾸고, 다른 CSS·스타일은 그대로 둔다.
 - 바꾸기 전 현재 설정을 ~/backups/<날짜>-site-css/에 저장한다.
@@ -19,7 +19,7 @@ from src.config import ROOT, load_settings  # noqa: E402
 from src.wp_client import WordPressClient  # noqa: E402
 
 START, END = "/* jalcheck:start */", "/* jalcheck:end */"
-CSS_FILE = ROOT / "deploy" / "wp" / "jc-article.css"
+CSS_FILES = [ROOT / "deploy" / "wp" / "jc-site.css", ROOT / "deploy" / "wp" / "jc-article.css"]  # 순서대로 합침
 
 
 def merge_css(existing: str, ours: str) -> str:
@@ -40,7 +40,8 @@ def main() -> int:
     gid = int(href.rstrip("/").split("/")[-1])
     current = wp._request("GET", f"/global-styles/{gid}", params={"context": "edit"})
     styles = dict(current.get("styles") or {})
-    new_css = merge_css(styles.get("css", ""), CSS_FILE.read_text(encoding="utf-8"))
+    ours = "\n\n".join(f.read_text(encoding="utf-8").strip() for f in CSS_FILES)
+    new_css = merge_css(styles.get("css", ""), ours)
     if new_css == styles.get("css", ""):
         print("이미 최신입니다. 바꿀 것이 없습니다.")
         return 0

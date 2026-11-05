@@ -1,0 +1,33 @@
+<!-- wp:template-part {"slug":"header"} /-->
+
+<!-- wp:group {"tagName":"main","className":"jc-single","layout":{"type":"constrained"}} -->
+<main class="wp-block-group jc-single">
+	<!-- wp:group {"className":"jc-post-head","layout":{"type":"default"}} -->
+	<div class="wp-block-group jc-post-head">
+		<!-- wp:post-terms {"term":"category","className":"jc-post-head__cat"} /-->
+
+		<!-- wp:post-title {"level":1,"className":"jc-post-head__title"} /-->
+
+		<!-- wp:group {"className":"jc-post-head__meta","layout":{"type":"flex","flexWrap":"wrap"}} -->
+		<div class="wp-block-group jc-post-head__meta">
+			<!-- wp:paragraph {"className":"jc-post-head__by"} -->
+			<p class="jc-post-head__by">잘체크 편집팀</p>
+			<!-- /wp:paragraph -->
+
+			<!-- wp:post-date {"format":"Y.m.d","className":"jc-post-head__date"} /-->
+		</div>
+		<!-- /wp:group -->
+	</div>
+	<!-- /wp:group -->
+
+	<!-- wp:post-content {"align":"full","className":"jc-post-body","layout":{"type":"constrained"}} /-->
+
+	<!-- wp:group {"className":"jc-post-foot","layout":{"type":"default"}} -->
+	<div class="wp-block-group jc-post-foot">
+		<!-- wp:post-terms {"term":"post_tag","separator":" ","className":"is-style-post-terms-1 jc-post-foot__tags"} /-->
+	</div>
+	<!-- /wp:group -->
+</main>
+<!-- /wp:group -->
+
+<!-- wp:template-part {"slug":"footer"} /-->

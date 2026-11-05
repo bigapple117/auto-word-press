@@ -1,0 +1,141 @@
+<!-- wp:template-part {"slug":"header"} /-->
+
+<!-- wp:group {"tagName":"main","className":"jc-home","layout":{"type":"constrained"}} -->
+<main class="wp-block-group jc-home">
+	<!-- wp:group {"align":"wide","className":"jc-home-intro","layout":{"type":"default"}} -->
+	<div class="wp-block-group alignwide jc-home-intro">
+		<!-- wp:heading {"level":1,"className":"jc-home-intro__title"} -->
+		<h1 class="wp-block-heading jc-home-intro__title">지원금·세금 제도를 <em>공식 자료로 확인</em>해 정리합니다</h1>
+		<!-- /wp:heading -->
+	</div>
+	<!-- /wp:group -->
+
+	<!-- wp:group {"align":"wide","className":"jc-home-sec jc-home-sec--feature","layout":{"type":"default"}} -->
+	<div class="wp-block-group alignwide jc-home-sec jc-home-sec--feature">
+		<!-- wp:group {"className":"jc-home-sec__head","layout":{"type":"flex","flexWrap":"nowrap","justifyContent":"space-between"}} -->
+		<div class="wp-block-group jc-home-sec__head">
+			<!-- wp:heading {"className":"jc-home-sec__title"} -->
+			<h2 class="wp-block-heading jc-home-sec__title">새로 확인한 제도</h2>
+			<!-- /wp:heading -->
+		</div>
+		<!-- /wp:group -->
+
+		<!-- wp:query {"queryId":11,"query":{"perPage":1,"pages":0,"offset":0,"postType":"post","order":"desc","orderBy":"date","author":"","search":"","exclude":[],"sticky":"","inherit":false},"className":"jc-feature-query"} -->
+		<div class="wp-block-query jc-feature-query">
+			<!-- wp:post-template -->
+				<!-- wp:group {"className":"jc-feature","layout":{"type":"default"}} -->
+				<div class="wp-block-group jc-feature">
+					<!-- wp:post-featured-image {"isLink":true,"aspectRatio":"16/9","className":"jc-feature__img"} /-->
+
+					<!-- wp:group {"className":"jc-feature__body","layout":{"type":"default"}} -->
+					<div class="wp-block-group jc-feature__body">
+						<!-- wp:group {"className":"jc-card-meta","layout":{"type":"flex","flexWrap":"wrap"}} -->
+						<div class="wp-block-group jc-card-meta">
+							<!-- wp:post-terms {"term":"category","className":"jc-card-meta__cat"} /-->
+							<!-- wp:post-date {"format":"Y.m.d","className":"jc-card-meta__date"} /-->
+						</div>
+						<!-- /wp:group -->
+
+						<!-- wp:post-title {"level":3,"isLink":true,"className":"jc-feature__title"} /-->
+
+						<!-- wp:post-excerpt {"excerptLength":60,"className":"jc-feature__excerpt"} /-->
+					</div>
+					<!-- /wp:group -->
+				</div>
+				<!-- /wp:group -->
+			<!-- /wp:post-template -->
+		</div>
+		<!-- /wp:query -->
+	</div>
+	<!-- /wp:group -->
+
+	<!-- wp:group {"align":"wide","className":"jc-home-sec","layout":{"type":"default"}} -->
+	<div class="wp-block-group alignwide jc-home-sec">
+		<!-- wp:group {"className":"jc-home-sec__head","layout":{"type":"flex","flexWrap":"nowrap","justifyContent":"space-between"}} -->
+		<div class="wp-block-group jc-home-sec__head">
+			<!-- wp:heading {"className":"jc-home-sec__title"} -->
+			<h2 class="wp-block-heading jc-home-sec__title">최신 체크리스트</h2>
+			<!-- /wp:heading -->
+
+			<!-- wp:paragraph {"className":"jc-home-sec__more"} -->
+			<p class="jc-home-sec__more"><a href="/category/support-tax/">전체 보기 →</a></p>
+			<!-- /wp:paragraph -->
+		</div>
+		<!-- /wp:group -->
+
+		<!-- wp:query {"queryId":12,"query":{"perPage":9,"pages":1,"offset":1,"postType":"post","order":"desc","orderBy":"date","author":"","search":"","exclude":[],"sticky":"","inherit":false},"className":"jc-card-query"} -->
+		<div class="wp-block-query jc-card-query">
+			<!-- wp:post-template {"className":"jc-cards","layout":{"type":"grid","columnCount":3}} -->
+				<!-- wp:group {"className":"jc-card","layout":{"type":"default"}} -->
+				<div class="wp-block-group jc-card">
+					<!-- wp:post-featured-image {"isLink":true,"aspectRatio":"16/9","className":"jc-card__img"} /-->
+
+					<!-- wp:group {"className":"jc-card-meta","layout":{"type":"flex","flexWrap":"wrap"}} -->
+					<div class="wp-block-group jc-card-meta">
+						<!-- wp:post-terms {"term":"category","className":"jc-card-meta__cat"} /-->
+						<!-- wp:post-date {"format":"Y.m.d","className":"jc-card-meta__date"} /-->
+					</div>
+					<!-- /wp:group -->
+
+					<!-- wp:post-title {"level":3,"isLink":true,"className":"jc-card__title"} /-->
+
+					<!-- wp:post-excerpt {"excerptLength":35,"className":"jc-card__excerpt"} /-->
+				</div>
+				<!-- /wp:group -->
+			<!-- /wp:post-template -->
+
+			<!-- wp:query-no-results -->
+				<!-- wp:paragraph {"className":"jc-card-empty"} -->
+				<p class="jc-card-empty">새 글이 올라오면 이곳에 차례로 쌓입니다.</p>
+				<!-- /wp:paragraph -->
+			<!-- /wp:query-no-results -->
+		</div>
+		<!-- /wp:query -->
+	</div>
+	<!-- /wp:group -->
+
+	<!-- wp:group {"align":"wide","className":"jc-home-sec","layout":{"type":"default"}} -->
+	<div class="wp-block-group alignwide jc-home-sec">
+		<!-- wp:heading {"className":"jc-home-sec__title"} -->
+		<h2 class="wp-block-heading jc-home-sec__title">제도별로 찾기</h2>
+		<!-- /wp:heading -->
+
+		<!-- wp:tag-cloud {"numberOfTags":20,"taxonomy":"post_tag","smallestFontSize":"15px","largestFontSize":"15px","className":"jc-tags"} /-->
+	</div>
+	<!-- /wp:group -->
+
+	<!-- wp:group {"align":"full","className":"jc-principles","layout":{"type":"constrained"}} -->
+	<div class="wp-block-group alignfull jc-principles">
+		<!-- wp:group {"align":"wide","layout":{"type":"default"}} -->
+		<div class="wp-block-group alignwide">
+			<!-- wp:heading {"className":"jc-home-sec__title"} -->
+			<h2 class="wp-block-heading jc-home-sec__title">잘체크는 이렇게 씁니다</h2>
+			<!-- /wp:heading -->
+
+			<!-- wp:list {"className":"jc-principles__list"} -->
+			<ul class="wp-block-list jc-principles__list">
+				<!-- wp:list-item -->
+				<li><strong>공공기관 자료만 근거로</strong> 국세청, 정부24, 정책브리핑 등 공식 안내를 직접 확인합니다.</li>
+				<!-- /wp:list-item -->
+
+				<!-- wp:list-item -->
+				<li><strong>자료 확인일 표시</strong> 제도는 바뀌기 때문에 언제 기준인지 모든 글에 적습니다.</li>
+				<!-- /wp:list-item -->
+
+				<!-- wp:list-item -->
+				<li><strong>신청 창구 바로 연결</strong> 읽고 나서 바로 신청·조회할 수 있게 공식 링크를 붙입니다.</li>
+				<!-- /wp:list-item -->
+			</ul>
+			<!-- /wp:list -->
+
+			<!-- wp:paragraph {"className":"jc-principles__more"} -->
+			<p class="jc-principles__more"><a href="/about/">잘체크 소개와 편집 원칙 보기 →</a></p>
+			<!-- /wp:paragraph -->
+		</div>
+		<!-- /wp:group -->
+	</div>
+	<!-- /wp:group -->
+</main>
+<!-- /wp:group -->
+
+<!-- wp:template-part {"slug":"footer"} /-->

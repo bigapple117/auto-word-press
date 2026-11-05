@@ -2,7 +2,7 @@
 
 사용: .venv/bin/python scripts/apply_site_pages.py
 - 페이지는 주소 이름(slug)으로 찾아 내용만 바꾸고, 없으면 새로 만들어 공개한다.
-- 머리말·꼬리말은 테마 원본 파일은 그대로 두고 사이트 쪽 수정본으로 저장한다
+- 머리말·꼬리말과 홈·글 화면 틀(templates)은 테마 원본 파일은 그대로 두고 사이트 쪽 수정본으로 저장한다
   (되돌리려면 관리자 화면 > 디자인 > 패턴 > 템플릿 파트에서 '사용자 정의 초기화').
 - 바꾸기 전 내용은 data/backups/site-pages-<시각>/ 에 저장한다.
 """
@@ -25,6 +25,7 @@ PAGES = [  # (slug, 제목, 원본 파일)
     ("privacy-policy", "개인정보 처리방침", "privacy.html"),
 ]
 PARTS = ["header", "footer"]
+TEMPLATES = ["home", "single"]  # deploy/wp/templates/<이름>.html
 THEME = "twentytwentyfive"
 
 
@@ -57,6 +58,13 @@ def main() -> int:
         (backup / f"part-{part}.html").write_text(cur["content"]["raw"], encoding="utf-8")
         wp._request("POST", f"/template-parts/{pid}", json={"content": body})
         print(f"{part}: 저장")
+    for tpl in TEMPLATES:
+        body = (src / "templates" / f"{tpl}.html").read_text(encoding="utf-8")
+        tid = f"{THEME}//{tpl}"
+        cur = wp._request("GET", f"/templates/{tid}", params={"context": "edit"})
+        (backup / f"template-{tpl}.html").write_text(cur["content"]["raw"], encoding="utf-8")
+        wp._request("POST", f"/templates/{tid}", json={"content": body})
+        print(f"template {tpl}: 저장")
     (backup / "done.json").write_text(json.dumps({"at": datetime.now().isoformat()}), encoding="utf-8")
     print("백업:", backup)
     return 0
