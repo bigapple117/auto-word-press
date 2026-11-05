@@ -119,6 +119,11 @@ class FakeTG:
     def send_text(self, text):
         self.texts.append(text)
 
+    def send_video(self, path, caption=""):
+        if getattr(self, "fail_video", False):
+            raise RuntimeError("영상 전송 실패 시험")
+        self.videos = getattr(self, "videos", []) + [(Path(path).name, caption)]
+
     def mark_done(self, message_id, note):
         self.done.append((message_id, note))
 
@@ -485,3 +490,52 @@ def test_requeue_busy_only_from_generating(env):
     assert db.requeue_busy(conn, job_id, "x") is False          # queued 상태면 안 바뀜
     db.claim_next(conn)
     assert db.requeue_busy(conn, job_id, "x") is True
+
+
+def test_publish_sends_youtube_upload_kit(env):
+    orch, svc, conn, calls = env
+    job_id = db.create_job(conn, "근로장려금 신청 자격")
+    orch.run_once()
+    req = svc.telegram.requests[0][1]
+    svc.telegram.texts.clear()
+    assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
+    assert svc.telegram.videos[0][0] == "short.mp4" and "업로드용" in svc.telegram.videos[0][1]
+    title, desc = svc.telegram.texts
+    assert title == good_data()["shorts"]["title"]
+    assert f"https://jalcheck.com/post-{500 + job_id}/" in desc and desc.rstrip().endswith("#잘체크")
+
+
+def test_blog_only_publish_sends_no_upload_kit(env):
+    orch, svc, conn, calls = env
+    job_id = db.create_job(conn, "주제", mode="blog")
+    orch.run_once()
+    req = svc.telegram.requests[0][1]
+    svc.telegram.texts.clear()
+    assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
+    assert not getattr(svc.telegram, "videos", []) and svc.telegram.texts == []
+
+
+def test_upload_kit_failure_does_not_undo_publish(env):
+    orch, svc, conn, calls = env
+    job_id = db.create_job(conn, "근로장려금 신청 자격")
+    orch.run_once()
+    req = svc.telegram.requests[0][1]
+    svc.telegram.fail_video = True
+    assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
+    assert db.get_job(conn, job_id)["status"] == "published"
+    assert "보내지 못했습니다" in svc.telegram.texts[-1]
+
+
+def test_upload_kit_sent_once_when_ledger_write_fails(env, monkeypatch):
+    orch, svc, conn, calls = env
+    job_id = db.create_job(conn, "근로장려금 신청 자격")
+    orch.run_once()
+    req = svc.telegram.requests[0][1]
+    real = db.mark_published
+    monkeypatch.setattr(db, "mark_published", lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("잠김")))
+    assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
+    assert not getattr(svc.telegram, "videos", [])                  # 장부 기록 전에는 보내지 않음
+    monkeypatch.setattr(db, "mark_published", real)
+    svc.wp.get_post = lambda pid: WPPost(pid, "publish", f"https://jalcheck.com/post-{pid}/")
+    assert orch.reconcile_publishing(older_than_seconds=0) == [job_id]
+    assert len(svc.telegram.videos) == 1

@@ -31,6 +31,7 @@ from src.pipeline import (PipelineError, Services, make_content, make_draft, mak
                           pick_media, request_approval, sources_from)
 from src.telegram_notifier import Decision, TelegramError
 from src.wp_client import WPError
+from src.youtube_kit import build_upload_kit
 
 log = logging.getLogger(__name__)
 
@@ -220,10 +221,35 @@ class Orchestrator:
             return "발행 결과 확인 중입니다"
         try:
             db.mark_published(self.conn, d.job_id, post.id, post.link)
+            recorded = True
         except Exception:  # noqa: BLE001 - 발행은 됐으니 장부는 reconcile_publishing이 나중에 맞춘다
             log.exception("작업 %s번: 발행됐지만 장부 기록 실패(나중에 다시 맞춤)", d.job_id)
+            recorded = False
         tg.mark_done(d.message_id, f"[작업 {d.job_id}] 발행했습니다.\n{post.link}")
+        if recorded:   # 기록 실패면 reconcile_publishing이 장부를 맞추면서 한 번만 보낸다(중복 방지)
+            self.send_upload_kit(d.job_id, post.link)
         return "발행했습니다"
+
+    def send_upload_kit(self, job_id: int, post_url: str) -> None:
+        """쇼츠가 있는 작업이면 유튜브에 올릴 영상·제목·설명을 텔레그램으로 보낸다.
+        제목과 설명은 따로 보내 휴대폰에서 메시지 하나씩 길게 눌러 복사할 수 있게 한다.
+        실패해도 발행 결과에는 영향이 없다(알림만 남김)."""
+        tg = self.svc.telegram
+        try:
+            job = db.get_job(self.conn, job_id) or {}
+            video = (job.get("checkpoint", {}).get("video") or {}).get("path")
+            if not video or not Path(video).exists():
+                return
+            content = MasterContent.model_validate(job["checkpoint"]["content"]["content"])
+            kit = build_upload_kit(content, post_url)
+            tg.send_video(Path(video), f"[작업 {job_id}] 유튜브 쇼츠 업로드용 영상\n"
+                                       "아래 두 메시지(제목, 설명)를 길게 눌러 복사해 붙여 넣으세요.")
+            tg.send_text(kit.title)
+            tg.send_text(kit.description)
+        except Exception as exc:  # noqa: BLE001 - 발행은 끝났으니 업로드 안내 실패는 알리기만
+            log.exception("작업 %s번 유튜브 업로드 안내 실패", job_id)
+            self._notify(f"[작업 {job_id}] 유튜브 업로드용 제목·설명을 보내지 못했습니다({exc.__class__.__name__}). "
+                         "영상은 승인 요청 메시지에 있습니다.")
 
     def reconcile_publishing(self, older_than_seconds: int = 180) -> list[int]:
         """'발행 중'으로 오래 멈춘 작업을 워드프레스 실제 상태와 맞춘다(버튼 수신 스레드에서 주기적으로)."""
@@ -233,6 +259,7 @@ class Orchestrator:
                 post = self.svc.wp.get_post(job["post_id"])
                 if post and post.status == "publish":
                     db.mark_published(self.conn, job["id"], post.id, post.link)
+                    self.send_upload_kit(job["id"], post.link)
                 else:
                     db.set_status(self.conn, job["id"], "awaiting_approval")
                 fixed.append(job["id"])
