@@ -26,7 +26,7 @@
 .jc-article p { margin: 0 0 1.25em; }
 .jc-article strong { font-weight: 700; color: #111; background: linear-gradient(transparent 62%, #fde68a 62%); }
 .jc-article h2 {
-  margin: 2.4em 0 0.9em;
+  margin: 3.4em 0 0.9em;   /* 위 간격: 휴대폰에서 약 68px, 앞 상자·문단과 주제가 확실히 끊겨 보이게 */
   padding-bottom: 0.35em;
   border-bottom: 2px solid var(--jc-line);
   font-size: 1.375rem;
