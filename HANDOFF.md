@@ -357,3 +357,11 @@
 - 검증: 실제 글 2편 390px·1280px 캡처, 가로 넘침 없음(scrollWidth 390/1280), 소제목 위 68px 유지, 사진 정상(330px, 둥근 모서리), 홈 200
 - 되돌리기: 백업 JSON의 styles.css를 복원하거나 git에서 이전 jc-article.css로 되돌려 같은 스크립트 재실행
 - 남은 일: (1) 글 목차 접기·"함께 보면 좋은 제도"는 CSS로 불가 → mu-plugin 필요(사용자 승인 후) (2) 홈 화면 개편(테마 템플릿) (3) 글꼴 IBM Plex Sans KR 사이트 전체 적용 여부 (4) 바로가기 문구가 홈택스 첫 화면으로 가는 문제는 글 생성 규칙 쪽(Codex 지적) (5) 광고 위치 원칙은 애드센스 신청 때
+
+## 2026-11-05 글 목차 접기·"함께 보면 좋은 제도" 추가(mu-plugin)
+- 지시자: 사용자(설명 후 1번 진행, 설치 확인 1번 승인) / 작업자: Claude / 검토자: Codex(3차 PASS, REVIEW.md)
+- 파일: deploy/wp/mu-plugins/jalcheck-reading.php → sudo install로 /var/www/html/wp-content/mu-plugins/jalcheck-reading.php(www-data, 644). deploy/wp/jc-article.css에 .jc-toc·.jc-related 규칙 추가(apply_site_css.py, 백업 ~/backups/2026-11-05-site-css/global-styles-6-065911.json)
+- 동작: 공개 글 화면의 the_content(20)에서만, .jc-article 안 h2에 id(jc-sec-N, 기존 id와 안 겹치게) 부여 + 신청·조회 바로가기 아래 접힌 목차(소제목 3개 이상, '참고 자료' 제외). 글 끝에 관련 글 최대 3개(같은 태그 → 같은 카테고리 → 최신), ID만 12시간 transient, 글 공개/수정·태그/카테고리 변경 시 버전 갱신. 발췌문·피드·REST·관리자·쿼리 루프 제외. 글 원본 DB 변경 없음
+- 검증: php -l, 실제 본문 목차 생성 시험. 설치 후 홈·소개 200이고 목차/관련 글 0개, 글 2편 각각 목차 1개(6항목, 바로가기 다음), 목차 링크 누르면 소제목으로 이동(화면 위 24px), 관련 글 2개(공개 글이 3편뿐), meta description 정상, 390px 가로 넘침 없음, 휴대폰 캡처 확인
+- 되돌리기: sudo rm /var/www/html/wp-content/mu-plugins/jalcheck-reading.php (CSS는 남아도 쓰이지 않음)
+- 남은 일: 테마 기본 "더 많은 게시물"·이전/다음 글 링크와 겹침 → 홈 화면 개편 때 정리. 글꼴 변경, 홈 화면 개편
