@@ -1,7 +1,13 @@
 """AI가 제안한 '신청·조회 바로가기' 링크를 검증한다.
 
 통과 조건(둘 다):
-1. 공식 사이트(.go.kr, 정부24, 정책브리핑, 주요 공공기관)
+1. 공식 사이트(.go.kr, 정부24, 정책브리핑, 주요 공공기관)이거나,
+   서로 다른 공식 사이트 자료 2곳 이상의 본문에 그 사이트 도메인이 적혀 있으면 그 사이트 '첫 화면'만 인정
+   (정부가 안내한 사업 누리집. 예: 구청 안내문과 정책브리핑에 모두 적힌 www.mnuri.kr). 한 곳에만 적힌 주소는
+   광고·외부 링크·주의 예시일 수 있어 인정하지 않는다. 깊은 주소(bit.ly/abc 같은 단축 주소 포함)는 이 방법으로
+   인정하지 않아, 목적지가 바뀌는 단축·이동 주소가 끼어들 수 없다. 서버가 직접 읽은 자료만 쓴다(AI가 옮겨 적은
+   자료는 주소를 잘못 옮길 수 있어 제외).
+   자료 주소(Source.url)는 리다이렉트를 따라간 최종 주소라, 공식 주소에서 외부로 넘어간 페이지는 공식 자료로 치지 않는다.
 2. 출처가 확인됨: 우리가 읽은 자료의 주소이거나, 자료 본문에 그 주소가 글자 그대로 적혀 있음
    (본문에 'www.hometax.go.kr'처럼 도메인만 있으면 그 사이트 첫 화면 주소만 인정)
 AI가 짐작해서 만든 깊은 주소(본문에 없는 경로)는 막는다.
@@ -89,9 +95,27 @@ def _known_urls(sources: Sequence[Source]) -> tuple[set[str], set[str]]:
     return full, hosts
 
 
+VOUCH_MIN_SITES = 2
+
+
+def _vouched_hosts(sources: Sequence[Source]) -> set[str]:
+    """서로 다른 공식 사이트 VOUCH_MIN_SITES곳 이상의 자료 본문에 '도메인만' 적힌 호스트(첫 화면만 인정)."""
+    by_site: dict[str, list[Source]] = {}
+    for s in sources:
+        n = _normalize(s.url)
+        if s.via == "direct" and n and is_official(n):
+            by_site.setdefault((urlparse(n).hostname or "").removeprefix("www."), []).append(s)
+    host_count: dict[str, int] = {}
+    for site_sources in by_site.values():
+        for h in _known_urls(site_sources)[1]:
+            host_count[h] = host_count.get(h, 0) + 1
+    return {h for h, c in host_count.items() if c >= VOUCH_MIN_SITES}
+
+
 def check_action_links(links: Sequence[ActionLink], sources: Sequence[Source]) -> tuple[list[CheckedLink], list[str]]:
     """(통과한 링크, 뺀 이유 목록). 같은 주소는 한 번만, 최대 4개."""
     full, hosts = _known_urls(sources)
+    vouched_hosts = _vouched_hosts(sources)
     ok: list[CheckedLink] = []
     rejected: list[str] = []
     seen: set[str] = set()
@@ -100,11 +124,11 @@ def check_action_links(links: Sequence[ActionLink], sources: Sequence[Source]) -
         if url is None:
             rejected.append(f"주소 형식 오류: {link.url[:80]}")
             continue
-        if not is_official(url):
-            rejected.append(f"공식 사이트가 아님: {url[:80]}")
-            continue
         key = _key(url)
         host = (urlparse(url).hostname or "").removeprefix("www.")
+        if not is_official(url) and not (_is_home(url) and host in vouched_hosts):
+            rejected.append(f"공식 사이트가 아님(서로 다른 공식 자료 2곳 이상에 안내되지 않음): {url[:80]}")
+            continue
         if key not in full and not (_is_home(url) and host in hosts):
             rejected.append(f"자료에서 확인되지 않은 주소: {url[:80]}")
             continue

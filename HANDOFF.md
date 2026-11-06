@@ -439,3 +439,10 @@
 - 파일: src/source_finder.py(energyv.or.kr 공식 목록), src/link_check.py(home_links_overpromising: 첫 화면 주소인데 이름에 신청·조회·발급·납부·등록·확인이 있고 '바로가기'가 없으면 표시), src/ai_generator.py(승인 요청 경고로 보냄), templates/prompt_template.py(첫 화면 링크는 '○○ 바로가기', 메뉴 안내는 note), 테스트 2건
 - 검증: pytest 270 통과
 - 참고: 경고만 띄우고 글을 막지는 않음(78번 '위택스에서 자동차세 연납 신청하기' 같은 경우도 경고 대상)
+
+## 2026-11-06 공식 사이트 판단: 정부 자료가 안내한 누리집 자동 인정
+- 지시자: 사용자(1번) / 작업자: Claude / 검토자: Codex(3차 PASS, REVIEW.md)
+- 이유: 공식 목록(source_finder OFFICIAL_HOSTS)이 하드코딩이라 .go.kr이 아닌 사업 누리집(mnuri.kr 등)이 빠지면 구청 링크가 걸림
+- 변경: src/link_check.py — 서로 다른 공식 사이트 자료 2곳 이상(서버가 직접 읽은 자료만)의 본문에 도메인이 적힌 사이트는 첫 화면 주소를 바로가기로 인정. 깊은 주소·단축 주소는 이 방식으로 인정 안 함. 기존 .go.kr 규칙·고정 목록은 기본값으로 유지. 프롬프트에 안내 추가. 테스트 4건(test_link_check 3, test_content 리다이렉트 1)
+- 한계: 바로가기 링크에만 적용. 검색으로 자료를 고르는 단계(find_official_urls)는 여전히 고정 목록 기준. 정부 자료 1곳에만 적힌 누리집은 인정 안 됨
+- 검증: pytest 274 통과

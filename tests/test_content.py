@@ -431,6 +431,24 @@ def test_fetch_follows_redirect_and_connects_to_checked_ip(monkeypatch):
                       ("example.go.kr", "/final?x=1", "203.0.113.10")]
 
 
+def test_official_page_redirected_outside_cannot_vouch_for_links(monkeypatch):
+    """공식 주소에서 외부로 넘어간 페이지는 최종(외부) 주소로 기록돼 바로가기 링크 보증에 쓰이지 않는다."""
+    from src.content_schema import ActionLink
+    from src.link_check import check_action_links
+    body = ("<html><title>t</title><main>%s 누리집 www.mnurinew.kr</main></html>" % ("본문 " * 120)).encode()
+    fake_network(monkeypatch, [
+        FakeResp(302, {"Location": "https://ad.example.com/land"}),
+        FakeResp(200, {"Content-Type": "text/html; charset=utf-8"}, body),
+        FakeResp(200, {"Content-Type": "text/html; charset=utf-8"}, body),
+    ])
+    moved = fetch_source("https://www.korea.kr/news/1", "S1")
+    assert moved.url == "https://ad.example.com/land"
+    real = fetch_source("https://www.gangdong.go.kr/a", "S2")
+    link = ActionLink(label="누리집", url="https://www.mnurinew.kr/", purpose="info")
+    ok, bad = check_action_links([link], [moved, real])
+    assert ok == [] and any("공식 사이트가 아님" in b for b in bad)
+
+
 def test_non_html_and_errors_rejected(monkeypatch):
     fake_network(monkeypatch, [FakeResp(200, {"Content-Type": "application/pdf"}, b"%PDF"),
                                FakeResp(404)])

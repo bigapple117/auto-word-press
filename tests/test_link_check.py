@@ -101,3 +101,39 @@ def test_home_link_with_action_label_is_flagged():
     assert home_links_overpromising(ok) == ["홈택스에서 장려금 신청하기"]
     ok, _ = check_action_links([L("www.hometax.go.kr", label="국세청 홈택스 바로가기")], SOURCES)
     assert home_links_overpromising(ok) == []
+
+
+def _gov(sid, host, text, via="direct"):
+    return Source(sid, f"https://www.{host}/notice", "안내", text, via=via)
+
+
+def test_site_named_in_two_official_sites_is_accepted():
+    srcs = [_gov("S1", "gangdong.go.kr", "누리집 www.mnurinew.kr 에서 신청"),
+            _gov("S2", "korea.kr", "자세한 내용은 mnurinew.kr 참고")]
+    ok, bad = check_action_links([L("https://www.mnurinew.kr/", "info")], srcs)
+    assert [c.url for c in ok] == ["https://www.mnurinew.kr/"] and bad == []
+
+
+def test_only_homepage_is_vouched_never_deep_or_short_urls():
+    deep = "https://www.mnurinew.kr/info/apply.do"
+    both = [_gov("S1", "gangdong.go.kr", f"www.mnurinew.kr {deep} https://bit.ly/abc"),
+            _gov("S2", "korea.kr", f"mnurinew.kr {deep} https://bit.ly/abc")]
+    ok, bad = check_action_links([L("https://www.mnurinew.kr/"), L(deep), L("https://bit.ly/abc")], both)
+    assert [c.url for c in ok] == ["https://www.mnurinew.kr/"] and len(bad) == 2
+    only_deep = [_gov("S1", "gangdong.go.kr", deep), _gov("S2", "korea.kr", deep)]
+    assert check_action_links([L("https://www.mnurinew.kr/")], only_deep)[0] == []   # 깊은 주소만 → 첫 화면 불가
+
+
+def test_single_unofficial_relayed_or_redirected_source_does_not_vouch():
+    text = "광고 www.mnurinew.kr"
+    cases = [
+        [_gov("S1", "gangdong.go.kr", text)],                                   # 공식 1곳뿐
+        [_gov("S1", "gangdong.go.kr", text), _gov("S2", "gangdong.go.kr", text)],   # 같은 사이트 2개는 1곳
+        [_gov("S1", "gangdong.go.kr", text), Source("S2", "https://blog.naver.com/a", "블로그", text)],
+        [_gov("S1", "gangdong.go.kr", text), _gov("S2", "korea.kr", text, via="gemini")],
+        # 공식 주소에서 외부로 리다이렉트된 페이지는 최종 주소(외부)로 기록됨 → 공식 자료 아님
+        [_gov("S1", "gangdong.go.kr", text), Source("S2", "https://redirected.example.com/p", "외부", text)],
+    ]
+    for srcs in cases:
+        ok, bad = check_action_links([L("https://www.mnurinew.kr/", "info")], srcs)
+        assert ok == [] and any("공식 사이트가 아님" in b for b in bad), srcs
