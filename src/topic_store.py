@@ -216,3 +216,8 @@ def reserve_more(conn: sqlite3.Connection, limit: int = MORE_PER_DAY, now: datet
 def candidate_ids_for_key(conn: sqlite3.Connection, ckey: str) -> list[int]:
     """같은 주제(제도명:연도:종류)로 보낸 모든 후보 번호(회차 상관없이)."""
     return [int(r[0]) for r in conn.execute("SELECT id FROM candidates WHERE ckey = ? ORDER BY id", (ckey,))]
+
+
+def weekly_batches(conn: sqlite3.Connection, week: str) -> list[dict[str, Any]]:
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM batches WHERE kind = 'weekly' AND week = ? ORDER BY id", (week,))]

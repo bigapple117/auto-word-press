@@ -41,7 +41,8 @@ DEFAULT_LIMIT = 10
 CATEGORY_CAP = 7
 MAX_UPDATES = 3                       # 기존 글 고치기 후보 상한
 MAX_DISCOVERED = 15
-NEWS_DAYS = 21                        # 새 제도 찾기에 쓰는 뉴스 기간
+NEWS_DAYS = 21
+NEXT_YEAR_FROM_MONTH = 11             # 이 달부터는 새 주제 문장에서 연도를 뺀다                        # 새 제도 찾기에 쓰는 뉴스 기간
 DISCOVERY_QUERIES = (
     "지원금 신청 시작", "신청 접수 시작 지원", "새로 생긴 지원 제도", "지원 대상 확대 신청",
     "세액공제 확대", "감면 신청 접수", "바우처 신청 시작",
@@ -167,6 +168,7 @@ class Candidate:
     interest: float | None = None      # 기준어(자녀장려금 평균) = 100
     in_season: bool = False            # 목록에 적힌 신청·납부 달(이번 달·다음 달)
     trend_season: bool = False         # 작년 이맘때 검색이 평소보다 30% 이상 많았음
+    reform_soon: bool = False          # 다음 해 개편 예정 소식(공고 뒤에 쓰는 게 나음)
     reasons: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     news_titles: list[str] = field(default_factory=list)
@@ -457,10 +459,26 @@ def assess(seed: Seed, written: Sequence[Written], search: NaverSearch, today: d
     return c
 
 
+REFORM_WORDS = ("개편", "변경", "바뀌", "바뀐", "바뀔", "달라", "개정", "전환")
+
+
+def is_reform_news(text: str, year: int) -> bool:
+    """다음 해 개편 소식인가: '다음 해(2027년·2027학년도·내년)'와 '개편·변경' 말이 함께 있어야 한다."""
+    nxt = year + 1
+    when = (f"{nxt}년", f"{nxt}학년도", "내년")
+    return any(w in text for w in when) and any(r in text for r in REFORM_WORDS)
+
+
 def _news_flags(c: Candidate, news: Sequence[SearchHit]) -> None:
     ends = [h.title for h in news if c.seed.matches(h.title) and any(w in h.title for w in END_WORDS)]
     if ends:
         c.warnings.append(f"확인 필요: 최근 뉴스에 종료·마감 언급('{ends[0][:40]}')")
+    # 다음 해 개편 예정: 제목·요약 모두 본다(국가장학금 5구간 개편처럼 요약에만 나오는 경우가 많음)
+    reform = [h.title for h in news
+              if c.seed.matches(h.title + h.description) and is_reform_news(h.title + " " + h.description, c.year)]
+    if reform:
+        c.reform_soon = True
+        c.warnings.append(f"다음 해 개편 예정 소식 있음: 새 공고가 나온 뒤 쓰기 권장('{reform[0][:40]}')")
 
 
 def score(c: Candidate, today: date) -> float:
@@ -475,6 +493,8 @@ def score(c: Candidate, today: date) -> float:
         s += 1.0                                       # 새 제도는 작년 검색 자료가 없어도 불리하지 않게
     if c.kind == "new_year":
         s += 1.0
+    if c.reform_soon:
+        s -= 1.0                                       # 곧 바뀔 내용이라 지금 쓰면 금방 낡음
     return round(s, 2)
 
 
@@ -575,4 +595,7 @@ def find_candidates(
             continue
         t = phrased.get(c.key, "")
         c.topic = t if valid_topic(t, c) else fallback_topic(c)
+        if c.kind == "new" and today.month >= NEXT_YEAR_FROM_MONTH:
+            # 연말엔 다음 해 신청분이 섞여 '올해 연도'가 오해를 부름(국가장학금 사례) → 연도를 뺀다
+            c.topic = re.sub(r"\s*20\d\d년\s*", " ", c.topic).strip()
     return FindResult(chosen, notes, budget.calls)

@@ -1,5 +1,12 @@
 # REVIEW
 
+## 2026-11-06 주제 자동 추천 3단계: 주 1회 실행·개편 예정 표시·연말 연도 제거
+- 작성자: Claude / 검토자: Codex (codex exec, read-only, diff stdin 전달)
+- 1차: CHANGES_REQUESTED — (1) 등록된 후보 재클릭 시 버튼 수정 생략 → 첫 수정 실패 시 영구 미반영 (2) '개편된다' 등 다음 해와 무관한 말만으로 다음 해 개편 판정
+- 2차: **PASS** — 재클릭 때도 수정 호출(같은 글자면 텔레그램 쪽에서 건너뜀), 다음 해 표현 + 개편·변경 말이 함께 있어야 판정
+- 검증: Claude 쪽 pytest 321 통과
+- 원문: data/design-review/codex-topic-step3*.txt
+
 ## 2026-11-06 주제 자동 추천 2단계: 후보 장부·텔레그램 [n번 등록]/[새 후보 더 받기]
 - 작성자: Claude / 검토자: Codex (codex exec, read-only, diff stdin 전달 — 셸은 bwrap 오류로 막혀 diff만으로 판단)
 - 계획 검토(1단계 전): Codex·Gemini — 후보 DB 보관, 버튼 64바이트, mark_done이 버튼 전체 삭제, 트렌드 기준어, 제도명 기준 중복 등 반영

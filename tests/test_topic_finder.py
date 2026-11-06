@@ -250,3 +250,37 @@ def test_writer_failure_falls_back_to_seeds_and_template():
     result = find_candidates(s, TopicWriter(FakeGen([], fail=True)), [seed("기초연금")], [], today=TODAY)
     assert [c.topic for c in result.candidates] == ["기초연금 신청 자격과 받는 방법"]
     assert any("기본 목록만" in n for n in result.notes) and any("틀 문장" in n for n in result.notes)
+
+
+def test_reform_news_warns_and_lowers_score_and_year_is_dropped_in_november():
+    seeds = [seed("국가장학금"), seed("기초연금")]
+    s = FakeSearch(
+        web={"2026년 국가장학금": [gov("국가장학금 안내", "https://www.kosaf.go.kr/a")],
+             "2026년 기초연금": [gov("기초연금")]},
+        news={"국가장학금": [SearchHit("국가장학금 2차 신청 마감 임박", "https://n/1",
+                                     "2027년 1학기부터 학자금 지원구간이 5구간으로 개편될 예정", NEWS_DATE)]})
+    gen = FakeGen([PhrasedList(items=[
+        {"key": "국가장학금:2026:new", "topic": "2026년 국가장학금 신청 대상과 지원 금액"},
+        {"key": "기초연금:2026:new", "topic": "2026년 기초연금 신청 자격과 받는 금액"}]).model_dump_json()])
+    writer = TopicWriter(gen)
+    writer.discover = lambda titles, seeds: []
+    got = {c.seed.name: c for c in find_candidates(s, writer, seeds, [], today=TODAY).candidates}
+    assert got["국가장학금"].reform_soon and any("개편 예정" in w for w in got["국가장학금"].warnings)
+    assert got["국가장학금"].score < got["기초연금"].score
+    assert got["국가장학금"].topic == "국가장학금 신청 대상과 지원 금액"          # 11월: 연도 뺌
+    later = find_candidates(FakeSearch(web={"2026년 기초연금": [gov("기초연금")]}),
+                            TopicWriter(FakeGen([PhrasedList(items=[
+                                {"key": "기초연금:2026:new", "topic": "2026년 기초연금 신청 자격과 받는 금액"}
+                            ]).model_dump_json()])), [seed("기초연금")], [], today=date(2026, 6, 1))
+    assert later.candidates[0].topic == "2026년 기초연금 신청 자격과 받는 금액"   # 6월: 그대로
+
+
+@pytest.mark.parametrize("text, reform", [
+    ("2027년 1학기부터 학자금 지원구간이 5구간으로 개편될 예정", True),
+    ("내년부터 지급 기준이 바뀐다", True),
+    ("국가장학금 이번 달부터 개편된다", False),        # 다음 해 아님
+    ("2027년 예산 확정", False),                         # 개편 아님
+])
+def test_is_reform_news(text, reform):
+    from src.topic_finder import is_reform_news
+    assert is_reform_news(text, 2026) is reform

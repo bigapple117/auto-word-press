@@ -298,3 +298,65 @@ def test_same_topic_check_uses_jobs_even_if_candidate_record_missing(env):
     # 취소한 작업이면 다시 등록 가능
     db.set_status(env.jobs, 1, "canceled")
     assert register(env.deps, env.jobs, action("register", second), now=NOW) == "작업 2번으로 등록했습니다"
+
+
+# ---- 주 1회 ----
+from src.topic_service import run_weekly_if_due  # noqa: E402
+
+MON_0830 = datetime(2026, 11, 8, 23, 30, tzinfo=timezone.utc)   # 한국 시간 월요일 08:30
+
+
+def test_weekly_waits_for_monday_9am_kst_then_sends_once(env):
+    assert run_weekly_if_due(env.deps, now=MON_0830) is None
+    assert run_weekly_if_due(env.deps, now=MON_0830 + timedelta(minutes=40)) == "후보 3개를 보냈습니다"
+    assert run_weekly_if_due(env.deps, now=MON_0830 + timedelta(hours=3)) is None
+    assert run_weekly_if_due(env.deps, now=MON_0830 + timedelta(days=3)) is None
+    assert len(env.tg.sent) == 1
+    # 다음 주 월요일 9시 이후 다시
+    assert run_weekly_if_due(env.deps, now=MON_0830 + timedelta(days=7, hours=1)).startswith("후보")
+
+
+def test_weekly_catches_up_later_in_week_if_worker_was_down(env):
+    thu = MON_0830 + timedelta(days=3)
+    assert run_weekly_if_due(env.deps, now=thu).startswith("후보")
+
+
+def test_weekly_failure_notifies_and_retries_next_day_only_once(env):
+    good = env.deps.finder
+    env.deps.finder = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("naver down"))
+    t0 = MON_0830 + timedelta(hours=1)
+    assert "내일 한 번 더" in run_weekly_if_due(env.deps, now=t0)
+    assert "내일 한 번 더" in env.tg.texts[-1]
+    assert run_weekly_if_due(env.deps, now=t0 + timedelta(hours=5)) is None        # 아직 하루 안 됨
+    note = run_weekly_if_due(env.deps, now=t0 + timedelta(hours=21))
+    assert "더 시도하지 않습니다" in note
+    env.deps.finder = good
+    assert run_weekly_if_due(env.deps, now=t0 + timedelta(days=3)) is None         # 이번 주는 끝
+    assert run_weekly_if_due(env.deps, now=t0 + timedelta(days=7)).startswith("후보")
+
+
+def test_weekly_skips_while_more_is_running_without_counting_failure(env):
+    from src import topic_service
+    topic_service._RUN_LOCK.acquire()
+    try:
+        assert run_weekly_if_due(env.deps, now=MON_0830 + timedelta(hours=1)) == "이미 주제를 찾는 중입니다"
+    finally:
+        topic_service._RUN_LOCK.release()
+    assert run_weekly_if_due(env.deps, now=MON_0830 + timedelta(hours=1, minutes=10)).startswith("후보")
+
+
+def test_reclick_fixes_button_if_first_edit_failed_but_skips_if_already_done():
+    tg, fake = make_tg()
+    a = tg.topic_callback("t", 11)
+    tg.mark_topic_registered(77, (({"text": "등록됨(작업 5)", "callback_data": a},),), 11, "등록됨(작업 5)")
+    assert fake.calls == []                                   # 이미 바뀜 → 안 보냄
+    tg.mark_topic_registered(77, (({"text": "1번 등록", "callback_data": a},),), 11, "등록됨(작업 5)")
+    assert fake.calls[0][0] == "editMessageReplyMarkup"
+
+
+def test_register_again_still_calls_mark_so_failed_edit_can_recover(env):
+    run_batch(env.deps, "weekly", now=NOW)
+    cid = env.tg.sent[0][1][0].cand_id
+    register(env.deps, env.jobs, action("register", cid), now=NOW)
+    register(env.deps, env.jobs, action("register", cid), now=NOW)
+    assert len(env.tg.marked) == 2                            # 건너뛸지는 텔레그램 쪽이 버튼을 보고 판단

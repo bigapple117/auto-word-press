@@ -10,7 +10,7 @@ import logging
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from src import db, topic_store
@@ -20,6 +20,10 @@ from src.topic_finder import TopicWriter, find_candidates, load_seeds, written_f
 log = logging.getLogger(__name__)
 
 _RUN_LOCK = threading.Lock()      # 한 번에 한 회차만
+WEEKLY_HOUR = 9                   # 한국 시간 월요일 이 시각부터 그 주 회차를 보냄
+WEEKLY_MAX_TRIES = 2              # 실패하면 다음 날 한 번 더
+RETRY_AFTER = timedelta(hours=20)
+CHECK_SECONDS = 600               # 실행기가 10분마다 확인
 HEADERS = {"weekly": "이번 주 블로그 주제 후보", "more": "새 블로그 주제 후보", "manual": "블로그 주제 후보"}
 
 
@@ -138,6 +142,7 @@ def register(deps: TopicDeps, jobs_conn: sqlite3.Connection, a: TopicAction,
         topic_store.mark_chosen(store, cand["id"], job_id, now=now)
     finally:
         store.close()
+    # 이미 '등록됨'으로 바뀐 버튼은 건너뛰고, 지난번 바꾸기가 실패했으면 이번에 바꾼다
     deps.telegram.mark_topic_registered(a.message_id, a.keyboard, a.ref_id, f"등록됨(작업 {job_id})")
     if existing is not None:
         return f"이미 등록된 후보입니다(작업 {job_id}번)"
@@ -189,3 +194,43 @@ def handle(deps: TopicDeps, jobs_conn: sqlite3.Connection, a: TopicAction) -> st
     if a.action == "more":
         return request_more(deps, a)
     return "알 수 없는 요청입니다"
+
+
+def weekly_due(store: sqlite3.Connection, now: datetime) -> bool:
+    """이번 주 회차를 보낼 때인가. 월요일 9시(한국 시간) 이후, 아직 안 보냈고, 실패는 다음 날 1번만 재시도."""
+    kst = now.astimezone(topic_store.KST)
+    if kst.weekday() == 0 and kst.hour < WEEKLY_HOUR:
+        return False
+    topic_store.fail_stale_running(store, now=now)
+    batches = topic_store.weekly_batches(store, topic_store.week_of(now))
+    if any(b["status"] != "failed" for b in batches):
+        return False
+    if len(batches) >= WEEKLY_MAX_TRIES:
+        return False
+    if batches:
+        last = datetime.fromisoformat(batches[-1]["finished_at"] or batches[-1]["created_at"])
+        return now >= last + RETRY_AFTER
+    return True
+
+
+def run_weekly_if_due(deps: TopicDeps, now: datetime | None = None) -> str | None:
+    """실행기가 주기적으로 부른다. 보낼 때가 아니면 None, 보냈거나 실패했으면 안내 문장."""
+    now = now or datetime.now(timezone.utc)
+    store = topic_store.connect(deps.settings.data_dir / "topics.sqlite3")
+    try:
+        if not weekly_due(store, now):
+            return None
+        tries = len(topic_store.weekly_batches(store, topic_store.week_of(now))) + 1
+    finally:
+        store.close()
+    try:
+        return run_batch(deps, "weekly", now=now)
+    except Exception as exc:  # noqa: BLE001 - 실패는 장부에 남고, 사용자에게 알린다
+        more = "내일 한 번 더 시도합니다." if tries < WEEKLY_MAX_TRIES else \
+            "이번 주는 더 시도하지 않습니다. 필요하면 Claude에게 '주제 찾아줘'라고 해 주세요."
+        note = f"[주제 후보] 이번 주 후보 찾기 실패({exc.__class__.__name__}). {more}"
+        try:
+            deps.telegram.send_text(note)
+        except Exception:  # noqa: BLE001
+            log.warning("주간 후보 실패 안내도 보내지 못했습니다")
+        return note

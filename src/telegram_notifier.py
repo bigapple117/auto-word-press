@@ -239,6 +239,8 @@ class TelegramNotifier:
         if message_id is None or not keyboard:
             return
         target = self.topic_callback("t", cand_id)
+        if any(b.get("callback_data") == target and b.get("text") == label for row in keyboard for b in row):
+            return                                   # 이미 바뀌어 있음(같은 내용으로 바꾸면 텔레그램 400)
         rows = [[dict(b, text=label) if b.get("callback_data") == target else dict(b) for b in row]
                 for row in keyboard]
         try:
