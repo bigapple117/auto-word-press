@@ -1,5 +1,5 @@
 from src.content_schema import ActionLink
-from src.link_check import check_action_links
+from src.link_check import check_action_links, home_links_overpromising
 from src.source_fetcher import Source
 
 SOURCES = [
@@ -91,3 +91,13 @@ def test_backslash_and_trailing_punctuation_in_path_not_trimmed():
 def test_odd_ascii_does_not_cut_url():
     for text in ("https://www.hometax.go.kr/apply|detail", "https://www.hometax.go.kr/apply^x", "https://www.hometax.go.kr/apply`x"):
         assert check_action_links([L("https://www.hometax.go.kr/apply")], S(text))[0] == []
+
+
+def test_home_link_with_action_label_is_flagged():
+    ok, _ = check_action_links([
+        L("www.hometax.go.kr", label="홈택스에서 장려금 신청하기"),
+        L("https://www.nts.go.kr/nts/cm/cntnts/cntntsView.do?mi=2452&cntntsId=7783", "info", label="국세청 신청자격 확인"),
+    ], SOURCES)
+    assert home_links_overpromising(ok) == ["홈택스에서 장려금 신청하기"]
+    ok, _ = check_action_links([L("www.hometax.go.kr", label="국세청 홈택스 바로가기")], SOURCES)
+    assert home_links_overpromising(ok) == []

@@ -18,6 +18,8 @@ from src.source_fetcher import Source
 from src.source_finder import is_official
 
 MAX_LINKS = 4
+# 사이트 첫 화면 링크에 붙으면 특정 메뉴로 바로 가는 것처럼 보이는 말
+_ACTION_WORDS = re.compile(r"신청|조회|발급|납부|등록|확인")
 # 본문을 이 문자들로 나눈 덩어리 하나하나를 주소 후보로 본다(덩어리 일부를 잘라 다른 주소를 만들지 않음)
 _SPLIT = re.compile(r"[\s()\[\]{}<>\"'“”‘’，、。·…]+")
 _ASCII_RUN = re.compile(r"^[\x21-\x7e]+")   # 보이는 ASCII 전체를 덩어리째(|·^·역슬래시 등에서 잘리지 않게)
@@ -115,3 +117,12 @@ def check_action_links(links: Sequence[ActionLink], sources: Sequence[Source]) -
         ok.append(CheckedLink(link.label.strip()[:40] or "바로가기", url, link.purpose,
                               (link.note or "").strip()[:80] or None))
     return ok, rejected
+
+
+def home_links_overpromising(links: Sequence[CheckedLink]) -> list[str]:
+    """사이트 첫 화면으로 가는데 이름이 '신청하기·조회'처럼 특정 화면을 약속하는 링크의 이름들.
+
+    첫 화면 링크는 '○○ 바로가기'로 쓰고, 어느 메뉴로 가는지는 설명(note)에 적는 것이 맞다.
+    """
+    return [l.label for l in links
+            if _is_home(l.url) and _ACTION_WORDS.search(l.label) and "바로가기" not in l.label]

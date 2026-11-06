@@ -19,7 +19,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from src.config import Settings
-from src.link_check import check_action_links
+from src.link_check import check_action_links, home_links_overpromising
 from src.content_schema import (MasterContent, Shorts, paragraph_text, section_paragraphs,
                                 section_texts)
 from src.source_fetcher import Source
@@ -274,6 +274,10 @@ def check_content(
     _ok_links, bad_links = check_action_links(c.action_links, sources)
     if bad_links:
         warnings.append("바로가기 링크에서 뺀 것: " + " / ".join(bad_links))
+    overpromising = home_links_overpromising(_ok_links)
+    if overpromising:
+        warnings.append("첫 화면으로 가는 링크인데 이름이 특정 메뉴처럼 보임('○○ 바로가기'로 고칠 것): "
+                        + " / ".join(overpromising))
     if not _ok_links:
         warnings.append("신청·조회 바로가기 링크가 없습니다(자료에서 공식 주소를 찾지 못함).")
 

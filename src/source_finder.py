@@ -27,6 +27,7 @@ OFFICIAL_HOSTS = frozenset({
     "fss.or.kr", "lh.or.kr", "kosaf.go.kr", "hf.go.kr", "kodit.co.kr",
     "kibo.or.kr", "semas.or.kr", "khug.or.kr", "kead.or.kr", "kicox.or.kr",
     "mnuri.kr", "arko.or.kr",      # 문화누리카드 공식 누리집, 한국문화예술위원회(운영 기관)
+    "energyv.or.kr",               # 에너지바우처 공식 누리집(한국에너지공단)
 })
 # 자바스크립트로 그려서 본문을 읽을 수 없는 주소
 UNREADABLE_PATTERNS = ("websquare", "/index_pp.xml")
