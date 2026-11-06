@@ -30,7 +30,11 @@ log = logging.getLogger(__name__)
 API = "https://api.telegram.org"
 ACTIONS = {"p": "publish", "h": "hold", "c": "cancel"}
 _CALLBACK = re.compile(r"^([phc]):(\d{1,12}):([0-9a-f]{8}):([0-9a-f]{16})$")
+# 주제 후보 버튼: t=등록(후보 번호), m=새 후보 더 받기(회차 번호)
+_TOPIC_CALLBACK = re.compile(r"^([tm]):(\d{1,12}):([0-9a-f]{16})$")
+TOPIC_ACTIONS = {"t": "register", "m": "more"}
 TITLE_MAX, SUMMARY_MAX, WARNING_MAX, WARNINGS_MAX = 200, 500, 300, 8
+TOPIC_MESSAGE_MAX = 3900           # 텔레그램 한 메시지 4096자 한도보다 여유 있게
 MAX_VIDEO_BYTES = 49_000_000        # 봇 API 업로드 한도 50MB
 
 
@@ -45,6 +49,30 @@ class Decision:
     nonce: str             # 승인 요청 번호(장부의 현재 요청 번호와 비교)
     callback_id: str
     message_id: int | None
+
+
+@dataclass(frozen=True)
+class TopicAction:
+    action: str            # register(후보 등록) / more(새 후보 더 받기)
+    ref_id: int            # register: 후보 번호, more: 회차 번호
+    callback_id: str
+    message_id: int | None
+    keyboard: tuple = ()   # 누른 메시지의 버튼 배치(등록한 버튼 하나만 바꾸려고)
+
+
+@dataclass(frozen=True)
+class TopicLine:
+    """후보 메시지 한 줄."""
+    cand_id: int
+    kind: str              # new / new_year / update
+    topic: str
+    category: str
+    interest: float | None
+    reasons: Sequence[str] = ()
+    warnings: Sequence[str] = ()
+    hosts: Sequence[str] = ()
+    news: Sequence[str] = ()
+    post_link: str = ""    # 고치기 후보의 원래 글
 
 
 @dataclass(frozen=True)
@@ -94,6 +122,19 @@ class TelegramNotifier:
         payload = f"{action_code}:{int(job_id)}:{nonce}"
         return f"{payload}:{self._sign(payload)}"          # 최대 약 40바이트(한도 64)
 
+    def topic_callback(self, code: str, ref_id: int) -> str:
+        payload = f"{code}:{int(ref_id)}"
+        return f"{payload}:{self._sign(payload)}"         # 최대 약 31바이트
+
+    def parse_topic_callback(self, data: str) -> tuple[str, int] | None:
+        m = _TOPIC_CALLBACK.fullmatch(data or "")
+        if not m:
+            return None
+        code, ref, sig = m.groups()
+        if not hmac.compare_digest(sig, self._sign(f"{code}:{ref}")):
+            return None
+        return TOPIC_ACTIONS[code], int(ref)
+
     def parse_callback(self, data: str) -> tuple[int, str, str] | None:
         """(작업 번호, 행동, 요청 번호). 형식이 틀리거나 서명이 안 맞으면 None."""
         m = _CALLBACK.fullmatch(data or "")
@@ -139,6 +180,73 @@ class TelegramNotifier:
                                               "disable_web_page_preview": True, "reply_markup": keyboard})
         return ApprovalRequest(int(msg["message_id"]), nonce)
 
+    def send_topic_candidates(self, header: str, lines: Sequence[TopicLine], notes: Sequence[str],
+                              batch_id: int, more_left: int) -> int:
+        """주제 후보 메시지 하나 + 번호 등록 버튼(2열) + [새 후보 더 받기]."""
+        kind_ko = {"new": "새 주제", "new_year": "새 연도 글", "update": "기존 글 고치기"}
+
+        def esc(t: str, n: int = 200) -> str:
+            return html.escape(t if len(t) <= n else t[:n] + "…")
+        blocks: list[tuple[list[str], dict | None]] = []
+        for i, ln in enumerate(lines, 1):
+            interest = "-" if ln.interest is None else f"{ln.interest:,.0f}"
+            b = [f"<b>{i}. {esc(ln.topic, 80)}</b>",
+                 f"   {kind_ko.get(ln.kind, ln.kind)} · {esc(ln.category)} · 관심도 {interest}"]
+            if ln.reasons:
+                b.append(f"   이유: {esc(', '.join(ln.reasons), 150)}")
+            if ln.hosts:
+                b.append(f"   공식 자료: {esc(', '.join(ln.hosts[:3]), 120)}")
+            for n in list(ln.news)[:2]:
+                b.append(f"   뉴스: {esc(n, 70)}")
+            if ln.post_link:
+                b.append(f'   <a href="{html.escape(ln.post_link, quote=True)}">원래 글 보기</a>')
+            for w in list(ln.warnings)[:2]:
+                b.append(f"   ! {esc(w, 120)}")
+            # 고치기는 새 작업이 아니라 확인용(버튼 없음)
+            button = (None if ln.kind == "update" else
+                      {"text": f"{i}번 등록", "callback_data": self.topic_callback("t", ln.cand_id)})
+            blocks.append((b, button))
+        tail = []
+        if not lines:
+            tail.append("이번에는 기준에 맞는 새 후보가 없습니다.")
+        if notes:
+            tail += [""] + [f"- {esc(n, 150)}" for n in notes]
+        tail += ["", "관심도: 자녀장려금 검색량을 100으로 본 비교값(검색 횟수 아님)",
+                 "고른 번호를 누르면 글쓰기 대기열에 들어갑니다(발행은 따로 승인)."]
+
+        def build(n: int) -> str:
+            body = [f"<b>{esc(header)}</b>", ""] + [x for b, _ in blocks[:n] for x in b]
+            if n < len(blocks):
+                body.append(f"(메시지 길이 때문에 {len(blocks) - n}개는 생략)")
+            return "\n".join(body + tail)
+
+        n = len(blocks)
+        text = build(n)
+        while n > 0 and len(text) > TOPIC_MESSAGE_MAX:   # 서식이 깨지지 않게 후보 단위로 뺀다
+            n -= 1
+            text = build(n)
+        buttons = [btn for _b, btn in blocks[:n] if btn]
+        rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+        rows.append([{"text": f"새 후보 더 받기 (오늘 {more_left}번 남음)",
+                      "callback_data": self.topic_callback("m", batch_id)}])
+        msg = self._call("sendMessage", json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML",
+                                              "disable_web_page_preview": True,
+                                              "reply_markup": {"inline_keyboard": rows}})
+        return int(msg["message_id"])
+
+    def mark_topic_registered(self, message_id: int | None, keyboard: Sequence, cand_id: int, label: str) -> None:
+        """등록한 후보 버튼 하나만 이름을 바꾼다(나머지 버튼은 그대로 눌러 쓸 수 있게)."""
+        if message_id is None or not keyboard:
+            return
+        target = self.topic_callback("t", cand_id)
+        rows = [[dict(b, text=label) if b.get("callback_data") == target else dict(b) for b in row]
+                for row in keyboard]
+        try:
+            self._call("editMessageReplyMarkup", json={"chat_id": self.chat_id, "message_id": message_id,
+                                                       "reply_markup": {"inline_keyboard": rows}})
+        except TelegramError as exc:
+            log.warning("후보 버튼 바꾸기 실패: %s", exc)
+
     def send_text(self, text: str) -> int:
         msg = self._call("sendMessage", json={"chat_id": self.chat_id, "text": text[:4000]})
         return int(msg["message_id"])
@@ -162,13 +270,14 @@ class TelegramNotifier:
         return int(msg["message_id"])
 
     # ----- 받기 -----
-    def poll_decisions(self, offset: int | None, wait_seconds: int = 25) -> tuple[list[Decision], int | None]:
+    def poll_decisions(self, offset: int | None,
+                       wait_seconds: int = 25) -> tuple[list[Decision | TopicAction], int | None]:
         """버튼 응답을 가져온다. (결정 목록, 다음 offset). 우리 대화방·우리 서명이 아닌 것은 버린다."""
         params: dict[str, Any] = {"timeout": wait_seconds, "allowed_updates": ["callback_query"]}
         if offset is not None:
             params["offset"] = offset
         updates = self._call("getUpdates", timeout=wait_seconds + 15, json=params)
-        decisions: list[Decision] = []
+        decisions: list[Decision | TopicAction] = []
         next_offset = offset
         for u in updates:
             next_offset = int(u["update_id"]) + 1
@@ -178,6 +287,13 @@ class TelegramNotifier:
             msg = cq.get("message") or {}
             chat_ok = str((msg.get("chat") or {}).get("id")) == self.chat_id
             user_ok = str((cq.get("from") or {}).get("id")) == self.chat_id
+            if chat_ok and user_ok:
+                topic = self.parse_topic_callback(cq.get("data", ""))
+                if topic:
+                    kb = (msg.get("reply_markup") or {}).get("inline_keyboard") or []
+                    decisions.append(TopicAction(topic[0], topic[1], cq.get("id", ""), msg.get("message_id"),
+                                                 tuple(tuple(r) for r in kb)))
+                    continue
             parsed = self.parse_callback(cq.get("data", "")) if (chat_ok and user_ok) else None
             if not parsed:
                 log.warning("허용되지 않은 버튼 응답을 무시했습니다(update %s)", u.get("update_id"))

@@ -1,5 +1,15 @@
 # REVIEW
 
+## 2026-11-06 주제 자동 추천 2단계: 후보 장부·텔레그램 [n번 등록]/[새 후보 더 받기]
+- 작성자: Claude / 검토자: Codex (codex exec, read-only, diff stdin 전달 — 셸은 bwrap 오류로 막혀 diff만으로 판단)
+- 계획 검토(1단계 전): Codex·Gemini — 후보 DB 보관, 버튼 64바이트, mark_done이 버튼 전체 삭제, 트렌드 기준어, 제도명 기준 중복 등 반영
+- 1차: CHANGES_REQUESTED — (1) 완성된 HTML을 글자 수로 잘라 태그가 깨짐 (2) [더 받기] 횟수 확인과 회차 생성 분리로 한도 초과 가능 (3) 전송 직후 중단 시 같은 주 재전송·같은 주제 중복 등록
+- 2차: CHANGES_REQUESTED — (1) 전송 후 기록 실패를 failed로 처리해 재전송 (2) 작업 생성 후 후보 기록 전 중단 시 다른 회차 같은 주제로 중복 작업
+- 3차: CHANGES_REQUESTED — 후보 0개 메시지 전송 후 중단 시 running→failed로 재전송
+- 4차: **PASS** — 전송 직전 sending 기록, 멈춘 sending은 sent, running만 failed. 주간 고유 색인은 failed만 제외
+- 검증: Claude 쪽 pytest 310 통과(test_topic_service 20개)
+- 원문: data/design-review/codex-topic-*.txt, gemini-topic-plan.txt
+
 ## 2026-11-06 바로가기 링크: 정부 자료 2곳이 안내한 사업 누리집 첫 화면 인정(link_check)
 - 작성자: Claude / 검토자: Codex (codex exec, read-only, 변경 내용 stdin 전달)
 - 참고: `codex-review.py --uncommitted`는 샌드박스 오류(bwrap: loopback: Failed RTM_NEWADDR)로 2회 BLOCKED → 붙여 넣기 방식으로 재요청

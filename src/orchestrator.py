@@ -29,7 +29,8 @@ from src.ai_generator import ModelBusyError
 from src.content_schema import MasterContent
 from src.pipeline import (PipelineError, Services, make_content, make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
-from src.telegram_notifier import Decision, TelegramError
+from src import topic_service
+from src.telegram_notifier import Decision, TelegramError, TopicAction
 from src.wp_client import WPError
 from src.youtube_kit import build_upload_kit
 
@@ -39,7 +40,7 @@ IDLE_SECONDS = 15
 BUSY_WAIT_SECONDS = 15 * 60               # 글 쓰는 모델이 바쁠 때 대기열 전체를 쉬는 시간(풀리면 빨리 잡도록 짧게 고정)
 BUSY_GIVE_UP_SECONDS = 12 * 60 * 60        # 한 작업이 처음 바빠진 뒤 이만큼 지나도 계속 바쁘면 실패로 알림
 POLL_WAIT_SECONDS = 25
-NAMES = {"publish": "발행", "hold": "보류", "cancel": "취소"}
+NAMES = {"publish": "발행", "hold": "보류", "cancel": "취소", "register": "주제 등록", "more": "새 후보"}
 
 
 class Orchestrator:
@@ -230,6 +231,13 @@ class Orchestrator:
             self.send_upload_kit(d.job_id, post.link)
         return "발행했습니다"
 
+    def topic_deps(self) -> topic_service.TopicDeps:
+        return topic_service.TopicDeps(self.svc.settings, self.svc.search, self.svc.generator, self.svc.telegram)
+
+    def handle_topic(self, a: TopicAction) -> str:
+        """주제 후보 버튼([n번 등록]·[새 후보 더 받기])."""
+        return topic_service.handle(self.topic_deps(), self.conn, a)
+
     def send_upload_kit(self, job_id: int, post_url: str) -> None:
         """쇼츠가 있는 작업이면 유튜브에 올릴 영상·제목·설명을 텔레그램으로 보낸다.
         제목과 설명은 따로 보내 휴대폰에서 메시지 하나씩 길게 눌러 복사할 수 있게 한다.
@@ -271,7 +279,7 @@ class Orchestrator:
         decisions, next_offset = self.svc.telegram.poll_decisions(offset, wait_seconds=wait)
         for d in decisions:
             try:
-                note = self.handle_decision(d)
+                note = self.handle_topic(d) if isinstance(d, TopicAction) else self.handle_decision(d)
             except Exception as exc:  # noqa: BLE001 - 버튼 하나의 실패가 수신을 멈추지 않게
                 log.exception("버튼 처리 실패")
                 note = f"처리 중 오류: {exc.__class__.__name__}"
