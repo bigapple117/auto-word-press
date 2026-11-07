@@ -286,3 +286,72 @@ def test_ensure_tags_exact_match_and_create(wp):
     assert client.ensure_tags(["자녀장려금 신청"]) == [1]
     post = client.save_draft(3, "t", "<p>x</p>", tags=ids)
     assert fake.posts[post.id]["tags"] == ids
+
+
+class FeaturedWP(FakeWP):
+    """대표 사진 교체용: 글 목록·페이지 목록·대표 사진 번호까지 흉내 낸다."""
+
+    def request(self, method, url, auth=None, params=None, json=None, data=None, headers=None, **kw):
+        path = url.split("/wp-json/wp/v2", 1)[1]
+        if path in ("/posts", "/pages") and method == "GET" and "search" not in (params or {}):
+            self.calls.append((method, path, params, json, headers, auth))
+            items = [{"id": i, "featured_media": p.get("featured_media", 0), "content": {"raw": p["content"]}}
+                     for i, p in (self.posts.items() if path == "/posts" else [])]
+            return self._page(items, params)
+        if path.startswith("/posts/") and method == "GET":
+            self.calls.append((method, path, params, json, headers, auth))
+            p = self.posts[int(path.split("/")[2])]
+            return FakeResp(200, {"id": int(path.split("/")[2]), "featured_media": p.get("featured_media", 0),
+                                  "content": {"raw": p["content"]}})
+        return super().request(method, url, auth, params, json, data, headers, **kw)
+
+
+def _featured_setup(tmp_path):
+    fake = FeaturedWP()
+    client = WordPressClient("https://jalcheck.com", "a", "b", session=fake, lock_dir=tmp_path / "locks")
+    old = client.upload_media(_img(tmp_path), 3, 1)
+    fake.posts[57] = {"content": marker_comment(3) + "\n<p>본문</p>", "status": "publish", "featured_media": old.id}
+    return client, fake, old
+
+
+def _img(tmp_path):
+    p = tmp_path / "a.jpg"
+    p.write_bytes(b"\xff\xd8jpg")
+    return p
+
+
+def test_replace_featured_switches_records_then_deletes(tmp_path):
+    client, fake, old = _featured_setup(tmp_path)
+    order = []
+    fake_delete = fake.request
+
+    def spy(method, url, **kw):
+        if method == "DELETE":
+            order.append("delete")
+        return fake_delete(method, url, **kw)
+    fake.request = spy
+    new, deleted = client.replace_featured(3, 57, 1, _img(tmp_path), old.id,
+                                           on_switched=lambda m: order.append(("record", m.id)))
+    assert deleted and fake.posts[57]["featured_media"] == new.id and old.id not in fake.media
+    assert order == [("record", new.id), "delete"]                 # 장부를 먼저 맞추고 옛 사진 삭제
+    assert client.find_media("jcjob-3-1").id == new.id             # 화면 다시 만들기도 새 사진을 찾음
+
+
+def test_replace_featured_keeps_old_when_used_elsewhere(tmp_path):
+    client, fake, old = _featured_setup(tmp_path)
+    fake.posts[60] = {"content": "<img src='/jcjob-3-1.jpg'>", "status": "publish"}
+    new, deleted = client.replace_featured(3, 57, 1, _img(tmp_path), old.id)
+    assert not deleted and old.id in fake.media and fake.posts[57]["featured_media"] == new.id
+
+
+def test_replace_featured_stops_on_leftovers_or_mismatch(tmp_path):
+    client, fake, old = _featured_setup(tmp_path)
+    with pytest.raises(WPError, match="예상"):
+        client.replace_featured(3, 57, 1, _img(tmp_path), old.id + 1)
+    with pytest.raises(WPError, match="작업 4번 글이 아닙니다"):
+        client.replace_featured(4, 57, 1, _img(tmp_path), old.id)
+    client._upload(_img(tmp_path), "jcjob-3-1", "", "")            # 예전 교체가 멈춘 흔적
+    before = dict(fake.media)
+    with pytest.raises(WPError, match="흔적"):
+        client.replace_featured(3, 57, 1, _img(tmp_path), old.id)
+    assert fake.media == before and fake.posts[57]["featured_media"] == old.id

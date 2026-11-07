@@ -44,6 +44,11 @@ def find_duplicates(jobs: list[dict]) -> list[tuple[dict, int, int, int]]:
     return dups
 
 
+def busy_jobs(conn) -> list[int]:
+    """실행기가 손댈 수 있는 작업(대기·진행 중). 있으면 사진 교체와 엇갈릴 수 있어 멈춘다."""
+    return [j["id"] for j in db.list_jobs(conn, limit=10_000) if j["status"] in ("queued", *RUNNING_STATUSES)]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="실제로 바꾼다(없으면 목록만)")
@@ -52,8 +57,7 @@ def main() -> int:
 
     settings = load_settings()
     conn = db.connect(settings.db_path)
-    jobs = [j for j in db.list_jobs(conn, limit=10_000) if j["status"] not in RUNNING_STATUSES]
-    dups = find_duplicates(jobs)
+    dups = find_duplicates(db.list_jobs(conn, limit=10_000))     # 겹침은 모든 작업으로 판단
     if not dups:
         print("대표 사진이 겹치는 글이 없습니다")
         return 0
@@ -63,6 +67,18 @@ def main() -> int:
     avoid = db.used_blog_media_ids(conn)          # 모든 글이 쓴 사진(이번에 고른 새 사진도 계속 추가)
     failed = 0
     for job, idx, old_pixabay, owner in dups:
+        if args.apply and (busy := busy_jobs(conn)):
+            print(f"진행 중이거나 대기 중인 작업이 있어 멈춥니다(작업 {busy}). 끝난 뒤 다시 실행하세요")
+            return 1
+        job = db.get_job(conn, job["id"])                         # 최신 장부로 다시 읽기
+        if job["status"] in RUNNING_STATUSES:
+            print(f"작업 {job['id']}: 진행 중이라 이번에는 건너뜀")
+            failed += 1
+            continue
+        blog_now = (job["checkpoint"].get("media") or {}).get("blog") or []
+        if featured_index(blog_now) != idx or blog_now[idx]["id"] != old_pixabay:
+            print(f"작업 {job['id']}: 그사이 사진이 바뀌어 건너뜀")
+            continue
         content = MasterContent.model_validate(job["checkpoint"]["content"]["content"])
         section = content.sections[idx]
         blog = job["checkpoint"]["media"]["blog"]
@@ -80,14 +96,21 @@ def main() -> int:
         current = wp._request("GET", f"/posts/{int(job['post_id'])}", params={"_fields": "featured_media"})
         fitted = normalize_blog_image(pick.path, settings.data_dir / "media_cache" / "blog")
         alt = (section.image_alt or section.heading).strip()
-        new = wp.replace_featured(job["id"], job["post_id"], idx, fitted, int(current["featured_media"]),
-                                  alt=alt, caption=pick.credit)
-        blog[idx] = _pick_json(pick)
-        db.save_checkpoint(conn, job["id"], "media", {**job["checkpoint"]["media"], "blog": blog})
-        draft = job["checkpoint"].get("draft")
-        if isinstance(draft, dict) and "featured" in draft:
-            db.save_checkpoint(conn, job["id"], "draft", {**draft, "featured": new.id})
-        print(f"  바꿈: 워드프레스 사진 {current['featured_media']} → {new.id}")
+
+        def record(new, job=job, idx=idx, pick=pick):
+            # 대표 사진이 바뀐 직후, 옛 사진을 지우기 전에 장부부터 맞춘다
+            media = {**job["checkpoint"]["media"]}
+            media["blog"] = [*media["blog"]]
+            media["blog"][idx] = _pick_json(pick)
+            db.save_checkpoint(conn, job["id"], "media", media)
+            draft = job["checkpoint"].get("draft")
+            if isinstance(draft, dict) and "featured" in draft:
+                db.save_checkpoint(conn, job["id"], "draft", {**draft, "featured": new.id})
+
+        new, deleted = wp.replace_featured(job["id"], job["post_id"], idx, fitted, int(current["featured_media"]),
+                                           alt=alt, caption=pick.credit, on_switched=record)
+        print(f"  바꿈: 워드프레스 사진 {current['featured_media']} → {new.id}"
+              + ("" if deleted else " (옛 사진은 다른 곳에서 쓰여 남김: 화면 다시 만들기 전에 직접 정리 필요)"))
     if not args.apply:
         print("\n(목록만 보여 줬습니다. 실제로 바꾸려면 --apply)")
     return 1 if failed else 0

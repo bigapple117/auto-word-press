@@ -14,7 +14,7 @@ import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
 import requests
@@ -271,13 +271,29 @@ class WordPressClient:
                 return found
             return self._upload(path, stem, alt, caption)
 
-    def replace_featured(self, job_id: int, post_id: int, index: int, path: Path, old_media_id: int,
-                         alt: str = "", caption: str = "") -> WPMedia:
-        """글의 대표 사진만 새 사진으로 바꾼다(본문·상태는 건드리지 않음).
+    def _media_in_use(self, media_id: int, stem: str, except_post: int) -> bool:
+        """이 첨부를 다른 글의 대표 사진으로 쓰거나, 어느 글·페이지 본문에든 이 파일 이름이 있으면 True."""
+        for kind in ("posts", "pages"):
+            items = self._get_all(f"/{kind}", {"status": "any", "context": "edit",
+                                               "_fields": "id,featured_media,content"})
+            for it in items:
+                if it.get("id") != except_post and int(it.get("featured_media") or 0) == int(media_id):
+                    return True
+                if stem in ((it.get("content") or {}).get("raw") or ""):
+                    return True
+        return False
 
-        새 사진을 같은 이름(jcjob-<번호>-<순서>)으로 먼저 올려 대표 사진으로 걸고, 그다음 옛 사진을 지운다.
-        그래서 화면에 대표 사진이 빈 순간이 없고, 나중에 화면만 다시 만들어도 이름으로 새 사진을 찾는다."""
+    def replace_featured(self, job_id: int, post_id: int, index: int, path: Path, old_media_id: int,
+                         alt: str = "", caption: str = "",
+                         on_switched: Callable[[WPMedia], None] | None = None) -> tuple[WPMedia, bool]:
+        """글의 대표 사진만 새 사진으로 바꾼다(본문·상태는 건드리지 않음). (새 사진, 옛 사진 삭제 여부)
+
+        새 사진을 같은 이름(jcjob-<번호>-<순서>)으로 올려 대표 사진으로 걸고 → on_switched(장부 기록) →
+        옛 사진을 지운다. 화면에 대표 사진이 빈 순간이 없고, 나중에 화면만 다시 만들어도 이름으로 새 사진을 찾는다.
+        - 같은 이름의 첨부가 이미 2개 이상이면(예전 실패의 흔적) 아무것도 바꾸지 않고 멈춘다.
+        - 옛 사진을 다른 글이 쓰거나 어느 본문에든 들어 있으면 지우지 않고 남긴다(이때 이름이 겹치므로 알림)."""
         stem = f"{job_marker(job_id)}-{int(index)}"
+        name_re = re.compile(rf"^{re.escape(stem)}(-\d+)?$")
         with job_lock(job_id, self.lock_dir):
             post = self._request("GET", f"/posts/{int(post_id)}", params={"context": "edit",
                                                                           "_fields": "id,featured_media,content"})
@@ -286,13 +302,26 @@ class WordPressClient:
             if int(post.get("featured_media") or 0) != int(old_media_id):
                 raise WPError(f"글 {post_id}번의 대표 사진이 예상({old_media_id})과 다릅니다"
                               f"({post.get('featured_media')}). 사람이 바꾼 것일 수 있어 건드리지 않습니다")
-            old = self._request("GET", f"/media/{int(old_media_id)}", params={"_fields": "id,source_url"})
-            if not re.match(rf"^{re.escape(stem)}(-\d+)?$", Path(urlparse(old.get("source_url", "")).path).stem):
-                raise WPError(f"옛 대표 사진({old_media_id})이 이 작업이 올린 사진이 아니라 바꾸지 않습니다")
+            same_name = [m for m in self._get_all("/media", {"search": stem, "_fields": "id,source_url"})
+                         if name_re.match(Path(urlparse(m.get("source_url", "")).path).stem)]
+            if [m["id"] for m in same_name] != [int(old_media_id)]:
+                raise WPError(f"'{stem}' 이름의 첨부가 {[m['id'] for m in same_name]}입니다(옛 대표 사진 하나여야 함). "
+                              "예전 교체가 중간에 멈춘 흔적일 수 있어 바꾸지 않습니다. 직접 확인이 필요합니다")
+            in_use = self._media_in_use(old_media_id, stem, except_post=int(post_id))
             new = self._upload(path, stem, alt, caption)
             self._request("POST", f"/posts/{int(post_id)}", json={"featured_media": new.id})
+            check = self._request("GET", f"/posts/{int(post_id)}", params={"context": "edit",
+                                                                           "_fields": "featured_media"})
+            if int(check.get("featured_media") or 0) != new.id:
+                raise WPError(f"글 {post_id}번 대표 사진을 {new.id}로 바꾸지 못했습니다(지금 {check.get('featured_media')}). "
+                              f"새로 올린 첨부 {new.id}는 남아 있어 직접 정리가 필요합니다")
+            if on_switched:
+                on_switched(new)
+            if in_use:
+                log.warning("옛 대표 사진 %s는 다른 곳에서 쓰여 지우지 않았습니다", old_media_id)
+                return new, False
             self._request("DELETE", f"/media/{int(old_media_id)}", params={"force": "true"})
-        return new
+        return new, True
 
     def _upload(self, path: Path, stem: str, alt: str, caption: str) -> WPMedia:
         ext = path.suffix.lower()
