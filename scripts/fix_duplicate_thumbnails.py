@@ -102,10 +102,8 @@ def main() -> int:
             media = {**job["checkpoint"]["media"]}
             media["blog"] = [*media["blog"]]
             media["blog"][idx] = _pick_json(pick)
+            # 장부 저장은 한 번(한 트랜잭션)만. draft.featured(처음 저장 때의 첨부 번호)는 어디서도 읽지 않아 그대로 둔다
             db.save_checkpoint(conn, job["id"], "media", media)
-            draft = job["checkpoint"].get("draft")
-            if isinstance(draft, dict) and "featured" in draft:
-                db.save_checkpoint(conn, job["id"], "draft", {**draft, "featured": new.id})
 
         new, deleted = wp.replace_featured(job["id"], job["post_id"], idx, fitted, int(current["featured_media"]),
                                            alt=alt, caption=pick.credit, on_switched=record)
