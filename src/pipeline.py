@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Collection, Sequence
 
 from src.ai_generator import ContentGenerator
 from src.blog_html import SectionImage, render_blog_html
@@ -121,12 +121,14 @@ def _pick_json(p) -> dict | None:
     return {"file": str(p.path), "kind": p.kind, "id": p.media_id, "credit": p.credit, "page": p.page_url}
 
 
-def pick_media(svc: Services, content: MasterContent, with_shorts: bool) -> dict:
-    blog = svc.picker.pick_blog_images([s.image_query for s in content.sections])
+def pick_media(svc: Services, content: MasterContent, with_shorts: bool,
+               avoid: Collection[int] = ()) -> dict:
+    """avoid: 다른 글에서 이미 쓴 블로그 사진 번호(가능하면 피함)."""
+    blog = svc.picker.pick_blog_images([s.image_query for s in content.sections], avoid=avoid)
     if not any(blog):
         # 사진 검색어가 하나도 없거나 못 찾으면 쇼츠 첫 장면 검색어로 대표 사진 하나는 마련한다
         first = content.shorts.scenes[0].video_query if content.shorts.scenes else ""
-        extra = svc.picker.pick_blog_image(first) if first else None
+        extra = svc.picker.pick_blog_image(first, avoid=avoid) if first else None
         blog = [extra] + [None] * (len(content.sections) - 1) if extra else blog
     scenes = svc.picker.pick_scene_backgrounds([s.video_query for s in content.shorts.scenes]) if with_shorts else []
     return {"blog": [_pick_json(p) for p in blog], "scenes": [_pick_json(p) for p in scenes]}

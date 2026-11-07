@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 from urllib.parse import urlparse
 
 import requests
@@ -268,9 +268,21 @@ def choose_video(hits: Sequence[dict[str, Any]], exclude: set[int]) -> tuple[dic
     return (portrait or landscape or [None])[0]
 
 
-def choose_image(hits: Sequence[dict[str, Any]], exclude: set[int], min_height: int = 1600) -> dict | None:
+# Pixabay 사진 번호는 올린 순서대로 붙는다. 작가가 한 번에 올린 연작(각도만 조금 다른 거의 같은 사진)은
+# 번호가 바로 이웃하므로, 이미 쓴 사진과 번호 차이가 이 안이면 같은 사진으로 보고 피한다.
+SERIES_ID_GAP = 20
+
+
+def _same_series(media_id: int, series: Collection[int]) -> bool:
+    return any(abs(media_id - x) <= SERIES_ID_GAP for x in series)
+
+
+def choose_image(hits: Sequence[dict[str, Any]], exclude: set[int], min_height: int = 1600,
+                 series: Collection[int] = ()) -> dict | None:
+    """exclude는 그 번호만, series는 그 번호와 같은 연작(번호가 이웃한 사진)까지 피한다."""
     for h in hits:
-        if h.get("id") not in exclude and h.get("imageHeight", 0) >= min_height and h.get("largeImageURL"):
+        if (h.get("id") not in exclude and not _same_series(h.get("id", 0), series)
+                and h.get("imageHeight", 0) >= min_height and h.get("largeImageURL")):
             return h
     return None
 
@@ -366,11 +378,14 @@ class StockMediaPicker:
                              hit.get("user", ""), query)
         return None
 
-    def _image(self, query: str, used: set[int], orientation: str) -> MediaPick | None:
+    def _image(self, query: str, used: set[int], orientation: str, series: bool = False) -> MediaPick | None:
+        """series=True면 이미 쓴 사진의 연작도 피한다(used가 모두 사진 번호일 때만: 영상 번호는 따로 매겨짐)."""
         hits = self.client.search_images(query, orientation)
         skip = set(used)
+        near = set(used) if series else set()
         for _ in range(MAX_VIDEO_TRIES):
-            hit = choose_image(by_relevance(hits, query), skip, min_height=1600 if orientation == "vertical" else 900)
+            hit = choose_image(by_relevance(hits, query), skip, min_height=1600 if orientation == "vertical" else 900,
+                               series=near)
             if not hit:
                 return None
             ext = Path(urlparse(hit["largeImageURL"]).path).suffix.lower() or ".jpg"
@@ -403,24 +418,34 @@ class StockMediaPicker:
         prune_cache(self.media_dir, keep={p.path for p in picks if p})
         return picks
 
-    def pick_blog_images(self, queries: Sequence[str | None]) -> list[MediaPick | None]:
+    def pick_blog_images(self, queries: Sequence[str | None],
+                         avoid: Collection[int] = ()) -> list[MediaPick | None]:
         """블로그 소제목별 가로 사진(겹치지 않게). 검색어가 비어 있는 소제목은 None.
+        avoid: 다른 글에서 이미 쓴 사진 번호. 목록 화면에서 대표 사진이 겹쳐 보이지 않게 먼저 피한다.
         끝나면 보관함 상한을 맞춘다(이번에 쓴 사진은 보호)."""
         used: set[int] = set()
-        picks = [self.pick_blog_image(q, used) if q and q.strip() else None for q in queries]
+        picks = [self.pick_blog_image(q, used, avoid) if q and q.strip() else None for q in queries]
         prune_cache(self.media_dir, keep={p.path for p in picks if p})
         return picks
 
-    def pick_blog_image(self, query: str, used: set[int] | None = None) -> MediaPick | None:
-        """블로그 본문용 가로 사진 하나(보관함 정리는 pick_blog_images에서)."""
+    def pick_blog_image(self, query: str, used: set[int] | None = None,
+                        avoid: Collection[int] = ()) -> MediaPick | None:
+        """블로그 본문용 가로 사진 하나(보관함 정리는 pick_blog_images에서).
+        다른 글에서 안 쓴 사진을 먼저 찾고, 검색어에 맞는 새 사진이 없을 때만 다른 글의 사진을 다시 쓴다
+        (같은 글 안에서는 어떤 경우에도 겹치지 않음)."""
         used = used if used is not None else set()
-        for q in filter(None, (query, _simpler(query))):
-            try:
-                pick = self._image(q, used, "horizontal")
-            except MediaError as exc:
-                log.warning("블로그 사진 찾기 실패(%s): %s", q, exc)
-                continue
-            if pick:
-                used.add(pick.media_id)
-                return pick
+        queries = list(filter(None, (query, _simpler(query))))
+        rounds = [used | set(avoid), used] if avoid else [used]
+        for skip in rounds:
+            for q in queries:
+                try:
+                    pick = self._image(q, skip, "horizontal", series=True)
+                except MediaError as exc:
+                    log.warning("블로그 사진 찾기 실패(%s): %s", q, exc)
+                    continue
+                if pick:
+                    if skip is used and _same_series(pick.media_id, avoid):
+                        log.info("다른 글에서 안 쓴 사진이 없어 이미 쓴 사진을 다시 씀(%s): %s", q, pick.media_id)
+                    used.add(pick.media_id)
+                    return pick
         return None

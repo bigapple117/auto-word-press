@@ -261,17 +261,17 @@ def test_broken_image_tries_next_and_blog_images_prune(tmp_path, monkeypatch):
             return []
 
         def search_images(self, q, orientation):
-            return [image_hit(1), image_hit(2), image_hit(3)]
+            return [image_hit(100), image_hit(200), image_hit(300)]
 
         def download(self, url, dest, max_bytes):
             dest.write_bytes(b"x")
             return dest
 
-    monkeypatch.setattr(sm, "media_is_valid", lambda fp, path, kind: "i1" not in path.name)
+    monkeypatch.setattr(sm, "media_is_valid", lambda fp, path, kind: "i100" not in path.name)
     monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: calls.setdefault("keep", keep))
     picker = StockMediaPicker(Client(), tmp_path, ffmpeg=tmp_path / "ffmpeg")
     picks = picker.pick_blog_images(["office desk", "family home"])
-    assert [p.media_id for p in picks] == [2, 3]                 # 깨진 1번 건너뛰고, 겹치지 않음
+    assert [p.media_id for p in picks] == [200, 300]             # 깨진 100번 건너뛰고, 겹치지 않음
     assert calls["keep"] == {p.path for p in picks}
 
 
@@ -311,3 +311,25 @@ def test_main_subject_tags_weigh_more():
     hits = [image_hit(1, tags="podcast, microphone, record, audio, laptop, desk"),
             image_hit(2, tags="laptop, iphone, workspace, desk")]
     assert [h["id"] for h in sm.by_relevance(hits, "laptop on desk")] == [2, 1]
+
+
+def test_blog_images_avoid_other_posts_then_fall_back(tmp_path, monkeypatch):
+    class Client:
+        def search_images(self, q, orientation):
+            return [image_hit(100), image_hit(105), image_hit(300)]
+
+        def download(self, url, dest, max_bytes):
+            return dest
+
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    picker = StockMediaPicker(Client(), tmp_path)
+    picks = picker.pick_blog_images(["office desk", "office desk"], avoid={100})
+    assert [p.media_id for p in picks] == [300, 100]   # 다른 글의 100번과 그 연작 105번은 피하고, 없으면 다시 씀
+    picks = picker.pick_blog_images(["office desk"] * 3, avoid={100, 300})
+    assert [p and p.media_id for p in picks] == [100, 300, None]   # 같은 글 안에서는 연작까지 겹치지 않음
+
+
+def test_choose_image_series():
+    hits = [image_hit(1044172), image_hit(2000000)]
+    assert choose_image(hits, set(), series={1044173})["id"] == 2000000
+    assert choose_image(hits, set())["id"] == 1044172

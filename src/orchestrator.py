@@ -87,7 +87,8 @@ class Orchestrator:
 
         self._advance(job_id, "media")
         if "media" not in cp:
-            cp["media"] = pick_media(self.svc, content, with_shorts)
+            cp["media"] = pick_media(self.svc, content, with_shorts,
+                                     avoid=db.used_blog_media_ids(self.conn, exclude_job_id=job_id))
             db.save_checkpoint(self.conn, job_id, "media", cp["media"])
 
         video_path = None

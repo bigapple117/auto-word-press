@@ -271,6 +271,29 @@ class WordPressClient:
                 return found
             return self._upload(path, stem, alt, caption)
 
+    def replace_featured(self, job_id: int, post_id: int, index: int, path: Path, old_media_id: int,
+                         alt: str = "", caption: str = "") -> WPMedia:
+        """글의 대표 사진만 새 사진으로 바꾼다(본문·상태는 건드리지 않음).
+
+        새 사진을 같은 이름(jcjob-<번호>-<순서>)으로 먼저 올려 대표 사진으로 걸고, 그다음 옛 사진을 지운다.
+        그래서 화면에 대표 사진이 빈 순간이 없고, 나중에 화면만 다시 만들어도 이름으로 새 사진을 찾는다."""
+        stem = f"{job_marker(job_id)}-{int(index)}"
+        with job_lock(job_id, self.lock_dir):
+            post = self._request("GET", f"/posts/{int(post_id)}", params={"context": "edit",
+                                                                          "_fields": "id,featured_media,content"})
+            if marker_comment(job_id) not in (post.get("content") or {}).get("raw", ""):
+                raise WPError(f"글 {post_id}번은 작업 {job_id}번 글이 아닙니다")
+            if int(post.get("featured_media") or 0) != int(old_media_id):
+                raise WPError(f"글 {post_id}번의 대표 사진이 예상({old_media_id})과 다릅니다"
+                              f"({post.get('featured_media')}). 사람이 바꾼 것일 수 있어 건드리지 않습니다")
+            old = self._request("GET", f"/media/{int(old_media_id)}", params={"_fields": "id,source_url"})
+            if not re.match(rf"^{re.escape(stem)}(-\d+)?$", Path(urlparse(old.get("source_url", "")).path).stem):
+                raise WPError(f"옛 대표 사진({old_media_id})이 이 작업이 올린 사진이 아니라 바꾸지 않습니다")
+            new = self._upload(path, stem, alt, caption)
+            self._request("POST", f"/posts/{int(post_id)}", json={"featured_media": new.id})
+            self._request("DELETE", f"/media/{int(old_media_id)}", params={"force": "true"})
+        return new
+
     def _upload(self, path: Path, stem: str, alt: str, caption: str) -> WPMedia:
         ext = path.suffix.lower()
         mime = mimetypes.guess_type(f"x{ext}")[0] or "application/octet-stream"

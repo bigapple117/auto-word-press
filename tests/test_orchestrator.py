@@ -59,10 +59,10 @@ class FakePicker:
             Image.new("RGB", (1600, 1000), "blue").save(p)
         return p
 
-    def pick_blog_images(self, queries):
+    def pick_blog_images(self, queries, avoid=()):
         return [Pick(self._file(f"b{i}.jpg"), media_id=i) if q else None for i, q in enumerate(queries)]
 
-    def pick_blog_image(self, query):
+    def pick_blog_image(self, query, avoid=()):
         return Pick(self._file("extra.jpg"), media_id=99)
 
     def pick_scene_backgrounds(self, queries):

@@ -302,3 +302,12 @@ def test_old_schema_db_is_refused(tmp_path):
     raw.close()
     with pytest.raises(JobError, match="DB 이전이 필요"):
         db.connect(path)
+
+
+def test_used_blog_media_ids(conn):
+    a = db.create_job(conn, "주제 A", "blog", 45)
+    b = db.create_job(conn, "주제 B", "blog", 45)
+    db.save_checkpoint(conn, a, "media", {"blog": [None, {"id": 11}, {"id": 12}], "scenes": [{"id": 99}]})
+    db.save_checkpoint(conn, b, "media", {"blog": [{"id": 13}]})
+    assert db.used_blog_media_ids(conn) == {11, 12, 13}          # 쇼츠 배경은 세지 않음
+    assert db.used_blog_media_ids(conn, exclude_job_id=b) == {11, 12}

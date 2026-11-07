@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""다른 글과 대표 사진이 겹치는 글의 대표 사진을 새 사진으로 바꾼다.
+
+먼저 쓴 글(작업 번호가 작은 글)은 그대로 두고, 뒤에 쓴 글만 바꾼다. 본문 글자·발행 상태는 건드리지 않는다.
+기본은 바꿀 목록만 보여 주고(--apply 없으면 아무것도 바꾸지 않음), --apply를 붙이면 실제로 바꾼다.
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src import db  # noqa: E402
+from src.config import load_settings  # noqa: E402
+from src.content_schema import MasterContent  # noqa: E402
+from src.db import RUNNING_STATUSES  # noqa: E402
+from src.pipeline import _pick_json  # noqa: E402
+from src.stock_media import StockMediaPicker, _same_series, normalize_blog_image  # noqa: E402
+from src.wp_client import WordPressClient  # noqa: E402
+
+
+def featured_index(blog: list) -> int | None:
+    """make_draft와 같은 규칙: 첫 번째 사진이 대표 사진."""
+    return next((i for i, p in enumerate(blog) if p), None)
+
+
+def find_duplicates(jobs: list[dict]) -> list[tuple[dict, int, int, int]]:
+    """(작업, 대표 사진 순서, 사진 번호, 먼저 쓴 작업 번호). 작업 번호 순으로 먼저 쓴 글을 남긴다."""
+    first_owner: dict[int, int] = {}
+    dups = []
+    for job in sorted(jobs, key=lambda j: j["id"]):
+        blog = (job["checkpoint"].get("media") or {}).get("blog") or []
+        idx = featured_index(blog)
+        if idx is None or not job.get("post_id"):
+            continue
+        media_id = blog[idx]["id"]
+        if media_id in first_owner:
+            dups.append((job, idx, media_id, first_owner[media_id]))
+        else:
+            first_owner[media_id] = job["id"]
+    return dups
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--apply", action="store_true", help="실제로 바꾼다(없으면 목록만)")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    settings = load_settings()
+    conn = db.connect(settings.db_path)
+    jobs = [j for j in db.list_jobs(conn, limit=10_000) if j["status"] not in RUNNING_STATUSES]
+    dups = find_duplicates(jobs)
+    if not dups:
+        print("대표 사진이 겹치는 글이 없습니다")
+        return 0
+
+    picker = StockMediaPicker.from_settings(settings)
+    wp = WordPressClient.from_settings(settings) if args.apply else None
+    avoid = db.used_blog_media_ids(conn)          # 모든 글이 쓴 사진(이번에 고른 새 사진도 계속 추가)
+    failed = 0
+    for job, idx, old_pixabay, owner in dups:
+        content = MasterContent.model_validate(job["checkpoint"]["content"]["content"])
+        section = content.sections[idx]
+        blog = job["checkpoint"]["media"]["blog"]
+        same_post = {p["id"] for p in blog if p}
+        pick = picker.pick_blog_image(section.image_query or section.heading, used=set(same_post), avoid=avoid)
+        if not pick or _same_series(pick.media_id, avoid):
+            print(f"작업 {job['id']}(글 {job['post_id']}): 겹치지 않는 새 사진을 못 찾음 — 그대로 둠")
+            failed += 1
+            continue
+        avoid.add(pick.media_id)
+        print(f"작업 {job['id']}(글 {job['post_id']}) {job['title']}\n"
+              f"  사진 {old_pixabay}(작업 {owner}과 겹침) → {pick.media_id} ({pick.page_url})")
+        if not args.apply:
+            continue
+        current = wp._request("GET", f"/posts/{int(job['post_id'])}", params={"_fields": "featured_media"})
+        fitted = normalize_blog_image(pick.path, settings.data_dir / "media_cache" / "blog")
+        alt = (section.image_alt or section.heading).strip()
+        new = wp.replace_featured(job["id"], job["post_id"], idx, fitted, int(current["featured_media"]),
+                                  alt=alt, caption=pick.credit)
+        blog[idx] = _pick_json(pick)
+        db.save_checkpoint(conn, job["id"], "media", {**job["checkpoint"]["media"], "blog": blog})
+        draft = job["checkpoint"].get("draft")
+        if isinstance(draft, dict) and "featured" in draft:
+            db.save_checkpoint(conn, job["id"], "draft", {**draft, "featured": new.id})
+        print(f"  바꿈: 워드프레스 사진 {current['featured_media']} → {new.id}")
+    if not args.apply:
+        print("\n(목록만 보여 줬습니다. 실제로 바꾸려면 --apply)")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

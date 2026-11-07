@@ -192,6 +192,20 @@ def list_jobs(
     return [_row_to_dict(r) for r in rows]
 
 
+def used_blog_media_ids(conn: sqlite3.Connection, exclude_job_id: int | None = None) -> set[int]:
+    """다른 작업들이 블로그 사진으로 고른 사진 번호(Pixabay). 새 글에서 같은 사진을 피하는 데 쓴다."""
+    used: set[int] = set()
+    for row in conn.execute("SELECT id, checkpoint FROM jobs"):
+        if row["id"] == exclude_job_id:
+            continue
+        try:
+            blog = (json.loads(row["checkpoint"] or "{}").get("media") or {}).get("blog") or []
+        except (ValueError, AttributeError):
+            continue
+        used.update(int(p["id"]) for p in blog if isinstance(p, dict) and isinstance(p.get("id"), int))
+    return used
+
+
 def claim_next(conn: sqlite3.Connection) -> dict[str, Any] | None:
     """가장 오래된 대기 작업을 가져가 첫 단계(generating)로 바꾼다. 없으면 None."""
     with _write(conn):
