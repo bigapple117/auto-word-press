@@ -146,10 +146,11 @@ add_filter('wp_sitemaps_add_provider', function ($provider, string $name) {
     return (!jalcheck_seo_disabled() && $name === 'users') ? false : $provider;
 }, 10, 2);
 
-// 구글 서치 콘솔 소유 확인(HTML 태그 방식). 구글은 홈 화면에서 이 줄을 확인하며, 지우면 소유 확인이 풀린다.
+// 구글 서치 콘솔·네이버 서치어드바이저 소유 확인(HTML 태그 방식). 둘 다 홈 화면에서 이 줄을 확인하며, 지우면 소유 확인이 풀린다.
 // 다른 SEO 플러그인을 켜도 확인이 끊기지 않도록 위의 끄기 설정과 상관없이 출력한다.
 add_action('wp_head', function () {
     if (is_front_page()) {
         jalcheck_seo_meta('name', 'google-site-verification', 'Z-S54PxLpagUsG11FxGv402jW7IsE80oCdyoBdCIeW4');
+        jalcheck_seo_meta('name', 'naver-site-verification', '7c12fe59e9bf145512e212d961b84638b99459bc');
     }
 }, 1);
