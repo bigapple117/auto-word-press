@@ -38,6 +38,14 @@ class FakeGenerator:
         self.calls += 1
         return GenerationResult(MasterContent.model_validate(good_data()), self.model, 1, ["경고 하나"])
 
+    category = "tax"
+
+    def choose_category(self, title, summary, tags, options):
+        self.category_options = list(options)
+        if isinstance(self.category, Exception):
+            raise self.category
+        return self.category
+
 
 @dataclass
 class Pick:
@@ -84,8 +92,14 @@ class FakeWP:
         self.tag_names = list(names)
         return [900 + i for i, _ in enumerate(names)]
 
-    def save_draft(self, job_id, title, html, slug="", excerpt="", featured_media=None, post_id=None, tags=None):
+    def list_categories(self):
+        return [{"id": 1, "slug": "benefits", "name": "지원금·복지", "description": "받는 지원금"},
+                {"id": 48, "slug": "tax", "name": "세금·절세", "description": "내고 돌려받는 세금"}]
+
+    def save_draft(self, job_id, title, html, slug="", excerpt="", featured_media=None, post_id=None, tags=None,
+                   categories=None):
         self.last_tags = tags
+        self.last_categories = categories
         pid = post_id or self.drafts.get(job_id, (500 + job_id,))[0]
         self.drafts[job_id] = (pid, html)
         return WPPost(pid, "draft", f"https://jalcheck.com/?p={pid}")
@@ -110,8 +124,13 @@ class FakeTG:
         self.done = []
         self.counter = 0
 
-    def send_approval_request(self, job_id, title, summary, edit_url, warnings=(), video_path=None, screenshots=()):
+    def send_approval_request(self, job_id, title, summary, edit_url, warnings=(), video_path=None, screenshots=(),
+                              category=""):
+        if getattr(self, "fail_request", 0):
+            self.fail_request -= 1
+            raise RuntimeError("승인 요청 전송 실패 시험")
         self.counter += 1
+        self.last_category = category
         req = ApprovalRequest(self.counter, f"{self.counter:08x}")
         self.requests.append((job_id, req, list(warnings), video_path, list(screenshots), edit_url))
         return req
@@ -539,3 +558,71 @@ def test_upload_kit_sent_once_when_ledger_write_fails(env, monkeypatch):
     svc.wp.get_post = lambda pid: WPPost(pid, "publish", f"https://jalcheck.com/post-{pid}/")
     assert orch.reconcile_publishing(older_than_seconds=0) == [job_id]
     assert len(svc.telegram.videos) == 1
+
+
+def test_draft_gets_category_chosen_from_site_list(env):
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "주제")
+    orch.run_once()
+    assert svc.wp.last_categories == [48] and svc.telegram.last_category == "세금·절세"
+    assert ("tax", "세금·절세", "내고 돌려받는 세금") in svc.generator.category_options
+    assert not any("분류" in w for w in svc.telegram.requests[-1][2])
+
+
+def test_category_failure_keeps_default_and_warns(env):
+    from src.ai_generator import GenerationError
+    orch, svc, conn, _ = env
+    svc.generator.category = GenerationError("목록에 없는 분류를 골랐습니다: x")
+    job_id = db.create_job(conn, "주제")
+    orch.run_once()
+    assert svc.wp.last_categories is None and svc.telegram.last_category == ""
+    assert db.get_job(conn, job_id)["status"] == "awaiting_approval"
+    assert any(w.startswith("분류 자동 선택 실패") for w in svc.telegram.requests[-1][2])
+
+
+def test_resume_with_old_draft_checkpoint_skips_category_and_keeps_warning(env):
+    from src.ai_generator import GenerationError
+    orch, svc, conn, _ = env
+    svc.telegram.fail_request = 1                    # 글 저장 뒤 승인 요청에서 멈춘 작업
+    job_id = db.create_job(conn, "주제")
+    orch.run_once()
+    pid = db.get_job(conn, job_id)["post_id"]
+    assert db.get_job(conn, job_id)["status"] == "failed" and pid
+    # 분류 기능 전의 체크포인트(분류 키 없음)로 다시: 분류를 다시 고르지 않고 승인 요청은 그대로
+    db.save_checkpoint(conn, job_id, "draft", {"post_id": pid, "status": "draft", "link": "x", "featured": None})
+    svc.generator.category = GenerationError("다시 부르면 안 됨")
+    svc.wp.last_categories = "unchanged"
+    db.set_status(conn, job_id, "queued")
+    orch.run_once()
+    assert db.get_job(conn, job_id)["status"] == "awaiting_approval" and svc.telegram.last_category == ""
+    assert not any("분류" in w for w in svc.telegram.requests[-1][2]) and svc.wp.last_categories == "unchanged"
+
+
+def test_resume_keeps_saved_category_warning(env):
+    orch, svc, conn, _ = env
+    svc.telegram.fail_request = 1
+    job_id = db.create_job(conn, "주제")
+    orch.run_once()
+    pid = db.get_job(conn, job_id)["post_id"]
+    db.save_checkpoint(conn, job_id, "draft", {"post_id": pid, "status": "draft", "link": "x", "featured": None,
+                                               "category": "", "category_warning": "분류 자동 선택 실패 — 시험"})
+    svc.wp.last_categories = "unchanged"
+    db.set_status(conn, job_id, "queued")
+    orch.run_once()
+    assert svc.wp.last_categories == "unchanged" and db.get_job(conn, job_id)["status"] == "awaiting_approval"
+    assert svc.telegram.requests[-1][2][-1] == "분류 자동 선택 실패 — 시험"
+
+
+def test_category_failure_on_existing_draft_does_not_send_categories(env):
+    from src.ai_generator import GenerationError
+    from src.pipeline import make_draft
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "주제")
+    orch.run_once()
+    pid = db.get_job(conn, job_id)["post_id"]
+    svc.generator.category = GenerationError("x")
+    content = MasterContent.model_validate(good_data())
+    media = {"blog": [None] * len(content.sections), "scenes": []}
+    out = make_draft(svc, job_id, content, [], media, pid)
+    assert out["post_id"] == pid and svc.wp.last_categories is None      # 원래 분류를 건드리지 않음
+    assert "분류를 바꾸지 않고 저장" in out["category_warning"]

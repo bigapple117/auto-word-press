@@ -164,10 +164,26 @@ def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list
     checked_on = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %-m월 %-d일")
     html = render_blog_html(content, sources, images, checked_on=checked_on)
     tag_ids = svc.wp.ensure_tags([content.focus_keyword, *content.tags][:5])
+    category, category_warning = choose_category(svc, content)
     post = svc.wp.save_draft(job_id, content.title, html, slug=content.slug,
                              excerpt=content.meta_description, featured_media=featured, post_id=post_id,
-                             tags=tag_ids)
-    return {"post_id": post.id, "status": post.status, "link": post.link, "featured": featured}
+                             tags=tag_ids, categories=[category["id"]] if category else None)
+    return {"post_id": post.id, "status": post.status, "link": post.link, "featured": featured,
+            "category": category["name"] if category else "", "category_warning": category_warning}
+
+
+def choose_category(svc: Services, content: MasterContent) -> tuple[dict | None, str]:
+    """(고른 분류 또는 None, 경고). 고르지 못하면 분류를 보내지 않는다 — 새 글은 워드프레스 기본 분류,
+    이미 있던 임시 글은 원래 분류 그대로라 승인 때 확인하게 알린다."""
+    try:
+        cats = svc.wp.list_categories()
+        options = [(c["slug"], c["name"], c.get("description") or "") for c in cats]
+        slug = svc.generator.choose_category(content.title, content.meta_description,
+                                             [content.focus_keyword, *content.tags], options)
+        return next(c for c in cats if c["slug"] == slug), ""
+    except Exception as exc:  # noqa: BLE001 - 분류를 못 골라도 글 저장은 계속한다
+        log.warning("분류 자동 선택 실패(기본 분류로 저장): %s", exc)
+        return None, f"분류 자동 선택 실패 — 분류를 바꾸지 않고 저장(새 글은 기본 분류), 발행 전 워드프레스에서 분류 확인 ({exc})"
 
 
 def take_screenshot(post_id: int, out_dir: Path) -> list[Path]:
@@ -181,7 +197,7 @@ def take_screenshot(post_id: int, out_dir: Path) -> list[Path]:
 
 
 def request_approval(svc: Services, job_id: int, content: MasterContent, warnings: Sequence[str],
-                     post_id: int, video_path: Path | None) -> dict:
+                     post_id: int, video_path: Path | None, category: str = "") -> dict:
     shots: list[Path] = []
     if svc.screenshot:
         try:
@@ -191,5 +207,6 @@ def request_approval(svc: Services, job_id: int, content: MasterContent, warning
             warnings = [f"화면 캡처 실패: {exc}"] + list(warnings)
     edit_url = f"{svc.settings.wp_base_url}/wp-admin/post.php?post={int(post_id)}&action=edit"
     req = svc.telegram.send_approval_request(job_id, content.title, content.meta_description, edit_url,
-                                             warnings=list(warnings), video_path=video_path, screenshots=shots)
+                                             warnings=list(warnings), video_path=video_path, screenshots=shots,
+                                             category=category)
     return {"nonce": req.nonce, "message_id": req.message_id}

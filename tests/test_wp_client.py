@@ -33,6 +33,10 @@ class FakeWP:
         self.calls.append((method, path, params, json, headers, auth))
         if path == "/tags" and method == "GET":
             return self._page([t for t in self.tags if params["search"] in t["name"]], params)
+        if path == "/categories" and method == "GET":
+            cats = [{"id": 1, "slug": "benefits", "name": "지원금·복지", "description": ""},
+                    {"id": 49, "slug": "youth-jobs", "name": "청년·일자리", "description": "빈 분류"}]
+            return self._page(cats, params)
         if path == "/tags" and method == "POST":
             t = {"id": 700 + len(self.tags), "name": json["name"]}
             self.tags.append(t)
@@ -355,3 +359,14 @@ def test_replace_featured_stops_on_leftovers_or_mismatch(tmp_path):
     with pytest.raises(WPError, match="흔적"):
         client.replace_featured(3, 57, 1, _img(tmp_path), old.id)
     assert fake.media == before and fake.posts[57]["featured_media"] == old.id
+
+
+def test_list_categories_includes_empty_and_draft_sends_categories(wp):
+    client, fake = wp
+    cats = client.list_categories()
+    assert [c["slug"] for c in cats] == ["benefits", "youth-jobs"]
+    assert any(c[1] == "/categories" and c[2]["hide_empty"] == "false" for c in fake.calls)
+    post = client.save_draft(4, "t", "<p>x</p>", categories=[49])
+    assert fake.posts[post.id]["categories"] == [49]
+    other = client.save_draft(5, "t", "<p>x</p>")
+    assert "categories" not in fake.posts[other.id]

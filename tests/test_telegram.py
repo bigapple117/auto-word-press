@@ -63,6 +63,9 @@ def test_approval_request_has_signed_buttons_and_escaped_text(tmp_path):
     assert tg.parse_callback(buttons[0]["callback_data"]) == (7, "publish", mid.nonce)
     again = tg.send_approval_request(7, "t", "s", "https://x/?a=1")
     assert again.nonce != mid.nonce                              # 요청마다 새 요청 번호
+    assert "분류:" not in fake.calls[-1][1]["text"]
+    tg.send_approval_request(7, "t", "s", "https://x/?a=1", category="세금·<절세>")
+    assert "분류: 세금·&lt;절세&gt;" in fake.calls[-1][1]["text"]
 
 
 def test_poll_accepts_only_our_chat_user_and_signature():

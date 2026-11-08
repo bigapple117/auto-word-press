@@ -185,9 +185,13 @@ class WordPressClient:
                     raise
         return ids
 
+    def list_categories(self) -> list[dict[str, Any]]:
+        """사이트의 분류 전부(글이 없는 분류 포함): id, slug, name, description."""
+        return self._get_all("/categories", {"_fields": "id,slug,name,description", "hide_empty": "false"})
+
     def save_draft(self, job_id: int, title: str, html: str, slug: str = "", excerpt: str = "",
                    featured_media: int | None = None, post_id: int | None = None,
-                   tags: list[int] | None = None) -> WPPost:
+                   tags: list[int] | None = None, categories: list[int] | None = None) -> WPPost:
         """임시 글로 저장한다. 이 작업의 기존 글이 있으면 그 글을 고친다.
 
         - 이미 발행된 글은 고치지 않는다.
@@ -207,6 +211,8 @@ class WordPressClient:
                 body["featured_media"] = featured_media
             if tags:
                 body["tags"] = tags
+            if categories:
+                body["categories"] = categories
             if existing:
                 data = self._request("POST", f"/posts/{existing.id}", json=body)
             else:

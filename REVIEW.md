@@ -1,5 +1,12 @@
 # REVIEW
 
+## 2026-11-08 자동 발행 글 분류(카테고리) 자동 선택
+- 작성자: Claude / 검토자: Codex (codex exec, read-only, diff stdin 전달 — codex-review.py는 bwrap 오류로 BLOCKED)
+- 1차: CHANGES_REQUESTED — (1) 기존 임시 글에서 선택 실패 시 분류를 안 보내 원래 분류가 유지되는데 경고는 '기본 분류로 저장됨'으로 잘못 안내 (2) 기존 글 갱신 실패·옛 draft 체크포인트 재개·저장된 경고 재개 테스트 없음
+- 2차: **PASS** — 안내 문구 '분류를 바꾸지 않고 저장(새 글은 기본 분류)', 테스트 3개 추가 확인
+- 검증: Claude 쪽 pytest 336 통과, 실제 Gemini로 기존 글 13개 분류 미리 시험 13/13 일치(저장 안 함)
+- 원문: data/design-review/codex-category*.txt
+
 ## 2026-11-06 주제 자동 추천 3단계: 주 1회 실행·개편 예정 표시·연말 연도 제거
 - 작성자: Claude / 검토자: Codex (codex exec, read-only, diff stdin 전달)
 - 1차: CHANGES_REQUESTED — (1) 등록된 후보 재클릭 시 버튼 수정 생략 → 첫 수정 실패 시 영구 미반영 (2) '개편된다' 등 다음 해와 무관한 말만으로 다음 해 개편 판정

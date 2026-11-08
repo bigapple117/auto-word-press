@@ -861,3 +861,21 @@ def test_table_cells_carry_column_labels():
     html = render_blog_html(model(data), SOURCES)
     assert '<th scope="row" data-label="가구">홑벌이</th>' in html
     assert 'data-label="소득 &quot;구간&quot;"' in html and 'jc-table--wide' in html
+
+
+CATS = [("benefits", "지원금·복지", "받는 지원금"), ("tax", "세금·절세", "세금 제도")]
+
+
+def test_choose_category_returns_listed_slug_and_sends_list():
+    gen, client = make_gen(['{"slug": " tax "}'])
+    assert gen.choose_category("자동차세 연납", "연납 할인", ["자동차세"], CATS) == "tax"
+    assert "slug=benefits" in client.calls[0][1] and "자동차세 연납" in client.calls[0][1]
+
+
+def test_choose_category_rejects_unknown_or_empty_list():
+    from src.ai_generator import GenerationError
+    gen, _ = make_gen(['{"slug": "health"}'])
+    with pytest.raises(GenerationError):
+        gen.choose_category("t", "s", [], CATS)
+    with pytest.raises(GenerationError):
+        make_gen([])[0].choose_category("t", "s", [], [])

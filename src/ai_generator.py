@@ -16,7 +16,7 @@ from typing import Any, Callable, Sequence
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from src.config import Settings
 from src.link_check import check_action_links, home_links_overpromising
@@ -327,6 +327,24 @@ def count_body_chars(c: MasterContent) -> int:
         sum(len(paragraph_text(p)) for p in c.intro)
 
 
+class CategoryChoice(BaseModel):
+    slug: str = Field(description="[분류 목록]에 있는 slug 하나를 그대로")
+
+
+CATEGORY_SYSTEM_INSTRUCTION = (
+    "너는 블로그 편집자다. 글의 제목·요약·태그를 보고 [분류 목록]에서 독자가 이 글을 찾을 때 "
+    "가장 먼저 들어가 볼 분류 하나를 고른다. 목록에 없는 slug는 쓰지 않는다."
+)
+
+
+def build_category_prompt(title: str, summary: str, tags: Sequence[str],
+                          options: Sequence[tuple[str, str, str]]) -> str:
+    """options: (slug, 이름, 설명) 목록."""
+    lines = "\n".join(f"- slug={slug} | {name} | {desc}" for slug, name, desc in options)
+    return (f"[글]\n제목: {title}\n요약: {summary}\n태그: {', '.join(tags)}\n\n"
+            f"[분류 목록]\n{lines}\n\n이 글에 맞는 분류의 slug 하나를 JSON으로 돌려준다.")
+
+
 class ContentGenerator:
     def __init__(
         self,
@@ -440,6 +458,21 @@ class ContentGenerator:
             log.info("검사 불합격(%s회차): %s", round_no, last_problems)
             feedback = "\n".join(f"- {p}" for p in problems_for_next)
         raise GenerationError("검사를 통과하지 못했습니다: " + " / ".join(last_problems))
+
+    def choose_category(self, title: str, summary: str, tags: Sequence[str],
+                        options: Sequence[tuple[str, str, str]]) -> str:
+        """글에 맞는 분류 slug 하나. 목록 밖의 답이면 GenerationError."""
+        if not options:
+            raise GenerationError("고를 분류가 없습니다")
+        raw, _model = self._call_with_retry(build_category_prompt(title, summary, tags, options),
+                                            schema=CategoryChoice, system=CATEGORY_SYSTEM_INSTRUCTION)
+        try:
+            slug = CategoryChoice.model_validate_json(raw).slug.strip()
+        except ValidationError as exc:
+            raise GenerationError(f"분류 응답 형식 오류: {exc.errors()[:1]}") from exc
+        if slug not in {o[0] for o in options}:
+            raise GenerationError(f"목록에 없는 분류를 골랐습니다: {slug[:40]}")
+        return slug
 
     def _repair_shorts(
         self, content: MasterContent, sources: Sequence[Source], target_seconds: int

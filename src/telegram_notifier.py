@@ -149,7 +149,7 @@ class TelegramNotifier:
     def send_approval_request(
         self, job_id: int, title: str, summary: str, edit_url: str,
         warnings: Sequence[str] = (), video_path: Path | None = None,
-        screenshots: Sequence[Path] = (),
+        screenshots: Sequence[Path] = (), category: str = "",
     ) -> ApprovalRequest:
         """승인 요청 메시지(버튼 포함)를 보내고 메시지 번호를 돌려준다.
 
@@ -166,6 +166,7 @@ class TelegramNotifier:
         nonce = secrets.token_hex(4)
         lines = [f"<b>[작업 {int(job_id)}] 발행 승인 요청</b>", "", f"<b>{html.escape(clip(title, TITLE_MAX))}</b>",
                  html.escape(clip(summary, SUMMARY_MAX)), "",
+                 *([f"분류: {html.escape(clip(category, 40))}", ""] if category else []),
                  f'<a href="{html.escape(edit_url, quote=True)}">워드프레스에서 열기</a> (로그인 화면이 나오면 로그인)']
         if warnings:
             lines += ["", "<b>확인할 것</b>"] + [f"- {html.escape(clip(w, WARNING_MAX))}"
