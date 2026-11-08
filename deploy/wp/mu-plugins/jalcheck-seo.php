@@ -124,3 +124,11 @@ add_action('wp_head', function () {
         jalcheck_seo_meta('name', 'description', jalcheck_seo_clean(category_description()));
     }
 }, 5);
+
+// 구글 서치 콘솔 소유 확인(HTML 태그 방식). 구글은 홈 화면에서 이 줄을 확인하며, 지우면 소유 확인이 풀린다.
+// 다른 SEO 플러그인을 켜도 확인이 끊기지 않도록 위의 끄기 설정과 상관없이 출력한다.
+add_action('wp_head', function () {
+    if (is_front_page()) {
+        jalcheck_seo_meta('name', 'google-site-verification', 'Z-S54PxLpagUsG11FxGv402jW7IsE80oCdyoBdCIeW4');
+    }
+}, 1);

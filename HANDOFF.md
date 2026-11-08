@@ -520,3 +520,4 @@
 - 실행기: 대기·진행 작업 0건 확인 후 2026-11-08 01:08 UTC 재시작, active·'실행기 시작' 로그 확인 → 새 글 대표 사진 중복 방지 적용
 - 검색엔진: 공개 글 8개·소개·문의·개인정보 페이지 채워진 것 확인 후 wp_options blog_public 0→1(백업 data/backups/blog-public-*/blog_public.sql). 글·홈 robots 메타 'noindex, nofollow' → 'max-image-preview:large', wp-sitemap.xml 200(글 8개). 원 서버 robots.txt에 Sitemap 줄 생김(Cloudflare가 robots.txt를 최대 4시간 캐시해 그 뒤 반영)
 - 남은 일: 구글 서치 콘솔 등록(사용자 구글 계정 필요, 소유 확인은 DNS TXT 또는 HTML 태그) → 사이트 지도 https://jalcheck.com/wp-sitemap.xml 제출. 사진 파일 이름을 내용 있는 이름으로(선택, 효과 작음)
+- 2026-11-08 추가: 구글 서치 콘솔 HTML 태그 소유 확인 줄을 deploy/wp/mu-plugins/jalcheck-seo.php에 추가(홈 화면에만, SEO 끄기 설정과 무관하게 출력) → 서버 mu-plugins에 복사(원본 백업 data/backups/gsc-*). 홈 200·태그 1개 확인, 글 페이지 200. 남은 일: 사용자가 서치 콘솔에서 [확인] → Sitemaps에 wp-sitemap.xml 제출
