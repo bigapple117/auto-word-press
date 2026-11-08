@@ -521,3 +521,4 @@
 - 검색엔진: 공개 글 8개·소개·문의·개인정보 페이지 채워진 것 확인 후 wp_options blog_public 0→1(백업 data/backups/blog-public-*/blog_public.sql). 글·홈 robots 메타 'noindex, nofollow' → 'max-image-preview:large', wp-sitemap.xml 200(글 8개). 원 서버 robots.txt에 Sitemap 줄 생김(Cloudflare가 robots.txt를 최대 4시간 캐시해 그 뒤 반영)
 - 남은 일: 구글 서치 콘솔 등록(사용자 구글 계정 필요, 소유 확인은 DNS TXT 또는 HTML 태그) → 사이트 지도 https://jalcheck.com/wp-sitemap.xml 제출. 사진 파일 이름을 내용 있는 이름으로(선택, 효과 작음)
 - 2026-11-08 추가: 구글 서치 콘솔 HTML 태그 소유 확인 줄을 deploy/wp/mu-plugins/jalcheck-seo.php에 추가(홈 화면에만, SEO 끄기 설정과 무관하게 출력) → 서버 mu-plugins에 복사(원본 백업 data/backups/gsc-*). 홈 200·태그 1개 확인, 글 페이지 200. 남은 일: 사용자가 서치 콘솔에서 [확인] → Sitemaps에 wp-sitemap.xml 제출
+- 2026-11-08 추가(사용자 "1"): jalcheck-seo.php에 태그·글쓴이 목록 페이지 noindex, follow + 사이트 지도에서 태그·사용자 제외(태그 28개 대부분 글 1개). 백업 data/backups/seo-tags-*. 확인: 홈·글·분류 200 색인 유지, 태그·글쓴이 noindex, follow, 사이트 지도 글·페이지·분류 3개만, 태그·사용자 사이트 지도 404. 남은 선택: 네이버 서치어드바이저·다음 등록(사용자 확인 태그 필요), 빙은 서치 콘솔에서 가져오기
