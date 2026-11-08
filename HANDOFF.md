@@ -514,3 +514,9 @@
 - 실제 실행: 백업 data/backups/thumbs-20261107-095010(jobs.sqlite3, wp_posts·wp_postmeta 덤프, 옛 jcjob-3/8/11/12 파일) 후 --apply. 글57(발행) 56→108, 글76 74→110, 글82 81→112, 글105 103→114(임시 글). 옛 첨부 4개 삭제
 - 검증: pytest 328 통과, 재실행 시 '겹치는 글 없음', find_media(jcjob-N-i)가 새 첨부를 찾음(redraft 해도 새 사진), 홈페이지 200·jcjob-3-1-1 표시. 화면 캡처는 서버에 Playwright 브라우저가 없어 생략
 - 참고: 작업 1 본문 사진(1867758)과 작업 10 대표 사진은 같음(목록 화면엔 대표 사진만 보여 그대로 둠). 실행기 재시작 필요(새 글 중복 방지는 재시작 후 적용) — 사용자 승인 대기
+
+## 2026-11-08 실행기 재시작 + 검색엔진 차단 해제
+- 지시자: 사용자("1": 재시작 + 차단 해제. 썸네일은 제목 글자 없이 일반 사진 유지로 정리) / 작업자: Claude / 검토자: 없음(설정 1개 변경, 코드 변경 없음)
+- 실행기: 대기·진행 작업 0건 확인 후 2026-11-08 01:08 UTC 재시작, active·'실행기 시작' 로그 확인 → 새 글 대표 사진 중복 방지 적용
+- 검색엔진: 공개 글 8개·소개·문의·개인정보 페이지 채워진 것 확인 후 wp_options blog_public 0→1(백업 data/backups/blog-public-*/blog_public.sql). 글·홈 robots 메타 'noindex, nofollow' → 'max-image-preview:large', wp-sitemap.xml 200(글 8개). 원 서버 robots.txt에 Sitemap 줄 생김(Cloudflare가 robots.txt를 최대 4시간 캐시해 그 뒤 반영)
+- 남은 일: 구글 서치 콘솔 등록(사용자 구글 계정 필요, 소유 확인은 DNS TXT 또는 HTML 태그) → 사이트 지도 https://jalcheck.com/wp-sitemap.xml 제출. 사진 파일 이름을 내용 있는 이름으로(선택, 효과 작음)
