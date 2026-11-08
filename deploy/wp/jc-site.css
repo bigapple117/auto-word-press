@@ -35,7 +35,7 @@ header.wp-block-template-part { border-bottom: 1px solid var(--jc-line); }
 .jc-head-nav, .jc-head-nav .wp-block-navigation__container { align-items: center; }
 .jc-head-nav .wp-block-navigation-item { align-items: center; }
 .jc-head-nav { gap: 18px; font-size: 0.9375rem; font-weight: 500; }
-.jc-head-nav .wp-block-navigation-item a.wp-block-navigation-item__content { display: inline-flex; align-items: center; min-height: 44px; color: var(--jc-muted); text-decoration: none; }
+.jc-head-nav .wp-block-navigation-item a.wp-block-navigation-item__content { display: inline-flex; align-items: center; min-height: 44px; color: var(--jc-muted); text-decoration: none; white-space: nowrap; }
 .jc-head-nav a:hover, .jc-head-nav .current-menu-item a { color: var(--jc-text); }
 .jc-head-search .wp-block-search__button {
   width: 44px; height: 44px; padding: 0; margin: 0; border-radius: 50%;
@@ -53,10 +53,16 @@ header.wp-block-template-part .wp-block-group.alignwide:has(> .jc-head-right) { 
 .jc-head-search.wp-block-search__button-only:not(.wp-block-search__searchfield-hidden) .wp-block-search__input { flex: 1; min-width: 0; height: 44px; width: auto !important; border-color: var(--jc-accent); }
 @media (max-width: 640px) {
   .jc-logo { font-size: 1.125rem; }
-  .jc-head-right { gap: 10px; }
-  .jc-head-nav { gap: 12px; font-size: 0.875rem; }
+  /* 휴대폰: 1줄 로고·검색, 2줄 분류 메뉴(분류가 늘면 옆으로 밀어 봄) */
+  header.wp-block-template-part .wp-block-group.alignwide:has(> .jc-head-right) { flex-wrap: wrap; row-gap: 0; padding-bottom: 4px !important; }
+  header .wp-block-group.jc-head-right { display: contents !important; }
+  .jc-logo { order: 1; }
+  .jc-head-search { order: 2; margin-left: auto; }
+  .jc-head-nav { order: 3; flex-basis: 100%; gap: 20px; font-size: 0.9375rem; overflow-x: auto; scrollbar-width: none; }
+  .jc-head-nav .wp-block-navigation__container { flex-wrap: nowrap; gap: 20px; }
+  header .jc-head-nav.wp-block-navigation, header .jc-head-nav .wp-block-navigation__container { justify-content: flex-start !important; }
+  .jc-head-search.wp-block-search__button-only:not(.wp-block-search__searchfield-hidden) { top: var(--wp--preset--spacing--30); transform: none; }
 }
-@media (max-width: 350px) { .jc-head-nav li:nth-child(3) { display: none; } }
 
 /* 홈 화면 */
 main.jc-home { margin-top: 0; padding-bottom: 0; }

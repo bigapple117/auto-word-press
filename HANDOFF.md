@@ -523,3 +523,13 @@
 - 2026-11-08 추가: 구글 서치 콘솔 HTML 태그 소유 확인 줄을 deploy/wp/mu-plugins/jalcheck-seo.php에 추가(홈 화면에만, SEO 끄기 설정과 무관하게 출력) → 서버 mu-plugins에 복사(원본 백업 data/backups/gsc-*). 홈 200·태그 1개 확인, 글 페이지 200. 남은 일: 사용자가 서치 콘솔에서 [확인] → Sitemaps에 wp-sitemap.xml 제출
 - 2026-11-08 추가(사용자 "1"): jalcheck-seo.php에 태그·글쓴이 목록 페이지 noindex, follow + 사이트 지도에서 태그·사용자 제외(태그 28개 대부분 글 1개). 백업 data/backups/seo-tags-*. 확인: 홈·글·분류 200 색인 유지, 태그·글쓴이 noindex, follow, 사이트 지도 글·페이지·분류 3개만, 태그·사용자 사이트 지도 404. 남은 선택: 네이버 서치어드바이저·다음 등록(사용자 확인 태그 필요), 빙은 서치 콘솔에서 가져오기
 - 2026-11-08 추가: 네이버 서치어드바이저 HTML 태그 소유 확인 줄을 jalcheck-seo.php 홈 화면에 추가(백업 data/backups/naver-*). 홈 200, 구글·네이버 태그 모두 출력, 네이버 로봇(Yeti) 접속 200. 남은 일: 사용자가 [소유확인] → 요청 > 사이트맵 제출(https://jalcheck.com/wp-sitemap.xml)
+
+## 2026-11-08 카테고리 개편: 지원금·세금 1개 → 세금·절세 / 지원금·복지 / 청년·일자리
+- 지시자: 사용자("ㄱ", 확장 범위 1번 '생활 제도·돈 정보 전반') / 작업자: Claude / 검토자: 없음(분류 이름·글 분류 지정·주소 이동 1개, 로그인·결제·DB 구조 변경 없음)
+- 백업: data/backups/categories-20261108-013623(terms·term_taxonomy·term_relationships·termmeta, blogdescription·default_category, 머리말·홈 틀 49·88, 옛 jalcheck-seo.php), 추가 CSS는 ~/backups/2026-11-08-site-css/
+- 분류(REST): 1번 '지원금·세금'(support-tax) → '지원금·복지'(benefits, 기본 분류 유지), 48 '세금·절세'(tax), 49 '청년·일자리'(youth-jobs), 각 분류 설명문(분류 화면·검색 설명문에 쓰임)
+- 글 배정: 세금·절세 55·76·57·73·78 / 지원금·복지 31·68·35·70·59 / 청년·일자리 80·82·105(셋 다 임시 글). 글 주소는 /%postname%/라 그대로
+- 사이트 설명: "세금·지원금·주거·금융, 공식 자료로 확인한 생활 제도 체크리스트"
+- 파일: deploy/wp/parts/header.html(메뉴: 세금·절세 / 지원금·복지, 소개·문의는 꼬리말에만), deploy/wp/templates/home.html(제목 문구, 옛 '전체 보기' 링크 삭제), deploy/wp/jc-site.css(메뉴 글자 줄바꿈 금지, 640px 이하에서 1줄 로고·검색 / 2줄 분류 메뉴, 검색창 열면 첫 줄만 덮음), deploy/wp/mu-plugins/jalcheck-seo.php(옛 분류 주소 301: /category/support-tax/… → /category/benefits/…, 404일 때만)
+- 검증: 홈·세 분류·소개·글 200, /category/support-tax/ 및 /page/2/ → 301 benefits, 분류 사이트 지도에 benefits·tax(글 없는 youth-jobs는 자동 제외), 분류 설명문이 meta description으로 출력. 화면 캡처(tools/pw-browsers) 320·360·390·1280px 가로 넘침 없음, 검색창 열기 확인
+- 남은 일: 청년·일자리 글을 처음 발행할 때 header.html에 '청년·일자리' 메뉴 추가 후 apply_site_pages.py(지금은 빈 분류라 메뉴에서 뺌). 자동 발행 글은 기본 분류(지원금·복지)로 들어가므로 세금·청년 글은 발행 때 분류를 바꾸거나, 파이프라인이 분류를 고르게 하는 개선 필요. 주거·부동산 / 금융·저축 / 건강·의료 / 연금·노후는 글 3개쯤 모이면 추가

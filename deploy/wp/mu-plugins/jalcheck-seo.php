@@ -154,3 +154,17 @@ add_action('wp_head', function () {
         jalcheck_seo_meta('name', 'naver-site-verification', '7c12fe59e9bf145512e212d961b84638b99459bc');
     }
 }, 1);
+
+// 옛 분류 주소를 새 주소로 영구 이동(301). 2026-11-08 '지원금·세금'(support-tax)을 '지원금·복지'(benefits)로 바꾸며 추가.
+// 이미 검색·공유된 옛 주소가 404가 되지 않게 한다. 분류 주소를 또 바꾸면 여기에 한 줄씩 더한다.
+add_action('template_redirect', function () {
+    if (!is_404()) {
+        return;
+    }
+    $moved = ['support-tax' => 'benefits'];
+    $path = (string) wp_parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+    if (preg_match('#^/category/([^/]+)(/.*)?$#', $path, $m) && isset($moved[$m[1]])) {
+        wp_safe_redirect(home_url('/category/' . $moved[$m[1]] . ($m[2] ?? '/')), 301);
+        exit;
+    }
+});
