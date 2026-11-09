@@ -1,5 +1,14 @@
 # REVIEW
 
+## 2026-11-09 nginx: 실제 방문자 IP 복원, wp-login 요청 제한, xmlrpc 차단
+- 작성자: Claude / 검토자: Codex (codex exec, read-only, 설정 내용 stdin 전달)
+- 1차: CHANGES_REQUESTED — (1) 원본 직접 접속 통제 필요 (2) 제한 값 설명 부정확, 실패 횟수 제한이 아님 (3) 방문자 IP 변화 영향 점검
+- 반영: 주석 수정. 원본 직접 접속 제한은 사이트 전체 영향이라 별도 승인 작업으로 분리(이번 변경이 새로 여는 경로 없음). 관리자 1명·이 사이트의 wp-login만 세므로 값 유지 후 실측
+- 2차: **PASS** — 운영 반영을 막을 결함 없음. 후속 권고: 원본 접속 제한, 분산·REST 공격 한계 안내
+- 검증(Claude 실측): nginx -t, 주요 화면 200·/wp-admin/ 302, xmlrpc 403, wp-login 200×11 후 429, 로그에 실제 IP, REST 인증 조회 정상
+- 미검증: 관리자 비밀번호로 실제 로그인
+- 원문: data/design-review/codex-nginx-login-*.txt
+
 ## 2026-11-08 자동 발행 글 분류(카테고리) 자동 선택
 - 작성자: Claude / 검토자: Codex (codex exec, read-only, diff stdin 전달 — codex-review.py는 bwrap 오류로 BLOCKED)
 - 1차: CHANGES_REQUESTED — (1) 기존 임시 글에서 선택 실패 시 분류를 안 보내 원래 분류가 유지되는데 경고는 '기본 분류로 저장됨'으로 잘못 안내 (2) 기존 글 갱신 실패·옛 draft 체크포인트 재개·저장된 경고 재개 테스트 없음

@@ -557,3 +557,13 @@
 - 확인: 글 80(청년도약계좌·청년미래적금)이 2026-11-09 19:55 KST 발행 → 청년·일자리 첫 공개 글. 82·105는 아직 임시 글
 - 변경: deploy/wp/parts/header.html에 청년·일자리(/category/youth-jobs/) 추가 후 사이트에 저장(백업 data/backups/menu-youth/part-header.html)
 - 검증: 홈·분류·글 200, 메뉴 링크 3개, 분류 사이트 지도에 youth-jobs 자동 포함, 화면 캡처 320px(메뉴 한 줄에 다 들어감, 가로 넘침 없음)·1280px
+
+## 2026-11-09 연금저축 쇼츠 수정본, 국가장학금 예약 재설정, 서버 IP 가리기, 로그인 제한
+- 지시자: 사용자("1") / 작업자: Claude / 검토자: Codex(nginx 변경 2차 PASS, REVIEW.md)
+- 쇼츠: 작업 8 장면 3의 '총급여 5,400만 원'을 5,500만 원으로 고쳐 data/jobs/8/short-fixed/short.mp4 새로 제작(같은 배경·목소리, 다른 장면 그대로), 텔레그램으로 영상·제목·설명 전송. 작업 장부(checkpoint)와 글은 안 바꿈. 원본 data/jobs/8/short/ 유지. 유튜브 교체는 사용자가 직접
+- 예약: 국가장학금 11-16 10:13 KST 확인을 닫힌 대화에 묶인 trig_01LjFQXp...에서 실행 때마다 새 대화를 여는 trig_01StBKmtsbAdvLa7n2aqgaiE로 교체(같은 방식의 옛 예약 2건이 auto_disabled_session_gone으로 실패했음)
+- 서버 IP: wp_users 1번 user_url → https://jalcheck.com, wp_posts guid 4건(공개 페이지·내비게이션·휴지통) http://168.110.20.97 → https://jalcheck.com. 백업 ~/backups/2026-11-09-hide-ip/. 공개 API(users·pages)에 IP 0건 확인
+- nginx: deploy/nginx/cloudflare-realip.conf(새로, /etc/nginx/conf.d/) — CF-Connecting-IP로 실제 방문자 IP 복원, wp-login 제한 영역 / deploy/nginx/default.conf — wp-login.php IP당 평균 12초 1회·순간 약 11회(초과 429), xmlrpc.php 차단. 백업 ~/backups/2026-11-09-nginx/. 되돌리기: 백업 default.orig를 /etc/nginx/sites-available/default로 복사, conf.d 파일 삭제, nginx -t 후 reload
+- 검증: nginx -t 통과, 홈·소개·문의·글·사이트 지도·/wp-admin/(302)·/wp-json/ 정상, xmlrpc POST 403, wp-login 16회 연속 → 200 11회 후 429 5회, 접속 기록에 Cloudflare IP 대신 실제 IP, 자동 발행용 REST 로그인 조회 정상. 실행기 active
+- 미검증·한계: 관리자 화면 실제 로그인은 사용자 비밀번호가 필요해 미시험(로그인 화면 200까지 확인). 여러 IP로 나눈 공격·REST 인증 공격은 못 막음
+- 남은 일: (1) 자동 백업 — 사용자에게 계획 보고함, 바깥 보관 방식 결정 대기 (2) 서버 직접 접속을 Cloudflare만 허용 — 사이트 전체에 영향이라 별도 승인 후 (3) 연말정산 글 44%·33%·기본공제 요건 공식 확인 (4) 임시 글 31번(작업 900004 시험 글, 장부에 없음) 정리 (5) 글을 직접 고친 뒤 쇼츠 불일치 경고 (6) 에너지바우처 쇼츠 설명란 문구 (7) 사용자: 실업급여 승인 시 쇼츠 그대로 올리지 않기, 청년미래적금 쇼츠 가구 소득 조건 보완
