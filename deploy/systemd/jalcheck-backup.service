@@ -1,0 +1,21 @@
+# 잘체크 전체 백업(한 번 실행). jalcheck-backup.timer가 매일 실행한다.
+# 설치: sudo cp deploy/systemd/jalcheck-backup.* /etc/systemd/system/ && sudo systemctl daemon-reload
+#       sudo systemctl enable --now jalcheck-backup.timer
+# 지금 실행: sudo systemctl start jalcheck-backup    로그: journalctl -u jalcheck-backup
+[Unit]
+Description=Jalcheck encrypted site backup
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/auto-word-press
+ExecStart=/home/ubuntu/auto-word-press/.venv/bin/python scripts/backup_site.py
+Environment=PYTHONUNBUFFERED=1
+# CPU 1개 서버: 워드프레스가 느려지지 않게 낮은 우선순위로
+Nice=15
+CPUWeight=20
+IOSchedulingClass=idle
+TimeoutStartSec=30min

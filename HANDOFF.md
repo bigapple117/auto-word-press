@@ -567,3 +567,12 @@
 - 검증: nginx -t 통과, 홈·소개·문의·글·사이트 지도·/wp-admin/(302)·/wp-json/ 정상, xmlrpc POST 403, wp-login 16회 연속 → 200 11회 후 429 5회, 접속 기록에 Cloudflare IP 대신 실제 IP, 자동 발행용 REST 로그인 조회 정상. 실행기 active
 - 미검증·한계: 관리자 화면 실제 로그인은 사용자 비밀번호가 필요해 미시험(로그인 화면 200까지 확인). 여러 IP로 나눈 공격·REST 인증 공격은 못 막음
 - 남은 일: (1) 자동 백업 — 사용자에게 계획 보고함, 바깥 보관 방식 결정 대기 (2) 서버 직접 접속을 Cloudflare만 허용 — 사이트 전체에 영향이라 별도 승인 후 (3) 연말정산 글 44%·33%·기본공제 요건 공식 확인 (4) 임시 글 31번(작업 900004 시험 글, 장부에 없음) 정리 (5) 글을 직접 고친 뒤 쇼츠 불일치 경고 (6) 에너지바우처 쇼츠 설명란 문구 (7) 사용자: 실업급여 승인 시 쇼츠 그대로 올리지 않기, 청년미래적금 쇼츠 가구 소득 조건 보완
+
+## 2026-11-09 자동 백업(암호화, 매일 새벽 4시 KST)
+- 지시자: 사용자("1": GitHub 비공개 저장소) / 작업자: Claude / 검토자: Codex(2차 PASS, REVIEW.md)
+- 이유: 글 DB·작업 장부 자동 백업이 없었고 수동 백업도 서버 안에만 있었음
+- 파일: scripts/backup_site.py, deploy/systemd/jalcheck-backup.service·timer, tests/test_backup_site.py, .env.example(BACKUP_GIT_REMOTE)
+- 담는 것: wordpress DB, uploads, mu-plugins, jobs·topics 장부, wp-config, .env, ~/.wp_db_pass, nginx 설정, Cloudflare 원본 인증서·키, 실행기 unit. 쇼츠 영상·스톡 재료 제외. gpg AES256(암호 ~/.backup_pass, 백업에 미포함)
+- 보관: ~/backups/auto 최근 14개 + 월별 6개. 바깥은 최근 7개 + 월별 3개를 새 기록 하나로 강제 덮어쓰기(저장소 주소 전체를 코드에 고정). 암호화 전 임시본은 /dev/shm. 실패 시 텔레그램 알림
+- 검증: 임시 DB jc_restore_test 복원(표 건수 일치, 글 103건 본문·상태 일치, 복원 후 삭제), 장부 복원·무결성 ok, wp-config·.env·인증서 키·nginx 해시 일치, 사진 93개 일치, 틀린 암호 거부, 강제 종료 잔여물 정리, systemd 실행 성공, pytest 전체 통과
+- 남은 일(사용자): GitHub에 비공개 저장소 bigapple117/jalcheck-backup 만들고 deploy key(~/.ssh/jalcheck_backup_ed25519.pub, 쓰기 허용) 등록 → Claude가 .env에 BACKUP_GIT_REMOTE=git@github-backup:bigapple117/jalcheck-backup.git 넣고 첫 업로드·GitHub에서 내려받아 복원 시험 → 복원 암호(~/.backup_pass)를 서버 밖에 보관. 암호 전달 방식은 사용자 확인 후

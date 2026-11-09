@@ -1,5 +1,13 @@
 # REVIEW
 
+## 2026-11-09 자동 백업(scripts/backup_site.py, systemd timer)
+- 작성자: Claude / 검토자: Codex (codex exec, read-only, 코드 stdin 전달)
+- 1차: CHANGES_REQUESTED — (1) 평문 DB 임시본이 강제 종료 시 디스크에 잔존 (2) 원격 저장소를 이름 끝부분으로만 검증 (3) 망가진 백업이 최근 개수 보관으로 정상본을 밀어낼 수 있음
+- 2차: **PASS** — 임시본 /dev/shm·잔여물 정리, 원격 주소 전체 일치, 월별본 서버 6개·GitHub 3개
+- 검증(Claude 실측): 임시 DB 복원·글 103건 일치, 장부·주요 비밀 파일 해시 일치, 사진 수 일치, 틀린 암호 거부, systemd 실행, pytest
+- 미검증: GitHub 업로드(저장소 생성 대기)
+- 원문: data/design-review/codex-backup-*.txt
+
 ## 2026-11-09 nginx: 실제 방문자 IP 복원, wp-login 요청 제한, xmlrpc 차단
 - 작성자: Claude / 검토자: Codex (codex exec, read-only, 설정 내용 stdin 전달)
 - 1차: CHANGES_REQUESTED — (1) 원본 직접 접속 통제 필요 (2) 제한 값 설명 부정확, 실패 횟수 제한이 아님 (3) 방문자 IP 변화 영향 점검

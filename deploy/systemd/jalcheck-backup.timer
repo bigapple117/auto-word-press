@@ -1,0 +1,11 @@
+# 매일 새벽 4시(한국 시간)쯤 백업. 서버가 꺼져 있었으면 켜진 뒤 바로 실행한다.
+[Unit]
+Description=Daily Jalcheck backup
+
+[Timer]
+OnCalendar=*-*-* 19:00:00 UTC
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
