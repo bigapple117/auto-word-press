@@ -17,7 +17,7 @@ import html
 import logging
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -90,6 +90,7 @@ class TopicLine:
 class ApprovalRequest:
     message_id: int
     nonce: str
+    file_ids: dict = field(default_factory=dict)   # 파일 경로 → 텔레그램 파일 번호(다시 보낼 때 올리지 않고 바로)
 
 
 class TelegramNotifier:
@@ -172,17 +173,19 @@ class TelegramNotifier:
     def send_approval_request(
         self, job_id: int, title: str, summary: str, edit_url: str,
         warnings: Sequence[str] = (), video_path: Path | None = None,
-        screenshots: Sequence[Path] = (), category: str = "",
+        screenshots: Sequence[Path] = (), category: str = "", file_ids: dict | None = None,
     ) -> ApprovalRequest:
         """승인 요청 메시지(버튼 포함)를 보내고 메시지 번호를 돌려준다.
 
         임시 글은 로그인해야 보이므로 글 화면 캡처를 파일로 먼저 보내 텔레그램 안에서 확인하게 한다.
         """
+        ids = dict(file_ids or {})
         for shot in screenshots:
             if shot.exists():
-                self.send_document(shot, caption=f"[작업 {job_id}] 글 화면 ({shot.stem.rsplit('_', 1)[-1]})")
+                self.send_document(shot, caption=f"[작업 {job_id}] 글 화면 ({shot.stem.rsplit('_', 1)[-1]})",
+                                   file_ids=ids)
         if video_path and video_path.exists():
-            self.send_video(video_path, caption=f"[작업 {job_id}] 쇼츠 미리보기")
+            self.send_video(video_path, caption=f"[작업 {job_id}] 쇼츠 미리보기", file_ids=ids)
         def clip(text: str, limit: int) -> str:     # 서식을 만들기 전에 원문을 자른다(태그가 잘리지 않게)
             return text if len(text) <= limit else text[:limit] + "…"
 
@@ -202,7 +205,7 @@ class TelegramNotifier:
         ]]}
         msg = self._call("sendMessage", json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML",
                                               "disable_web_page_preview": True, "reply_markup": keyboard})
-        return ApprovalRequest(int(msg["message_id"]), nonce)
+        return ApprovalRequest(int(msg["message_id"]), nonce, ids)
 
     def send_topic_candidates(self, header: str, lines: Sequence[TopicLine], notes: Sequence[str],
                               batch_id: int, more_left: int) -> int:
@@ -273,10 +276,14 @@ class TelegramNotifier:
         except TelegramError as exc:
             log.warning("후보 버튼 바꾸기 실패: %s", exc)
 
-    def send_text(self, text: str, reply_markup: dict | None = None) -> int:
+    def send_text(self, text: str, reply_markup: dict | None = None, reply_to: int | None = None) -> int:
+        """reply_to를 주면 그 메시지에 답장으로 보낸다(인용을 누르면 원래 메시지로 이동).
+        원래 메시지가 지워졌으면 TelegramError(답장 없이 보내지 않음)."""
         body: dict[str, Any] = {"chat_id": self.chat_id, "text": text[:4000]}
         if reply_markup:
             body["reply_markup"] = reply_markup
+        if reply_to is not None:
+            body["reply_parameters"] = {"message_id": int(reply_to), "allow_sending_without_reply": False}
         msg = self._call("sendMessage", json=body)
         return int(msg["message_id"])
 
@@ -290,23 +297,44 @@ class TelegramNotifier:
         except TelegramError as exc:
             log.warning("예전 메시지 버튼 정리 실패: %s", exc)
 
-    def send_document(self, path: Path, caption: str = "") -> int:
+    def _send_cached(self, method: str, kind: str, path: Path, caption: str, file_ids: dict | None,
+                     upload) -> int:
+        """file_ids에 이 파일의 텔레그램 파일 번호가 있으면 올리지 않고 번호로 보낸다(1초 안팎).
+        번호가 안 먹으면 다시 올린다. 올리고 나면 받은 번호를 file_ids에 적어 둔다."""
+        key = str(path)
+        if file_ids is not None and file_ids.get(key):
+            try:
+                msg = self._call(method, json={"chat_id": self.chat_id, "caption": caption[:1000], kind: file_ids[key]})
+                return int(msg["message_id"])
+            except TelegramError as exc:
+                log.warning("저장된 파일 번호로 보내기 실패, 다시 올립니다: %s", exc)
+        msg = upload()
+        fid = ((msg.get(kind) or msg.get("document") or {}).get("file_id"))
+        if file_ids is not None and fid:
+            file_ids[key] = fid
+        return int(msg["message_id"])
+
+    def send_document(self, path: Path, caption: str = "", file_ids: dict | None = None) -> int:
         """파일 그대로 보낸다(긴 화면 캡처가 줄어들지 않게)."""
         if path.stat().st_size > MAX_VIDEO_BYTES:
             return self.send_text(f"{caption}\n(파일이 50MB를 넘어 보내지 못했습니다)")
-        with path.open("rb") as f:
-            msg = self._call("sendDocument", timeout=120, data={"chat_id": self.chat_id, "caption": caption[:1000]},
-                             files={"document": (path.name, f, "image/png")})
-        return int(msg["message_id"])
 
-    def send_video(self, path: Path, caption: str = "") -> int:
+        def upload() -> dict:
+            with path.open("rb") as f:
+                return self._call("sendDocument", timeout=120, data={"chat_id": self.chat_id, "caption": caption[:1000]},
+                                  files={"document": (path.name, f, "image/png")})
+        return self._send_cached("sendDocument", "document", path, caption, file_ids, upload)
+
+    def send_video(self, path: Path, caption: str = "", file_ids: dict | None = None) -> int:
         if path.stat().st_size > MAX_VIDEO_BYTES:
             return self.send_text(f"{caption}\n(영상이 50MB를 넘어 보내지 못했습니다)")
-        with path.open("rb") as f:
-            msg = self._call("sendVideo", timeout=180, data={"chat_id": self.chat_id, "caption": caption[:1000],
-                                                            "supports_streaming": "true"},
-                             files={"video": (path.name, f, "video/mp4")})
-        return int(msg["message_id"])
+
+        def upload() -> dict:
+            with path.open("rb") as f:
+                return self._call("sendVideo", timeout=180, data={"chat_id": self.chat_id, "caption": caption[:1000],
+                                                                 "supports_streaming": "true"},
+                                  files={"video": (path.name, f, "video/mp4")})
+        return self._send_cached("sendVideo", "video", path, caption, file_ids, upload)
 
     # ----- 받기 -----
     def poll_decisions(self, offset: int | None,

@@ -27,7 +27,7 @@ from typing import Any, Iterator
 from src import db
 from src.ai_generator import ModelBusyError
 from src.content_schema import MasterContent
-from src.pipeline import (PipelineError, Services, make_content, make_draft, make_tts, make_video,
+from src.pipeline import (PipelineError, Services, job_dir, make_content, make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
 from src import topic_service
 from src.telegram_notifier import Decision, NextAction, TelegramError, TopicAction
@@ -55,7 +55,6 @@ class Orchestrator:
         self._busy_since: dict[int, float] = {}   # 작업 번호 → 처음 바빴던 시각(재시작하면 초기화)
         self._pending_requeue: dict[int, tuple[dict[str, Any], Exception, str]] = {}  # 대기열 되돌리기 기록에 실패한 작업 → 다음 작업 전에 다시
         self._unrecorded: dict[int, str] = {}     # 실패 기록에 실패한 작업 → 다음 작업 전에 다시 기록
-        self._next_handled: set[int] = set()      # 이미 처리한 [다음 글 보기] 버튼의 메시지 번호
 
     # ---------- 작업 처리 ----------
     def _advance(self, job_id: int, status: str) -> None:
@@ -274,41 +273,52 @@ class Orchestrator:
             log.warning("다음 글 버튼 전송 실패: %s", exc)
 
     def handle_next(self, a: NextAction) -> str:
-        """after_job_id 다음 번호의 승인 대기 글(끝이면 처음으로)을 맨 아래로 다시 보낸다.
-        보내는 데 1분쯤 걸려 같은 버튼을 여러 번 누를 수 있으므로, 한 메시지의 버튼은 한 번만 처리하고 바로 지운다."""
-        if a.message_id is not None:
-            if a.message_id in self._next_handled:
-                return "이미 처리한 버튼입니다. 맨 아래 메시지를 확인해 주세요"
-            self._next_handled.add(a.message_id)
-            self.svc.telegram.clear_buttons(a.message_id)
+        """after_job_id 다음 번호의 승인 대기 글(끝이면 처음으로)로 바로 이동할 수 있게,
+        그 글의 원래 승인 요청 메시지에 답장하는 짧은 메시지를 보낸다(인용을 누르면 그 메시지로 올라감).
+        원래 메시지가 없어 답장할 수 없을 때만 승인 요청을 새로 보낸다(화면 캡처 때문에 1분쯤 걸림)."""
+        tg = self.svc.telegram
         try:
             jobs = self.awaiting_jobs()
             if not jobs:
-                self.svc.telegram.send_text("승인 대기 중인 글이 없습니다.")
+                tg.send_text("승인 대기 중인 글이 없습니다.")
                 return "승인 대기 글이 없습니다"
             job = next((j for j in jobs if j["id"] > a.after_job_id), jobs[0])
+            title = job.get("title") or ""
+            message_id = (job["checkpoint"].get("approval") or {}).get("message_id")
+            if message_id:
+                try:
+                    tg.send_text(f"[작업 {job['id']}] {title}\n↑ 위 인용을 누르면 이 글의 승인 요청으로 이동합니다. "
+                                 f"(승인 대기 {len(jobs)}개)", reply_to=message_id)
+                    return f"작업 {job['id']}번으로 가는 메시지를 보냈습니다"
+                except TelegramError as exc:
+                    log.warning("작업 %s번 승인 요청에 답장 실패(새로 보냄): %s", job["id"], exc)
             try:
-                self.svc.telegram.answer(a.callback_id, f"작업 {job['id']}번을 아래로 보내는 중입니다(1분쯤)")
+                tg.answer(a.callback_id, f"작업 {job['id']}번 원래 메시지가 없어 새로 보내는 중입니다(1분쯤)")
             except Exception:  # noqa: BLE001 - 안내 실패가 다시 보내기를 막지 않게
                 pass
             self.resend_approval(job)
-            return f"작업 {job['id']}번을 아래로 보냈습니다"
+            return f"작업 {job['id']}번을 아래로 다시 보냈습니다"
         except Exception as exc:  # noqa: BLE001 - 실패하면 다시 누를 수 있는 버튼을 새로 준다
-            log.exception("다음 글 보내기 실패")
-            self.offer_next(a.after_job_id, f"다음 글을 보내지 못했습니다({exc.__class__.__name__}). "
+            log.exception("다음 글 안내 실패")
+            self.offer_next(a.after_job_id, f"다음 글로 이동하지 못했습니다({exc.__class__.__name__}). "
                                             "아래 버튼으로 다시 시도해 주세요.")
-            return "다음 글을 보내지 못했습니다"
+            return "다음 글로 이동하지 못했습니다"
 
     def resend_approval(self, job: dict[str, Any]) -> None:
-        """승인 요청(화면 캡처 새로 찍기·쇼츠·버튼)을 다시 보내고 새 요청 번호로 바꾼다. 예전 메시지 버튼은 지운다."""
+        """승인 요청(화면 캡처·쇼츠·버튼)을 다시 보내고 새 요청 번호로 바꾼다. 예전 메시지 버튼은 지운다."""
         cp = job["checkpoint"]
         content = MasterContent.model_validate(cp["content"]["content"])
         post_id = cp["draft"]["post_id"]
         video = (cp.get("video") or {}).get("path")
         video_path = Path(video) if video and Path(video).exists() else None
-        old_message = (cp.get("approval") or {}).get("message_id")
+        old = cp.get("approval") or {}
+        old_message = old.get("message_id")
+        # 빠르게: 승인 요청 때 찍어 둔 화면 캡처를 다시 쓰고(없을 때만 새로 찍음), 전에 올린 파일은 번호로 보낸다
+        saved = job_dir(self.svc.settings, job["id"]) / "screens" / f"post{int(post_id)}_mobile.png"
         approval = request_approval(self.svc, job["id"], content, self.approval_warnings(cp, content, post_id),
-                                    post_id, video_path, category=cp["draft"].get("category", ""))
+                                    post_id, video_path, category=cp["draft"].get("category", ""),
+                                    screenshots=[saved] if saved.exists() else None,
+                                    file_ids=old.get("file_ids") or {})
         try:
             db.save_checkpoint(self.conn, job["id"], "approval", approval)
         except Exception:

@@ -132,19 +132,24 @@ class FakeTG:
         self.counter = 0
 
     def send_approval_request(self, job_id, title, summary, edit_url, warnings=(), video_path=None, screenshots=(),
-                              category=""):
+                              category="", file_ids=None):
+        self.last_file_ids = file_ids
         if getattr(self, "fail_request", 0):
             self.fail_request -= 1
             raise RuntimeError("승인 요청 전송 실패 시험")
         self.counter += 1
         self.last_category = category
-        req = ApprovalRequest(self.counter, f"{self.counter:08x}")
+        req = ApprovalRequest(self.counter, f"{self.counter:08x}", {**(file_ids or {}), "v": f"id{self.counter}"})
         self.requests.append((job_id, req, list(warnings), video_path, list(screenshots), edit_url))
         return req
 
-    def send_text(self, text, reply_markup=None):
+    def send_text(self, text, reply_markup=None, reply_to=None):
+        if reply_to is not None and reply_to in getattr(self, "deleted", ()):
+            from src.telegram_notifier import TelegramError
+            raise TelegramError("텔레그램 오류 400: message to be replied not found")
         self.texts.append(text)
         self.markups = getattr(self, "markups", []) + [reply_markup]
+        self.replies = getattr(self, "replies", []) + [reply_to]
 
     def next_markup(self, after_job_id, remaining):
         return {"next": after_job_id, "remaining": remaining}
@@ -731,24 +736,36 @@ def test_no_next_button_when_nothing_waits(env):
     assert svc.telegram.markups[-1] is None
 
 
-def test_next_resends_following_job_with_new_nonce_and_old_buttons_stale(env):
+def test_next_replies_to_original_approval_message_instantly(env):
     orch, svc, conn, _ = env
     a, b, c = _awaiting(orch, svc, conn, 3)
-    old_b = svc.telegram.requests[1][1]
+    b_req = svc.telegram.requests[1][1]
+    sent_before = len(svc.telegram.requests)
     note = orch.handle_next(NextAction(a, "cb", 9))
-    assert note == f"작업 {b}번을 아래로 보냈습니다"
-    assert svc.telegram.requests[-1][0] == b and svc.telegram.cleared == [9, old_b.message_id]
+    assert note == f"작업 {b}번으로 가는 메시지를 보냈습니다"
+    assert svc.telegram.replies[-1] == b_req.message_id and f"[작업 {b}]" in svc.telegram.texts[-1]
+    assert len(svc.telegram.requests) == sent_before                      # 새로 보내지 않음
+    assert db.get_job(conn, b)["checkpoint"]["approval"]["nonce"] == b_req.nonce   # 원래 버튼 그대로 유효
+    assert orch.handle_decision(decision(b, "publish", b_req.nonce)) == "발행했습니다"
+
+
+def test_next_falls_back_to_resend_when_original_message_gone(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    old_b = svc.telegram.requests[1][1]
+    svc.telegram.deleted = {old_b.message_id}
+    assert orch.handle_next(NextAction(a, "cb", 9)) == f"작업 {b}번을 아래로 다시 보냈습니다"
     new_b = svc.telegram.requests[-1][1]
+    assert svc.telegram.requests[-1][0] == b and old_b.message_id in svc.telegram.cleared
     assert db.get_job(conn, b)["checkpoint"]["approval"]["nonce"] == new_b.nonce != old_b.nonce
     assert "지난 승인 요청" in orch.handle_decision(decision(b, "publish", old_b.nonce))
-    assert orch.handle_decision(decision(b, "publish", new_b.nonce)) == "발행했습니다"
 
 
 def test_next_wraps_to_first_waiting_job(env):
     orch, svc, conn, _ = env
     a, b = _awaiting(orch, svc, conn, 2)
     orch.handle_next(NextAction(b, "cb", None))
-    assert svc.telegram.requests[-1][0] == a
+    assert svc.telegram.replies[-1] == svc.telegram.requests[0][1].message_id
 
 
 def test_next_when_nothing_waits(env):
@@ -777,21 +794,21 @@ def test_blog_only_publish_offers_next_button(env):
     assert svc.telegram.markups[-1] == {"next": a, "remaining": 1}
 
 
-def test_next_button_pressed_twice_resends_once(env):
+def test_next_button_can_be_pressed_again(env):
     orch, svc, conn, _ = env
     a, b = _awaiting(orch, svc, conn, 2)
-    before = len(svc.telegram.requests)
     orch.handle_next(NextAction(a, "cb1", 55))
-    assert "이미 처리한" in orch.handle_next(NextAction(a, "cb2", 55))
-    assert len(svc.telegram.requests) == before + 1 and 55 in svc.telegram.cleared
+    orch.handle_next(NextAction(a, "cb2", 55))
+    assert svc.telegram.replies[-2:] == [svc.telegram.requests[1][1].message_id] * 2
 
 
-def test_next_resend_failure_gives_retry_button(env, monkeypatch):
+def test_next_failure_gives_retry_button(env, monkeypatch):
     orch, svc, conn, _ = env
     a, b = _awaiting(orch, svc, conn, 2)
+    svc.telegram.deleted = {svc.telegram.requests[1][1].message_id}
     monkeypatch.setattr(orch, "resend_approval", lambda job: (_ for _ in ()).throw(RuntimeError("캡처 실패")))
     svc.telegram.markups = []
-    assert orch.handle_next(NextAction(a, "cb", 70)) == "다음 글을 보내지 못했습니다"
+    assert orch.handle_next(NextAction(a, "cb", 70)) == "다음 글로 이동하지 못했습니다"
     assert "다시 시도" in svc.telegram.texts[-1] and svc.telegram.markups[-1] == {"next": a, "remaining": 2}
 
 
@@ -799,9 +816,10 @@ def test_resend_ledger_failure_clears_new_buttons_and_keeps_old_nonce(env, monke
     orch, svc, conn, _ = env
     a, b = _awaiting(orch, svc, conn, 2)
     old = db.get_job(conn, b)["checkpoint"]["approval"]["nonce"]
+    svc.telegram.deleted = {svc.telegram.requests[1][1].message_id}
     real = db.save_checkpoint
     monkeypatch.setattr(db, "save_checkpoint", lambda *a_, **k: (_ for _ in ()).throw(sqlite3.OperationalError("잠김")))
-    assert orch.handle_next(NextAction(a, "cb", 71)) == "다음 글을 보내지 못했습니다"
+    assert orch.handle_next(NextAction(a, "cb", 71)) == "다음 글로 이동하지 못했습니다"
     monkeypatch.setattr(db, "save_checkpoint", real)
     new_msg = svc.telegram.requests[-1][1].message_id
     assert new_msg in svc.telegram.cleared
@@ -818,3 +836,18 @@ def test_reconcile_blog_only_publish_offers_next(env):
     svc.telegram.markups = []
     assert orch.reconcile_publishing(older_than_seconds=0) == [a]
     assert svc.telegram.markups[-1] == {"next": a, "remaining": 1}
+
+
+def test_next_reuses_saved_screenshot_and_file_ids(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    post_b = db.get_job(conn, b)["post_id"]
+    saved = svc.settings.data_dir / "jobs" / str(b) / "screens" / f"post{post_b}_mobile.png"
+    saved.parent.mkdir(parents=True, exist_ok=True)
+    saved.write_bytes(b"png")
+    stored = db.get_job(conn, b)["checkpoint"]["approval"]["file_ids"]
+    shots_before = list(svc.telegram.requests)
+    svc.screenshot = lambda *a_: (_ for _ in ()).throw(AssertionError("새로 찍으면 안 됨"))
+    orch.handle_next(NextAction(a, "cb", 80))
+    assert svc.telegram.requests[-1][4] == [saved] and svc.telegram.last_file_ids == stored
+    assert len(svc.telegram.requests) == len(shots_before) + 1

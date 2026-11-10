@@ -197,9 +197,12 @@ def take_screenshot(post_id: int, out_dir: Path) -> list[Path]:
 
 
 def request_approval(svc: Services, job_id: int, content: MasterContent, warnings: Sequence[str],
-                     post_id: int, video_path: Path | None, category: str = "") -> dict:
-    shots: list[Path] = []
-    if svc.screenshot:
+                     post_id: int, video_path: Path | None, category: str = "",
+                     screenshots: Sequence[Path] | None = None, file_ids: dict | None = None) -> dict:
+    """승인 요청을 보낸다. screenshots를 주면 새로 찍지 않고 그 파일을 쓴다(다시 보내기를 빠르게).
+    file_ids: 전에 올린 파일의 텔레그램 번호(있으면 다시 올리지 않음). 돌려주는 값에 새 번호까지 담는다."""
+    shots: list[Path] = list(screenshots or [])
+    if screenshots is None and svc.screenshot:
         try:
             shots = svc.screenshot(post_id, job_dir(svc.settings, job_id) / "screens")
         except Exception as exc:  # noqa: BLE001 - 캡처가 안 돼도 승인 요청은 보낸다
@@ -208,5 +211,5 @@ def request_approval(svc: Services, job_id: int, content: MasterContent, warning
     edit_url = f"{svc.settings.wp_base_url}/wp-admin/post.php?post={int(post_id)}&action=edit"
     req = svc.telegram.send_approval_request(job_id, content.title, content.meta_description, edit_url,
                                              warnings=list(warnings), video_path=video_path, screenshots=shots,
-                                             category=category)
-    return {"nonce": req.nonce, "message_id": req.message_id}
+                                             category=category, file_ids=file_ids)
+    return {"nonce": req.nonce, "message_id": req.message_id, "file_ids": dict(req.file_ids or {})}

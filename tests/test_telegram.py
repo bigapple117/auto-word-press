@@ -187,3 +187,48 @@ def test_send_text_with_button_and_clear_buttons():
     assert "reply_markup" not in fake.calls[-1][1]
     tg.clear_buttons(77)
     assert fake.calls[-1][0] == "editMessageReplyMarkup" and fake.calls[-1][1]["message_id"] == 77
+
+
+def test_media_uploaded_once_then_sent_by_file_id(tmp_path):
+    tg, fake = make()
+    shot, video = tmp_path / "post1_mobile.png", tmp_path / "short.mp4"
+    shot.write_bytes(b"png"); video.write_bytes(b"mp4")
+    real_post = fake.post
+
+    def post(url, timeout=None, json=None, data=None, files=None):
+        method = url.rsplit("/", 1)[1]
+        if files:
+            fake.calls.append((method, json, data, files)); fake.next_msg += 1
+            kind = "video" if method == "sendVideo" else "document"
+            return FakeResp({"ok": True, "result": {"message_id": fake.next_msg, kind: {"file_id": f"F-{kind}"}}})
+        return real_post(url, timeout=timeout, json=json, data=data, files=files)
+    fake.post = post
+    req = tg.send_approval_request(1, "t", "s", "https://x", video_path=video, screenshots=[shot])
+    assert req.file_ids == {str(shot): "F-document", str(video): "F-video"}
+    fake.calls.clear()
+    again = tg.send_approval_request(1, "t", "s", "https://x", video_path=video, screenshots=[shot],
+                                     file_ids=req.file_ids)
+    sent = [(c[0], c[1] and (c[1].get("document") or c[1].get("video")), c[3]) for c in fake.calls[:2]]
+    assert sent == [("sendDocument", "F-document", None), ("sendVideo", "F-video", None)]
+    assert again.file_ids == req.file_ids
+
+
+def test_bad_file_id_falls_back_to_upload(tmp_path):
+    tg, fake = make()
+    shot = tmp_path / "a.png"; shot.write_bytes(b"png")
+    real_post = fake.post
+
+    def post(url, timeout=None, json=None, data=None, files=None):
+        if json and json.get("document") == "OLD":
+            return FakeResp({"ok": False, "description": "wrong file identifier"}, 400)
+        return real_post(url, timeout=timeout, json=json, data=data, files=files)
+    fake.post = post
+    ids = {str(shot): "OLD"}
+    tg.send_document(shot, "cap", file_ids=ids)
+    assert fake.calls[-1][3] is not None            # 다시 올림
+
+
+def test_send_text_reply_to_original_message():
+    tg, fake = make()
+    tg.send_text("이동", reply_to=77)
+    assert fake.calls[-1][1]["reply_parameters"] == {"message_id": 77, "allow_sending_without_reply": False}
