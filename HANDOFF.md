@@ -576,3 +576,5 @@
 - 보관: ~/backups/auto 최근 14개 + 월별 6개. 바깥은 최근 7개 + 월별 3개를 새 기록 하나로 강제 덮어쓰기(저장소 주소 전체를 코드에 고정). 암호화 전 임시본은 /dev/shm. 실패 시 텔레그램 알림
 - 검증: 임시 DB jc_restore_test 복원(표 건수 일치, 글 103건 본문·상태 일치, 복원 후 삭제), 장부 복원·무결성 ok, wp-config·.env·인증서 키·nginx 해시 일치, 사진 93개 일치, 틀린 암호 거부, 강제 종료 잔여물 정리, systemd 실행 성공, pytest 전체 통과
 - 남은 일(사용자): GitHub에 비공개 저장소 bigapple117/jalcheck-backup 만들고 deploy key(~/.ssh/jalcheck_backup_ed25519.pub, 쓰기 허용) 등록 → Claude가 .env에 BACKUP_GIT_REMOTE=git@github-backup:bigapple117/jalcheck-backup.git 넣고 첫 업로드·GitHub에서 내려받아 복원 시험 → 복원 암호(~/.backup_pass)를 서버 밖에 보관. 암호 전달 방식은 사용자 확인 후
+- 2026-11-10 GitHub 바깥 보관 연결: 사용자가 비공개 저장소 bigapple117/jalcheck-backup 생성·deploy key(쓰기) 등록 → .env에 BACKUP_GIT_REMOTE 추가 → systemd로 실행해 '바깥 보관 완료'. 확인: 로그인 없이 저장소 주소 404(비공개), 원격 기록 1개·파일 5개, GitHub에서 내려받은 최신본이 서버 최신본과 해시 동일, 그 파일을 풀어 임시 DB 복원(wp_posts 134·wp_users·wp_options 건수 일치, 복원 후 삭제). 11-10 04:03 KST 첫 자동 백업 성공. 크기 3.8→8.2MB는 새 글·사진 증가(작업 13~22) 때문
+- 남은 일: 복원 암호(~/.backup_pass)를 서버 밖에 보관 — 전달 방식 사용자 확인 대기
