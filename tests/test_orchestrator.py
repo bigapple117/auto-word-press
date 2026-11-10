@@ -84,6 +84,13 @@ class FakeWP:
         self.fail_publish = 0
         self.uploads = []
 
+    def get_post_content(self, post_id):
+        if getattr(self, "fail_content", False):
+            raise RuntimeError("본문 조회 실패 시험")
+        if post_id in getattr(self, "edited", {}):              # 관리자 화면에서 직접 고친 본문
+            return self.edited[post_id]
+        return next(html for pid, html in self.drafts.values() if pid == post_id)
+
     def upload_media(self, path, job_id, index, alt="", caption=""):
         self.uploads.append((job_id, index))
         return WPMedia(100 + index, f"https://jalcheck.com/wp-content/uploads/jcjob-{job_id}-{index}.jpg")
@@ -626,3 +633,67 @@ def test_category_failure_on_existing_draft_does_not_send_categories(env):
     out = make_draft(svc, job_id, content, [], media, pid)
     assert out["post_id"] == pid and svc.wp.last_categories is None      # 원래 분류를 건드리지 않음
     assert "분류를 바꾸지 않고 저장" in out["category_warning"]
+
+
+def _mismatched_content(narration):
+    data = good_data()
+    data["shorts"]["scenes"][0]["narration"] = narration
+    return MasterContent.model_validate(data)
+
+
+def test_approval_warns_when_shorts_number_not_in_post(env):
+    orch, svc, conn, _ = env
+    svc.generator.generate = lambda *a, **k: GenerationResult(_mismatched_content("최대 9,876만 원까지"), "m", 1, [])
+    db.create_job(conn, "주제")
+    orch.run_once()
+    warnings = svc.telegram.requests[-1][2]
+    assert any("글 본문에 없는 것" in w and "장면 1: 9,876" in w for w in warnings)
+
+
+def test_upload_kit_warns_first_when_post_edited_after_approval(env):
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "근로장려금 신청 자격")
+    orch.run_once()
+    req = svc.telegram.requests[0][1]
+    pid = db.get_job(conn, job_id)["post_id"]
+    svc.telegram.texts.clear()
+    svc.wp.edited = {pid: "<p>직접 고친 본문</p>"}
+    cp = db.get_job(conn, job_id)["checkpoint"]["content"]       # 영상 대사에 숫자가 있는 작업
+    cp["content"]["shorts"]["scenes"][0]["narration"] = "2026년 기준 1,200원"
+    db.save_checkpoint(conn, job_id, "content", cp)
+    assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
+    warn, title, desc = svc.telegram.texts
+    assert "올리기 전 확인 필요" in warn and "장면 1:" in warn
+    assert title == good_data()["shorts"]["title"] and len(svc.telegram.videos) == 1
+
+
+def test_upload_kit_still_sent_when_number_check_fails(env):
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "근로장려금 신청 자격")
+    orch.run_once()
+    req = svc.telegram.requests[0][1]
+    svc.telegram.texts.clear()
+    svc.wp.fail_content = True
+    assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
+    assert len(svc.telegram.texts) == 2 and len(svc.telegram.videos) == 1
+
+
+def test_upload_kit_still_sent_when_number_warning_fails_to_send(env):
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "근로장려금 신청 자격")
+    orch.run_once()
+    req = svc.telegram.requests[0][1]
+    pid = db.get_job(conn, job_id)["post_id"]
+    cp = db.get_job(conn, job_id)["checkpoint"]["content"]
+    cp["content"]["shorts"]["scenes"][0]["narration"] = "2026년 기준 1,200원"
+    db.save_checkpoint(conn, job_id, "content", cp)
+    svc.wp.edited = {pid: "<p>직접 고친 본문</p>"}
+    sent = []
+
+    def flaky_send(text):
+        if "확인 필요" in text:
+            raise RuntimeError("텔레그램 오류 시험")
+        sent.append(text)
+    svc.telegram.send_text = flaky_send
+    assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
+    assert len(sent) == 2 and len(svc.telegram.videos) == 1

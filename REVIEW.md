@@ -1,5 +1,13 @@
 # REVIEW
 
+## 2026-11-10 쇼츠·글 숫자 불일치 경고(youtube_kit·orchestrator·wp_client)
+- 작성자: Claude / 검토자: Codex (codex exec, read-only, diff stdin 전달)
+- 1차: CHANGES_REQUESTED — (1) 경고 전송 실패 시 영상·제목·설명까지 빠짐 (2) 소수 단위(1.5억) 정밀도 미반영, '1억'과 1.5억 일치 처리 (3) '369,000원'↔'36만 9천 원' 역방향 오탐
+- 2차: CHANGES_REQUESTED — 단위 없는 정수를 표기로도 비교해 '36원'과 '36만 원'을 일치 처리
+- 3차: **PASS** — 정수는 값으로만, 소수는 표기로, 회귀 테스트 추가
+- 검증(Claude 실측): pytest 363, 실제 글 21편에서 실제 오류 1건만 경고
+- 원문: data/design-review/codex-shorts-number-*.txt
+
 ## 2026-11-09 자동 백업(scripts/backup_site.py, systemd timer)
 - 작성자: Claude / 검토자: Codex (codex exec, read-only, 코드 stdin 전달)
 - 1차: CHANGES_REQUESTED — (1) 평문 DB 임시본이 강제 종료 시 디스크에 잔존 (2) 원격 저장소를 이름 끝부분으로만 검증 (3) 망가진 백업이 최근 개수 보관으로 정상본을 밀어낼 수 있음

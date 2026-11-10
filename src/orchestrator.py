@@ -32,7 +32,7 @@ from src.pipeline import (PipelineError, Services, make_content, make_draft, mak
 from src import topic_service
 from src.telegram_notifier import Decision, TelegramError, TopicAction
 from src.wp_client import WPError
-from src.youtube_kit import build_upload_kit
+from src.youtube_kit import MAX_REPORTED_NUMBERS, build_upload_kit, numbers_missing_from_post
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +110,10 @@ class Orchestrator:
         # 승인 요청은 매번 새로 보낸다(재시작 후 다시 보내도 새 요청 번호만 유효)
         draft = cp["draft"]
         warnings = cp["content"]["warnings"] + ([draft["category_warning"]] if draft.get("category_warning") else [])
+        if with_shorts:
+            mismatch = self.shorts_number_check(content, post_id)
+            if mismatch:
+                warnings = warnings + [f"쇼츠·유튜브 설명의 숫자 중 글 본문에 없는 것(영상 확인): {mismatch}"]
         approval = request_approval(self.svc, job_id, content, warnings, post_id, video_path,
                                     category=draft.get("category", ""))
         db.save_checkpoint(self.conn, job_id, "approval", approval)
@@ -242,6 +246,18 @@ class Orchestrator:
         """주제 후보 버튼([n번 등록]·[새 후보 더 받기])."""
         return topic_service.handle(self.topic_deps(), self.conn, a)
 
+    def shorts_number_check(self, content: MasterContent, post_id: int | None) -> str:
+        """쇼츠·설명에 쓰는 숫자 중 지금 글 본문에 없는 것. 확인 자체가 실패하면 빈 문자열(알림·발행은 계속)."""
+        if not post_id:
+            return ""
+        try:
+            missing = numbers_missing_from_post(content, self.svc.wp.get_post_content(post_id))
+        except Exception as exc:  # noqa: BLE001 - 보조 확인이라 실패해도 흐름을 막지 않는다
+            log.warning("글 %s번 쇼츠 숫자 대조 실패: %s", post_id, exc)
+            return ""
+        more = len(missing) - MAX_REPORTED_NUMBERS
+        return ", ".join(missing[:MAX_REPORTED_NUMBERS]) + (f" 외 {more}개" if more > 0 else "")
+
     def send_upload_kit(self, job_id: int, post_url: str) -> None:
         """쇼츠가 있는 작업이면 유튜브에 올릴 영상·제목·설명을 텔레그램으로 보낸다.
         제목과 설명은 따로 보내 휴대폰에서 메시지 하나씩 길게 눌러 복사할 수 있게 한다.
@@ -254,6 +270,16 @@ class Orchestrator:
                 return
             content = MasterContent.model_validate(job["checkpoint"]["content"]["content"])
             kit = build_upload_kit(content, post_url)
+            # 승인 전에 글을 직접 고쳤으면 영상은 옛 내용 그대로라, 영상보다 먼저 확인 요청을 보낸다
+            mismatch = self.shorts_number_check(content, job.get("post_id"))
+            if mismatch:
+                try:   # 확인 요청을 못 보내도 아래 영상·제목·설명은 보낸다
+                    tg.send_text(f"[작업 {job_id}] 올리기 전 확인 필요\n"
+                                 f"쇼츠 영상·설명의 숫자 중 지금 글에 없는 것이 있습니다: {mismatch}\n"
+                                 "글을 고친 뒤 영상이 옛 내용 그대로이거나, 표기만 다른 같은 값일 수 있습니다. "
+                                 "영상에서 이 숫자가 맞는지 확인하고 올려 주세요.")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("작업 %s번 쇼츠 숫자 확인 요청 전송 실패: %s", job_id, exc)
             tg.send_video(Path(video), f"[작업 {job_id}] 유튜브 쇼츠 업로드용 영상\n"
                                        "아래 두 메시지(제목, 설명)를 길게 눌러 복사해 붙여 넣으세요.")
             tg.send_text(kit.title)

@@ -233,6 +233,11 @@ class WordPressClient:
             return None
         return WPPost(p["id"], p["status"], p.get("link", ""))
 
+    def get_post_content(self, post_id: int) -> str:
+        """글 본문 HTML(관리자 화면에서 직접 고친 내용 포함)."""
+        p = self._request("GET", f"/posts/{int(post_id)}", params={"context": "edit", "_fields": "content"})
+        return p["content"]["raw"]
+
     def publish(self, job_id: int, post_id: int) -> WPPost:
         """이 작업의 임시 글을 발행한다. 이미 발행됐으면 그대로 돌려준다(두 번 눌러도 안전)."""
         with job_lock(job_id, self.lock_dir):
