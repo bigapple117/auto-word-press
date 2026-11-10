@@ -627,3 +627,4 @@
 - 변경: src/telegram_notifier.py(NextAction, 서명 버튼 n:<작업>:<서명>, next_markup, send_text reply_markup, clear_buttons, 수신 파싱), src/orchestrator.py(업로드 안내 설명 메시지·보류·취소·쇼츠 없는 발행·reconcile 발행 뒤 버튼, handle_next: 방금 작업보다 큰 번호의 승인 대기 글(끝이면 처음으로)을 화면 캡처 새로 찍어 다시 보내고 새 nonce 저장, 예전 메시지 버튼 제거. 같은 버튼 중복 처리 방지, 실패 시 재시도 버튼, 장부 저장 실패 시 새 버튼 제거·예전 nonce 유지), approval_warnings로 경고 계산 공통화
 - 검증: pytest 376 통과(테스트 14개 추가)
 - 참고: 다시 보내기는 버튼 수신 스레드에서 캡처까지 하므로 그동안(1분 안팎) 다른 버튼 응답이 늦어짐
+- 실행기 재시작 2026-11-10 08:21 UTC(진행 작업 0건, 승인 대기 7개: 12·17~22) → 텔레그램에 시작 버튼 메시지(작업 16 다음부터, 메시지 194) 전송
