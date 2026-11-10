@@ -26,7 +26,7 @@ from src.source_finder import NaverSearch, find_official_urls
 from src.stock_media import BLOG_IMAGE_SIZE, StockMediaPicker, normalize_blog_image
 from src.telegram_notifier import TelegramNotifier
 from src.gemini_tts import synthesize_gemini
-from src.tts_engine import TTSError, synthesize_scenes
+from src.tts_engine import synthesize_scenes
 from src.video_renderer import render_short
 from src.wp_client import WordPressClient
 
@@ -121,8 +121,8 @@ def make_tts(svc: Services, job_id: int, content: MasterContent, target_seconds:
                                       st.gemini_tts_voice, st.ffmpeg_bin)
             return {"audio": str(r.audio_path), "timeline": str(r.timeline_path), "duration": r.duration,
                     "rate": r.rate, "engine": "gemini"}
-        except TTSError as exc:
-            log.warning("Gemini 음성을 못 써서 기본 음성으로 대체: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - 시간 초과·파일 오류 등 무엇이든 기본 음성으로 대체해 멈추지 않는다
+            log.warning("Gemini 음성을 못 써서 기본 음성으로 대체: %s: %s", exc.__class__.__name__, exc)
     r = svc.synthesize(narrations, out, st.tts_voice, st.ffmpeg_bin, target_seconds=target_seconds)
     return {"audio": str(r.audio_path), "timeline": str(r.timeline_path), "duration": r.duration,
             "rate": r.rate, "engine": "edge"}

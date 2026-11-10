@@ -35,6 +35,13 @@ HAS_FFMPEG = SETTINGS.ffmpeg_bin.exists()
     ("2026년", "이천이십육년"),
     ("상담 1588-1234", "상담 일오팔팔 일이삼사"),
     ("12~13세", "십이에서 십삼세"),
+    # 2026-11-10 검토 보완: 연도 범위를 전화번호로, 1,2월을 12월로 읽던 문제
+    ("2025-2026년", "이천이십오에서 이천이십육년"),
+    ("10만~20만 원", "십만에서 이십만 원"),
+    ("1,2월", "일,이월"),
+    ("02-123-4567", "공이 일이삼 사오육칠"),
+    ("2026-11-10", "이천이십육년 십일월 십일"),
+    ("2026.12.31.까지", "이천이십육년 십이월 삼십일일까지"),
 ])
 def test_spoken_text(text, spoken):
     assert G.spoken_text(text) == spoken
@@ -118,6 +125,20 @@ def test_make_tts_falls_back_to_edge(tmp_path):
     calls.clear()
     assert pipeline.make_tts(svc, 1, content, 30)["engine"] == "edge" and calls == ["edge"]
     assert issubclass(G.GeminiTTSError, TTSError)
+
+
+def test_make_tts_falls_back_on_any_gemini_error(tmp_path):
+    """시간 초과(TimeoutExpired)·파일 오류처럼 TTSError가 아닌 실패도 기본 음성으로 대체한다."""
+    def gemini(*a, **k):
+        raise subprocess.TimeoutExpired("ffmpeg", 120)
+
+    def edge(narrations, out, voice, ffmpeg, target_seconds=None):
+        return SimpleNamespace(audio_path=out / "n.wav", timeline_path=out / "t.json", duration=30.0, rate=0)
+
+    content = MasterContent.model_validate(good_data())
+    svc = SimpleNamespace(settings=Settings(data_dir=tmp_path, tts_engine="gemini"),
+                          synthesize_gemini=gemini, synthesize=edge)
+    assert pipeline.make_tts(svc, 1, content, 30)["engine"] == "edge"
 
 
 def test_plan_cards_checks_and_sounds():

@@ -853,6 +853,8 @@ def test_next_reuses_saved_screenshot_and_file_ids(env):
     saved.write_bytes(b"png")
     stored = db.get_job(conn, b)["checkpoint"]["approval"]["file_ids"]
     shots_before = list(svc.telegram.requests)
+    # 원래 메시지가 지워져 답장할 수 없을 때만 다시 보낸다(7e59ee7부터 기본은 원래 메시지에 답장)
+    svc.telegram.deleted = {db.get_job(conn, b)["checkpoint"]["approval"]["message_id"]}
     svc.screenshot = lambda *a_: (_ for _ in ()).throw(AssertionError("새로 찍으면 안 됨"))
     orch.handle_next(NextAction(a, "cb", 80))
     assert svc.telegram.requests[-1][4] == [saved] and svc.telegram.last_file_ids == stored

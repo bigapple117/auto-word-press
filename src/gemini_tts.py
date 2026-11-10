@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 
 SCENE_GAP = 0.22            # 장면 사이 쉬는 시간(초)
 SAMPLE_RATE = 24000
+REQUEST_TIMEOUT_MS = 180_000      # 음성 요청 하나의 최대 대기(30초 대본은 보통 10~30초)
 MINUTE_LIMIT_WAITS = (30, 45)   # 분당 한도(429)면 쉬었다가 다시
 CHARS_PER_SECOND_RANGE = (3.5, 12.0)   # 이 밖이면 이상한 음성(지시문 낭독·잘림 등)으로 본다
 EDGE_FADE_TRIM = ("silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.03,areverse,"
@@ -75,15 +76,20 @@ def native(n: int, before_counter: bool = True) -> str:
     return _NATIVE_TENS[tens] + _NATIVE_ONES[ones]
 
 
-_PHONE = re.compile(r"\d{2,4}-\d{3,4}(?:-\d{4})?")
-_RANGE = re.compile(r"(?<=\d)\s*~\s*(?=\d)")
-_NUMBER = re.compile(r"(\d[\d,]*)(\.\d+)?")
+# 전화번호: 지역·휴대폰(02-123-4567, 010-1234-5678)과 대표번호(1588-1234)만. 2025-2026 같은 연도 범위는 아님
+_PHONE = re.compile(r"(?<![\d.])(?:0\d{1,2}-\d{3,4}-\d{4}|1\d{3}-\d{4})(?![\d])")
+_DATE = re.compile(r"(?<!\d)(\d{4})[-.](\d{1,2})[-.](\d{1,2})\.?(?![\d])")   # 2026-11-10 → 2026년 11월 10일
+# 범위(12~13세, 10만~20만 원, 2025-2026년) → '에서'
+_RANGE = re.compile(r"(?<=[\d만천억%])\s*[~～–-]\s*(?=\d)")
+# 쉼표는 천 단위 자리(9,700)일 때만 숫자로 묶는다(1,2월은 '일, 이월')
+_NUMBER = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?")
 
 
 def spoken_text(text: str) -> str:
     """성우가 읽을 문장: 숫자·기호를 한글 읽기로 바꾼다. 자막은 원래 문장을 쓴다."""
     text = _PHONE.sub(lambda m: " ".join("".join(_DIGITS[int(d)] if d != "0" else "공" for d in part)
                                          for part in m.group().split("-")), text)
+    text = _DATE.sub(lambda m: f"{m.group(1)}년 {int(m.group(2))}월 {int(m.group(3))}일", text)
     text = _RANGE.sub("에서 ", text)
 
     def repl(m: re.Match) -> str:
@@ -166,7 +172,8 @@ def scene_captions(text: str, length: float, offset: float) -> list[T.Caption]:
 def _request_audio(api_key: str, model: str, voice: str, text: str, sleep: Callable = time.sleep) -> bytes:
     from google import genai
     from google.genai import types
-    client = genai.Client(api_key=api_key)
+    # 응답 제한 시간: 기본값은 무제한이라 접속이 멈추면 실행기 전체가 멈춘다(넘으면 edge-tts로 대체)
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS))
     config = types.GenerateContentConfig(
         response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
