@@ -78,7 +78,10 @@ class Settings:
     google_service_account_file: str = ""
     google_sheet_id: str = ""
 
-    # AI 성우
+    # AI 성우: Gemini 음성(기본, 무료 등급) → 실패·한도 초과 시 edge-tts(tts_voice)로 대체
+    tts_engine: str = "gemini"                      # gemini 또는 edge
+    gemini_tts_model: str = "gemini-3.8-flash-tts"
+    gemini_tts_voice: str = "Erinome"
     tts_voice: str = "ko-KR-SunHiNeural"
 
     # 웹 대시보드 (기본은 서버 안에서만 접속)
@@ -90,6 +93,7 @@ class Settings:
     ffmpeg_bin: Path = field(default=ROOT / "tools" / "ffmpeg" / "ffmpeg")
     ffprobe_bin: Path = field(default=ROOT / "tools" / "ffmpeg" / "ffprobe")
     fonts_dir: Path = field(default=ROOT / "assets" / "fonts")
+    music_file: Path = field(default=ROOT / "assets" / "music" / "daily-beetle.mp3")   # 출처 표기: youtube_kit
 
     @property
     def db_path(self) -> Path:
@@ -137,6 +141,9 @@ def load_settings(env_file: Path | None = None) -> Settings:
         telegram_chat_id=_env("TELEGRAM_CHAT_ID"),
         google_service_account_file=_env("GOOGLE_SERVICE_ACCOUNT_FILE"),
         google_sheet_id=_env("GOOGLE_SHEET_ID"),
+        tts_engine=_env("TTS_ENGINE", d.tts_engine),
+        gemini_tts_model=_env("GEMINI_TTS_MODEL", d.gemini_tts_model),
+        gemini_tts_voice=_env("GEMINI_TTS_VOICE", d.gemini_tts_voice),
         tts_voice=_env("TTS_VOICE", d.tts_voice),
         web_host=_env("WEB_HOST", d.web_host),
         web_port=_env_int("WEB_PORT", d.web_port),
@@ -144,4 +151,5 @@ def load_settings(env_file: Path | None = None) -> Settings:
         ffmpeg_bin=_env_path("FFMPEG_BIN", d.ffmpeg_bin),
         ffprobe_bin=_env_path("FFPROBE_BIN", d.ffprobe_bin),
         fonts_dir=_env_path("FONTS_DIR", d.fonts_dir),
+        music_file=_env_path("MUSIC_FILE", d.music_file),
     )

@@ -218,6 +218,34 @@ def check_style(c: MasterContent) -> tuple[list[str], list[str]]:
     return problems, warnings
 
 
+_CARD_NUMBER = re.compile(r"\d[\d,.]*")
+
+
+def _digits(text: str) -> set[str]:
+    return {m.group().replace(",", "").rstrip(".") for m in _CARD_NUMBER.finditer(text)}
+
+
+def tidy_shorts_cards(c: MasterContent) -> tuple[MasterContent, list[str]]:
+    """쇼츠 카드에 그 장면 대사에 없는 숫자가 있으면 카드를 뺀다(지어낸 숫자가 화면에 뜨지 않게).
+    AI를 다시 부르지 않고 고친다. 질문(hook)이 길면 비운다(제목으로 대신 표시)."""
+    warnings: list[str] = []
+    scenes = []
+    for i, sc in enumerate(c.shorts.scenes, start=1):
+        card = sc.card
+        if card and not _digits(card.small + " " + card.big) <= _digits(sc.narration):
+            warnings.append(f"쇼츠 {i}번 장면 카드에 대사에 없는 숫자가 있어 카드를 뺐습니다({card.big}).")
+            card = None
+        if card and not card.big.strip():
+            card = None
+        scenes.append(sc.model_copy(update={"card": card}))
+    hook = c.shorts.hook.strip()
+    if len(hook) > 20:
+        warnings.append(f"쇼츠 위쪽 질문이 길어 제목으로 대신합니다({hook}).")
+        hook = ""
+    shorts = c.shorts.model_copy(update={"scenes": scenes, "hook": hook})
+    return c.model_copy(update={"shorts": shorts}), warnings
+
+
 def check_content(
     c: MasterContent, sources: Sequence[Source], target_seconds: int
 ) -> tuple[list[str], list[str]]:
@@ -423,7 +451,7 @@ class ContentGenerator:
         raise ModelBusyError(f"모든 모델이 일시적 오류로 실패했습니다: {last}")
 
     def generate(
-        self, topic: str, sources: Sequence[Source], target_seconds: int = 45,
+        self, topic: str, sources: Sequence[Source], target_seconds: int = 30,
         news: Sequence[tuple[str, str]] = (),
     ) -> GenerationResult:
         if not sources:
@@ -447,7 +475,8 @@ class ContentGenerator:
                 if problems and all(p.startswith(NARRATION_PROBLEM) for p in problems):
                     content, problems, warnings = self._repair_shorts(content, sources, target_seconds)
                 if not problems:
-                    return GenerationResult(content, model, round_no, warnings)
+                    content, card_warnings = tidy_shorts_cards(content)
+                    return GenerationResult(content, model, round_no, warnings + card_warnings)
                 last_problems = problems_for_next = list(problems)
                 if not any(p.startswith(BODY_SHORT_PROBLEM) for p in problems):
                     # 다른 곳을 고치다가 본문을 줄여 다시 불합격하는 일을 막는다(불합격 이유 기록에는 넣지 않음)

@@ -6,7 +6,7 @@ from google.genai import errors as genai_errors
 from src import source_fetcher
 from src.ai_generator import ContentGenerator, GenerationError, ModelBusyError, check_content
 from src.blog_html import SectionImage, render_blog_html
-from src.content_schema import MasterContent
+from src.content_schema import MasterContent, Shorts
 from src.source_fetcher import Source, SourceError, fetch_source, html_to_text
 from templates.prompt_template import build_prompt, narration_budget
 
@@ -662,7 +662,7 @@ def test_short_narration_is_repaired_without_rewriting_blog():
     assert r.attempts == 1                                # 블로그 전체를 다시 쓰지 않음
     assert len(client.calls) == 3                         # 본문 1회 + 대본만 2회
     assert "장면마다" in client.calls[1][1] and "[블로그 글]" in client.calls[1][1]
-    assert r.content.shorts.model_dump() == fixed_shorts and r.content.title == short["title"]
+    assert r.content.shorts == Shorts.model_validate(fixed_shorts) and r.content.title == short["title"]
 
 
 def test_narration_repair_failing_falls_back_to_full_rewrite():

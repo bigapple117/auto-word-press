@@ -38,14 +38,23 @@ def test_media_kind():
 
 def test_build_command_structure(tmp_path):
     cmd = vr.build_command(Path("/ff"), [None, Path("/m/a.mp4"), Path("/m/b.jpg")], [2.0, 3.0, 4.0],
-                           Path("/a.wav"), Path("/x:y/c.ass"), Path("/fonts"), tmp_path / "o.mp4", "seed")
+                           Path("/a.wav"), Path("/x:y/c.ass"), Path("/fonts"), tmp_path / "o.mp4", "seed",
+                           music=Path("/m/music.mp3"), pops=[0.1, 2.0], dings=[3.5])
     assert cmd[:3] == ["nice", "-n", str(vr.NICE_LEVEL)]
     graph = cmd[cmd.index("-filter_complex") + 1]
     assert "gradients=" in " ".join(cmd) and "-stream_loop" in cmd and "-loop" in cmd
     assert "concat=n=3:v=1:a=0" in graph
     assert "filename='/x\\:y/c.ass'" in graph                      # 필터 안 경로 이스케이프
-    assert cmd[cmd.index("-map") + 3] == "3:a"                       # 음성은 배경 다음 입력
-    assert cmd[cmd.index("-t", cmd.index("-af")) + 1] == "9.000"
+    assert cmd[cmd.index("-i", cmd.index("/a.wav") - 1) + 1] == "/a.wav"
+    assert "[3:a]" in graph and "[4:a]" in graph                     # 음성 다음 입력이 배경음악
+    assert "sidechaincompress" in graph and "apad=whole_dur=9.000" in graph   # 음악은 목소리 따라 줄어듦, 끝이 정해짐
+    assert graph.count("adelay=") == 3 and "amix=inputs=5" in graph          # 목소리+음악+효과음 3개
+    assert cmd[cmd.index("-map") + 1] == "[out]" and cmd[cmd.index("-map") + 3] == "[aout]"
+    assert cmd[cmd.index("-t", cmd.index("-map")) + 1] == "9.000"
+    # 음악·효과음이 없으면 목소리만
+    bare = vr.build_command(Path("/ff"), [None], [2.0], Path("/a.wav"), Path("/c.ass"), Path("/f"), tmp_path / "o.mp4")
+    bare_graph = bare[bare.index("-filter_complex") + 1]
+    assert "amix=inputs=1" in bare_graph and "anullsink" in bare_graph and "aevalsrc" not in " ".join(bare)
     with pytest.raises(vr.RenderError):
         vr.build_command(Path("/ff"), [None], [1.0, 2.0], Path("a"), Path("b"), Path("c"), Path("d"))
 

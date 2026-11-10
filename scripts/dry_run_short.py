@@ -1,6 +1,6 @@
 """dry run 결과 폴더(content.json)로 쇼츠 영상을 만든다(발행 안 함).
 
-사용: .venv/bin/python scripts/dry_run_short.py data/dryrun/<폴더> [--seconds 45] [--no-stock]
+사용: .venv/bin/python scripts/dry_run_short.py data/dryrun/<폴더> [--seconds 30] [--no-stock]
 결과: <폴더>/short/short.mp4, narration.wav, timeline.json, media.json
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ from src.video_renderer import render_short  # noqa: E402
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("folder", type=Path)
-    ap.add_argument("--seconds", type=int, default=45)
+    ap.add_argument("--seconds", type=int, default=30)
     ap.add_argument("--no-stock", action="store_true", help="배경 영상 없이 그라데이션만")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")

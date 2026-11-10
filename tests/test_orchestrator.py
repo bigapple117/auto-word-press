@@ -180,8 +180,9 @@ def env(tmp_path):
         from types import SimpleNamespace
         return SimpleNamespace(audio_path=out / "n.wav", timeline_path=out / "t.json", duration=30.0, rate=0)
 
-    def render(timeline, audio, media, out, ffmpeg, ffprobe, fonts, title=None):
+    def render(timeline, audio, media, out, ffmpeg, ffprobe, fonts, title=None, **style):
         calls["render"] += 1
+        calls["render_style"] = style
         if calls.get("render_fail"):
             calls["render_fail"] -= 1
             raise RuntimeError("렌더링 실패 시험")
@@ -194,8 +195,13 @@ def env(tmp_path):
         return [Source("S1", "https://www.nts.go.kr/a", "근로장려금 소개", "자료1 " * 50),
                 Source("S2", "https://www.nts.go.kr/b", "신청자격", "자료2 " * 50)], []
 
+    def synthesize_gemini(narrations, out, api_key, model, voice, ffmpeg):
+        calls["gemini"] = calls.get("gemini", 0) + 1
+        from src.gemini_tts import GeminiTTSError
+        raise GeminiTTSError("시험: 한도 초과")
+
     shots = []
-    svc = Services(settings=settings, search=FakeSearch(), reader=None, generator=FakeGenerator(),
+    svc = Services(settings=settings, synthesize_gemini=synthesize_gemini, search=FakeSearch(), reader=None, generator=FakeGenerator(),
                    picker=FakePicker(tmp_path), wp=FakeWP(), telegram=FakeTG(), synthesize=synthesize,
                    render=render, fetch=fetch, find_urls=lambda search, topic: ["https://www.nts.go.kr/a"],
                    screenshot=lambda pid, out: shots.append(pid) or [out / f"post{pid}_mobile.png"])

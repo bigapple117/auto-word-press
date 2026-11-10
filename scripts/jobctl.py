@@ -1,6 +1,6 @@
 """작업 관리 도구.
 
-  .venv/bin/python scripts/jobctl.py add "주제" [--mode blog_shorts|blog] [--seconds 45]
+  .venv/bin/python scripts/jobctl.py add "주제" [--mode blog_shorts|blog] [--seconds 30]
   .venv/bin/python scripts/jobctl.py list [--status awaiting_approval]
   .venv/bin/python scripts/jobctl.py show 번호
   .venv/bin/python scripts/jobctl.py retry 번호      # 실패·취소된 작업을 다시 대기열로(끝난 단계는 건너뜀)
@@ -34,7 +34,7 @@ def main() -> int:
     a = sub.add_parser("add")
     a.add_argument("topic")
     a.add_argument("--mode", default="blog_shorts", choices=["blog_shorts", "blog"])
-    a.add_argument("--seconds", type=int, default=45)
+    a.add_argument("--seconds", type=int, default=30)
     a.add_argument("--ref", default=None, help="중복 등록 방지용 출처 번호(예: 시트 행)")
     lst = sub.add_parser("list")
     lst.add_argument("--status", default=None)

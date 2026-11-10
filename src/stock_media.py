@@ -226,8 +226,25 @@ def prune_cache(media_dir: Path, max_bytes: int = MEDIA_CACHE_MAX_BYTES, keep: s
 _STOP = {"a", "an", "the", "and", "of", "on", "in", "with", "for", "to", "at"}
 
 
+# 생활 정보 영상에 어울리지 않거나 오해를 살 수 있는 장면(태그에 있으면 쓰지 않음)
+# 예: '서류를 든 손' 검색에 담배 피우는 손이 나온 적이 있음, 외국 지폐는 한국 제도와 어긋남
+BANNED_TAGS = {
+    "cigarette", "cigarettes", "smoking", "smoke", "smoker", "tobacco", "vape", "cigar",
+    "alcohol", "beer", "wine", "whiskey", "whisky", "vodka", "drunk", "liquor", "cocktail",
+    "dollar", "dollars", "euro", "euros", "banknote", "banknotes", "bill", "bills", "usd",
+    "gun", "weapon", "blood", "drug", "drugs", "syringe", "bikini", "lingerie", "flag",
+}
+
+
+def is_banned(hit: dict[str, Any]) -> bool:
+    tags = set(re.findall(r"[a-z]+", str(hit.get("tags", "")).lower()))
+    return bool(tags & BANNED_TAGS)
+
+
 def by_relevance(hits: Sequence[dict[str, Any]], query: str) -> list[dict[str, Any]]:
-    """태그에 검색어 단어가 많이 든 결과를 앞으로(Pixabay 기본 순서는 인기순이라 엉뚱한 것이 먼저 올 수 있음)."""
+    """태그에 검색어 단어가 많이 든 결과를 앞으로(Pixabay 기본 순서는 인기순이라 엉뚱한 것이 먼저 올 수 있음).
+    어울리지 않는 장면(BANNED_TAGS)은 뺀다."""
+    hits = [h for h in hits if not is_banned(h)]
     words = {w for w in re.findall(r"[a-z]+", (query or "").lower()) if w not in _STOP}
     if not words:
         return list(hits)

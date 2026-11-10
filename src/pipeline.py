@@ -25,7 +25,8 @@ from src.source_fetcher import Source, fetch_sources
 from src.source_finder import NaverSearch, find_official_urls
 from src.stock_media import BLOG_IMAGE_SIZE, StockMediaPicker, normalize_blog_image
 from src.telegram_notifier import TelegramNotifier
-from src.tts_engine import synthesize_scenes
+from src.gemini_tts import synthesize_gemini
+from src.tts_engine import TTSError, synthesize_scenes
 from src.video_renderer import render_short
 from src.wp_client import WordPressClient
 
@@ -48,6 +49,7 @@ class Services:
     wp: Any
     telegram: Any
     synthesize: Callable = synthesize_scenes
+    synthesize_gemini: Callable = synthesize_gemini
     render: Callable = render_short
     fetch: Callable = fetch_sources
     find_urls: Callable = find_official_urls
@@ -109,10 +111,21 @@ def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
 # ---------- 2. 쇼츠: 성우·자막, 배경, 합성 ----------
 
 def make_tts(svc: Services, job_id: int, content: MasterContent, target_seconds: int) -> dict:
+    """성우 음성·자막 시간. Gemini 음성(기본)이 안 되면 edge-tts로 대체해 멈추지 않는다."""
     out = job_dir(svc.settings, job_id) / "short"
-    r = svc.synthesize([s.narration for s in content.shorts.scenes], out, svc.settings.tts_voice,
-                       svc.settings.ffmpeg_bin, target_seconds=target_seconds)
-    return {"audio": str(r.audio_path), "timeline": str(r.timeline_path), "duration": r.duration, "rate": r.rate}
+    narrations = [s.narration for s in content.shorts.scenes]
+    st = svc.settings
+    if st.tts_engine == "gemini":
+        try:
+            r = svc.synthesize_gemini(narrations, out, st.gemini_api_key, st.gemini_tts_model,
+                                      st.gemini_tts_voice, st.ffmpeg_bin)
+            return {"audio": str(r.audio_path), "timeline": str(r.timeline_path), "duration": r.duration,
+                    "rate": r.rate, "engine": "gemini"}
+        except TTSError as exc:
+            log.warning("Gemini 음성을 못 써서 기본 음성으로 대체: %s", exc)
+    r = svc.synthesize(narrations, out, st.tts_voice, st.ffmpeg_bin, target_seconds=target_seconds)
+    return {"audio": str(r.audio_path), "timeline": str(r.timeline_path), "duration": r.duration,
+            "rate": r.rate, "engine": "edge"}
 
 
 def _pick_json(p) -> dict | None:
@@ -138,7 +151,9 @@ def make_video(svc: Services, job_id: int, content: MasterContent, tts: dict, me
     out = job_dir(svc.settings, job_id) / "short" / "short.mp4"
     backgrounds = [Path(m["file"]) if m else None for m in media["scenes"]]
     r = svc.render(Path(tts["timeline"]), Path(tts["audio"]), backgrounds, out, svc.settings.ffmpeg_bin,
-                   svc.settings.ffprobe_bin, svc.settings.fonts_dir, title=content.shorts.title)
+                   svc.settings.ffprobe_bin, svc.settings.fonts_dir, title=content.shorts.title,
+                   cards=[sc.card for sc in content.shorts.scenes], hook=content.shorts.hook,
+                   topic=content.focus_keyword, music=svc.settings.music_file)
     return {"path": str(r.path), "duration": r.duration, "seconds_taken": r.seconds_taken}
 
 

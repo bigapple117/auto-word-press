@@ -1,4 +1,4 @@
-"""배경(스톡 영상·사진 또는 움직이는 그라데이션) + 성우 음성 + 자막·제목을 합쳐 1080x1920 쇼츠를 만든다.
+"""배경(스톡 영상·사진 또는 움직이는 그라데이션) + 성우 음성 + 화면 구성(shorts_style) + 배경음악·효과음을 합쳐 1080x1920 쇼츠를 만든다.
 
 - 장면마다 배경을 바꾼다(timeline.json의 장면 시작 시간 기준).
 - 서버 CPU가 1개라 렌더링은 한 번에 하나만(파일 잠금), 낮은 우선순위(nice)로 돌린다.
@@ -14,16 +14,22 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Any, Iterator, Sequence
 
 from src.config import ROOT
-from src.tts_engine import Caption, write_ass
+from src.shorts_style import build_plan
+from src.tts_engine import Caption
 
 log = logging.getLogger(__name__)
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
 TAIL_SECONDS = 0.6          # 마지막 대사 뒤 여유
 NICE_LEVEL = 15
+DIM = 0.18                  # 배경을 이만큼 어둡게(카드·자막이 잘 보이게, 너무 칙칙하지 않게)
+MUSIC_VOLUME = 0.18         # 배경음악 크기(목소리가 나올 때는 더 줄어듦)
+# 효과음은 파일 없이 만든다: 카드 '톡', 체크 '띵'
+POP_SOUND = "aevalsrc='0.6*sin(2*PI*(420*t+500*(1-exp(-45*t))/45))*exp(-35*t)*(1-exp(-600*t))':s=44100:d=0.15"
+DING_SOUND = "aevalsrc='(0.45*sin(2*PI*1568*t)+0.22*sin(2*PI*2349*t))*exp(-9*t)':s=44100:d=0.5"
 LOCK_WAIT_SECONDS = 1800
 DEFAULT_LOCK = ROOT / "data" / ".render.lock"   # 서버 전체 공용 잠금
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
@@ -84,6 +90,7 @@ def _filter_path(path: Path) -> str:
 def build_command(
     ffmpeg: Path, media: Sequence[Path | None], durations: Sequence[float], audio: Path,
     ass: Path, fonts_dir: Path, out: Path, palette_seed: str = "",
+    music: Path | None = None, pops: Sequence[float] = (), dings: Sequence[float] = (),
 ) -> list[str]:
     if len(media) != len(durations):
         raise RenderError("배경 개수와 장면 개수가 다릅니다")
@@ -98,14 +105,15 @@ def build_command(
             chains.append(
                 f"[{i}:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
                 f"crop={WIDTH}:{HEIGHT},fps={FPS},setsar=1,trim=duration={dur:.3f},setpts=PTS-STARTPTS,"
-                f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.30:t=fill,format=yuv420p[v{i}]")
+                f"eq=brightness=0.02:saturation=1.12,drawbox=x=0:y=0:w=iw:h=ih:color=black@{DIM}:t=fill,"
+                f"format=yuv420p[v{i}]")
         elif kind == "image":
             cmd += ["-loop", "1", "-framerate", str(FPS), "-t", f"{dur:.3f}", "-i", str(path)]
             big_w, big_h = int(WIDTH * 1.1), int(HEIGHT * 1.1)
             chains.append(
                 f"[{i}:v]scale={big_w}:{big_h}:force_original_aspect_ratio=increase,crop={big_w}:{big_h},"
                 f"crop={WIDTH}:{HEIGHT}:x='(in_w-{WIDTH})*t/{dur:.3f}':y='(in_h-{HEIGHT})/2',"
-                f"setsar=1,drawbox=x=0:y=0:w=iw:h=ih:color=black@0.30:t=fill,format=yuv420p[v{i}]")
+                f"setsar=1,eq=saturation=1.12,drawbox=x=0:y=0:w=iw:h=ih:color=black@{DIM}:t=fill,format=yuv420p[v{i}]")
         else:
             c0, c1 = PALETTES[(pal_index + i) % len(PALETTES)]
             cmd += ["-f", "lavfi", "-t", f"{dur:.3f}", "-i",
@@ -117,12 +125,38 @@ def build_command(
     joined = "".join(f"[v{i}]" for i in range(len(media)))
     chains.append(f"{joined}concat=n={len(media)}:v=1:a=0[bg]")
     chains.append(f"[bg]ass=filename='{_filter_path(ass)}':fontsdir='{_filter_path(fonts_dir)}'[out]")
+    # 소리: 목소리 + 배경음악(목소리가 나오면 저절로 작아짐, 고음을 깎아 '칙칙' 소리 줄임) + 효과음
+    chains.append(f"[{audio_index}:a]aresample=44100,aformat=channel_layouts=stereo,apad=whole_dur={total:.3f},"
+                  f"atrim=0:{total:.3f},asplit=2[voice][key]")
+    mix = ["[voice]"]
+    next_input = audio_index + 1
+    if music:
+        cmd += ["-stream_loop", "-1", "-i", str(music)]
+        chains.append(f"[{next_input}:a]aresample=44100,aformat=channel_layouts=stereo,atrim=0:{total:.3f},"
+                      f"lowpass=f=3800,volume={MUSIC_VOLUME},afade=t=out:st={max(0.0, total - 1.2):.3f}:d=1.2[music]")
+        chains.append("[music][key]sidechaincompress=threshold=0.03:ratio=4:attack=30:release=900[ducked]")
+        mix.append("[ducked]")
+        next_input += 1
+    else:
+        chains.append("[key]anullsink")
+    for name, sound, times, vol in (("p", POP_SOUND, pops, 0.35), ("d", DING_SOUND, dings, 0.45)):
+        if not times:
+            continue
+        cmd += ["-f", "lavfi", "-i", sound]
+        chains.append(f"[{next_input}:a]aformat=channel_layouts=stereo,asplit={len(times)}"
+                      + "".join(f"[{name}{k}]" for k in range(len(times))))
+        for k, at in enumerate(times):
+            ms = max(0, int(at * 1000))
+            chains.append(f"[{name}{k}]adelay={ms}|{ms},volume={vol}[{name}x{k}]")
+            mix.append(f"[{name}x{k}]")
+        next_input += 1
+    chains.append(f"{''.join(mix)}amix=inputs={len(mix)}:normalize=0:duration=first,"
+                  f"atrim=0:{total:.3f},alimiter=limit=0.95[aout]")
     cmd += [
         "-filter_complex", ";".join(chains),
-        "-map", "[out]", "-map", f"{audio_index}:a",
-        "-af", "apad", "-t", f"{total:.3f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-r", str(FPS),
-        "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+        "-map", "[out]", "-map", "[aout]", "-t", f"{total:.3f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-r", str(FPS),
+        "-c:a", "aac", "-b:a", "160k", "-ar", "44100",
         "-movflags", "+faststart", str(out),
     ]
     return cmd
@@ -167,6 +201,10 @@ def render_short(
     fonts_dir: Path,
     title: str | None = None,
     lock_path: Path | None = None,
+    cards: Sequence[Any] = (),
+    hook: str = "",
+    topic: str = "",
+    music: Path | None = None,
 ) -> RenderResult:
     """timeline.json(장면·자막 시간)과 배경 목록으로 쇼츠 mp4를 만든다."""
     timeline = json.loads(Path(timeline_path).read_text(encoding="utf-8"))
@@ -184,9 +222,14 @@ def render_short(
     started = time.monotonic()
     # 자막 작성부터 결과 확인·교체까지 잠금 안에서(같은 결과 파일을 두 작업이 덮어쓰지 않게)
     with render_lock(lock):
-        write_ass(captions, ass_path, title=title, duration=total)
+        bounds = [(s["start"], s["end"]) for s in scenes]
+        plan = build_plan(bounds, captions, cards, total, topic=topic, hook=hook, title=title or "")
+        ass_path.write_text(plan.ass, encoding="utf-8")
+        if music and not Path(music).exists():
+            log.warning("배경음악 파일이 없어 음악 없이 만듭니다: %s", music)
+            music = None
         cmd = build_command(ffmpeg, media, durations, audio_path, ass_path, fonts_dir, tmp_out,
-                            palette_seed=title or str(out_path))
+                            palette_seed=title or str(out_path), music=music, pops=plan.pops, dings=plan.dings)
         try:
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=max(300, total * 20))

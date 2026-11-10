@@ -42,6 +42,11 @@ def hashtags_for(content: MasterContent) -> list[str]:
     return ["#" + t for t in seen[:MAX_HASHTAGS]]
 
 
+# 쇼츠 배경음악(assets/music/CREDITS.md) 출처 표기 - CC BY 4.0 조건
+MUSIC_CREDIT = ('배경 음악: "Daily Beetle" Kevin MacLeod (incompetech.com), '
+                "Licensed under Creative Commons: By Attribution 4.0 License")
+
+
 def build_upload_kit(content: MasterContent, post_url: str) -> UploadKit:
     title = content.shorts.title.strip()[:TITLE_MAX]
     tags = hashtags_for(content)
@@ -54,6 +59,8 @@ def build_upload_kit(content: MasterContent, post_url: str) -> UploadKit:
         post_url,
         "",
         "영상은 공식 자료를 바탕으로 만들었지만, 신청 전에는 담당 기관의 최신 안내를 꼭 다시 확인해 주세요.",
+        "",
+        MUSIC_CREDIT,
         "",
         " ".join(tags),
     ]

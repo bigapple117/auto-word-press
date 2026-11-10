@@ -1,6 +1,6 @@
 """주제와 참고 주소로 블로그 글 + 쇼츠 대본을 만들어 파일로만 저장한다(발행 안 함).
 
-사용: .venv/bin/python scripts/dry_run_content.py "주제" [주소1 주소2 ...] [--seconds 45]
+사용: .venv/bin/python scripts/dry_run_content.py "주제" [주소1 주소2 ...] [--seconds 30]
 주소를 안 주면 네이버 검색으로 공식 자료(.go.kr 등)를 찾는다.
 결과: data/dryrun/<시각>/content.json, blog.html, report.txt
 """
@@ -29,7 +29,7 @@ def main() -> int:
     ap.add_argument("topic")
     ap.add_argument("urls", nargs="*")
     ap.add_argument("--max-sources", type=int, default=4)
-    ap.add_argument("--seconds", type=int, default=45)
+    ap.add_argument("--seconds", type=int, default=30)
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 

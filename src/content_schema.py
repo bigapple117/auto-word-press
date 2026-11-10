@@ -54,17 +54,34 @@ class Faq(BaseModel):
     source_ids: list[str]
 
 
+class Card(BaseModel):
+    """장면 가운데에 뜨는 정보 카드. 성우가 말하는 내용을 짧게 보여 준다."""
+    kind: Literal["number", "check", "warn", "info"] = Field(description=(
+        "number=핵심 금액·숫자, check=자격 조건 하나(연속된 check 장면은 체크 목록으로 쌓임), "
+        "warn=놓치면 손해인 주의점(빨간 글씨), info=어디서·언제 같은 안내"))
+    small: str = Field(default="", description=(
+        "작은 글씨 12자 이내(선택). number·warn·info는 큰 글씨 위 설명(예: '기초급여 월 최대'), "
+        "check는 큰 글씨 아래 보충(예: '부부는 224만 원')"))
+    big: str = Field(description=(
+        "카드 큰 글씨 12자 이내. 예: '34만 9,700원', '만 18세 이상', '신청 안 하면 0원'. "
+        "숫자는 이 장면 narration에 나온 것만 쓴다"))
+
+
 class Scene(BaseModel):
-    narration: str = Field(description="성우가 읽을 한국어 문장. 1~2문장")
+    narration: str = Field(description=(
+        "성우가 읽고 자막으로 보일 한국어 1~2문장. 말하듯 짧게 끊고, 자막이 끊길 자리에 쉼표를 둔다"))
     video_query: str = Field(description=(
         "배경 영상 영어 검색어 2~4단어. 분위기를 보여 주는 일반적인 장면(예: 'hands typing laptop', "
         "'family living room', 'city street night'). 특정 나라 지폐·동전, 달력·날짜, 국기, 글자·숫자가 "
-        "보이는 화면, 로고, 사람 얼굴 클로즈업은 내용과 어긋날 수 있으니 피한다"))
+        "보이는 화면, 로고, 사람 얼굴 클로즈업, 담배·술은 내용과 어긋날 수 있으니 피한다"))
+    card: Card | None = Field(default=None, description="이 장면의 정보 카드. 카드가 필요 없는 장면은 null")
 
 
 class Shorts(BaseModel):
-    title: str = Field(description="쇼츠 제목 40자 이내")
-    scenes: list[Scene] = Field(description="장면 4~8개. 첫 장면은 시선을 끄는 질문이나 핵심 숫자")
+    title: str = Field(description="쇼츠 제목 40자 이내(유튜브 제목)")
+    hook: str = Field(default="", description=(
+        "영상 내내 위쪽에 떠 있는 질문 14자 이내. 시청자 입장의 질문, 주제 이름은 반복하지 않음. 예: '나도 받을 수 있을까?'"))
+    scenes: list[Scene] = Field(description="장면 4~8개. 첫 장면은 핵심 숫자와 놓치면 안 되는 이유")
 
 
 class ActionLink(BaseModel):

@@ -139,7 +139,7 @@ def create_job(
     conn: sqlite3.Connection,
     topic: str,
     mode: str = "blog_shorts",
-    target_seconds: int = 45,
+    target_seconds: int = 30,
     source: str = "web",
     source_ref: str | None = None,
 ) -> int:
