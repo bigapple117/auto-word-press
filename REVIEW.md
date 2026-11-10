@@ -1,5 +1,12 @@
 # REVIEW
 
+## 2026-11-10 텔레그램 [다음 승인 대기 글 보기] 버튼(telegram_notifier·orchestrator)
+- 작성자: Claude / 검토자: Codex (codex exec, read-only, 코드 stdin 전달)
+- 1차(첫 호출은 로컬 읽기 실패로 BLOCKED → 전체 코드 붙여 재요청): CHANGES_REQUESTED — (1) 재전송 실패 시 버튼 소실 (2) 전송 후 장부 저장 실패 시 새 버튼 무효 (3) reconcile 경로 다음 버튼 누락 (4) 목록 500건 제한
+- 2차: **PASS** — 재시도 버튼, 새 버튼 정리·예전 nonce 유지, reconcile 다음 버튼, 제한 없음
+- 검증(Claude): pytest 376. 실제 텔레그램은 재시작 후 사용자 사용으로 확인
+- 원문: data/design-review/codex-next-button-*.txt
+
 ## 2026-11-10 쇼츠·글 숫자 불일치 경고(youtube_kit·orchestrator·wp_client)
 - 작성자: Claude / 검토자: Codex (codex exec, read-only, diff stdin 전달)
 - 1차: CHANGES_REQUESTED — (1) 경고 전송 실패 시 영상·제목·설명까지 빠짐 (2) 소수 단위(1.5억) 정밀도 미반영, '1억'과 1.5억 일치 처리 (3) '369,000원'↔'36만 9천 원' 역방향 오탐

@@ -621,3 +621,9 @@
 - 제안(사용자 결정 대기): 미사용 플러그인 2개·테마 2개 삭제, 테마 자동 업데이트 켜기
 - 목소리 비교(같은 날): edge-tts 3종(SunHi·InJoon·HyunsuMultilingual, +10%)과 Gemini gemini-3.8-flash-tts 4종(Kore·Aoede·Puck·Charon) 견본을 텔레그램으로 전송, 사용자 선택 대기. 시험 결과: Gemini TTS는 문장 앞에 말투 지시(한국어·영어 모두)를 붙이면 지시문까지 소리 내 읽는 경우가 있었고, 아라비아 숫자(34만 9,700원)를 33만·334,700처럼 다르게 읽은 것으로 받아쓰기됨. 지시 없이 숫자를 한글로(삼십사만 구천칠백 원) 넣으면 4종 모두 받아쓰기와 일치. 도입 시 숫자 한글 변환 + 받아쓰기 대조 검사 + 장면별 시간은 받아쓰기/비율로 맞추는 처리 필요(단어 시간 정보 없음). 무료 사용 한도는 미확인
 - 2026-11-10 이어서(사용자 "1", 검토자 Codex PASS — data/design-review/codex-wp-unused-1.txt): 미사용 플러그인 akismet·hello.php, 테마 twentytwentythree·twentytwentyfour를 삭제 대신 ~/backups/2026-11-10-wp-unused/(700, 소유권 www-data 유지)로 이동. 테마 자동 업데이트 켬(auto_update_themes = [twentytwentyfive], update_option). 확인: 홈·글·분류·소개·사이트 지도 200, /wp-admin/ 302, REST 플러그인 0개·테마 twentytwentyfive만(active), 자동 발행 REST 조회 정상, 오류 로그에 새 오류 없음. 되돌리기: sudo mv로 원래 위치(/var/www/html/wp-content/plugins, themes)로. 참고: 대체 테마가 없어졌지만 활성 테마는 정상이고 백업에서 복원 가능
+
+## 2026-11-10 텔레그램 [다음 승인 대기 글 보기] 버튼
+- 지시자: 사용자(승인 대기 글을 위로 스크롤해 찾는 불편, "남은 승인 대기부터") / 작업자: Claude / 검토자: Codex(2차 PASS, REVIEW.md)
+- 변경: src/telegram_notifier.py(NextAction, 서명 버튼 n:<작업>:<서명>, next_markup, send_text reply_markup, clear_buttons, 수신 파싱), src/orchestrator.py(업로드 안내 설명 메시지·보류·취소·쇼츠 없는 발행·reconcile 발행 뒤 버튼, handle_next: 방금 작업보다 큰 번호의 승인 대기 글(끝이면 처음으로)을 화면 캡처 새로 찍어 다시 보내고 새 nonce 저장, 예전 메시지 버튼 제거. 같은 버튼 중복 처리 방지, 실패 시 재시도 버튼, 장부 저장 실패 시 새 버튼 제거·예전 nonce 유지), approval_warnings로 경고 계산 공통화
+- 검증: pytest 376 통과(테스트 14개 추가)
+- 참고: 다시 보내기는 버튼 수신 스레드에서 캡처까지 하므로 그동안(1분 안팎) 다른 버튼 응답이 늦어짐

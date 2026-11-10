@@ -162,3 +162,28 @@ def test_trailing_newline_and_zero_chat_rejected():
     for bad in ("0", "0123"):
         with pytest.raises(TelegramError):
             TelegramNotifier("1:x", bad)
+
+
+def test_next_button_signed_and_parsed_in_poll():
+    from src.telegram_notifier import NextAction
+    tg, _ = make()
+    data = tg.next_markup(16, 6)["inline_keyboard"][0][0]
+    assert data["text"] == "다음 승인 대기 글 보기(남은 6개)" and len(data["callback_data"].encode()) <= 64
+    assert tg.parse_next_callback(data["callback_data"]) == 16
+    assert tg.parse_next_callback("n:16:" + "0" * 16) is None
+    other = TelegramNotifier("999:OTHER", CHAT, session=FakeTG()).next_markup(16, 1)
+    assert tg.parse_next_callback(other["inline_keyboard"][0][0]["callback_data"]) is None
+    tg2, _ = make([callback(1, data["callback_data"], update_id=1),
+                   callback(2, data["callback_data"], user="666", update_id=2)])
+    decisions, _ = tg2.poll_decisions(None)
+    assert decisions == [NextAction(16, "cb1", 77)]
+
+
+def test_send_text_with_button_and_clear_buttons():
+    tg, fake = make()
+    tg.send_text("다음", reply_markup=tg.next_markup(3, 1))
+    assert fake.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"].startswith("n:3:")
+    tg.send_text("버튼 없음")
+    assert "reply_markup" not in fake.calls[-1][1]
+    tg.clear_buttons(77)
+    assert fake.calls[-1][0] == "editMessageReplyMarkup" and fake.calls[-1][1]["message_id"] == 77

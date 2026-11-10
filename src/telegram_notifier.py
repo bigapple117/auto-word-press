@@ -33,6 +33,8 @@ _CALLBACK = re.compile(r"^([phc]):(\d{1,12}):([0-9a-f]{8}):([0-9a-f]{16})$")
 # 주제 후보 버튼: t=등록(후보 번호), m=새 후보 더 받기(회차 번호)
 _TOPIC_CALLBACK = re.compile(r"^([tm]):(\d{1,12}):([0-9a-f]{16})$")
 TOPIC_ACTIONS = {"t": "register", "m": "more"}
+# 다음 승인 대기 글 보기: n=방금 처리한 작업 번호(그다음 번호부터 찾는다)
+_NEXT_CALLBACK = re.compile(r"^n:(\d{1,12}):([0-9a-f]{16})$")
 TITLE_MAX, SUMMARY_MAX, WARNING_MAX, WARNINGS_MAX = 200, 500, 300, 8
 TOPIC_MESSAGE_MAX = 3900           # 텔레그램 한 메시지 4096자 한도보다 여유 있게
 MAX_VIDEO_BYTES = 49_000_000        # 봇 API 업로드 한도 50MB
@@ -58,6 +60,15 @@ class TopicAction:
     callback_id: str
     message_id: int | None
     keyboard: tuple = ()   # 누른 메시지의 버튼 배치(등록한 버튼 하나만 바꾸려고)
+
+
+@dataclass(frozen=True)
+class NextAction:
+    """[다음 글 보기] 버튼. after_job_id 다음 번호의 승인 대기 글을 맨 아래로 다시 보낸다."""
+    after_job_id: int
+    callback_id: str
+    message_id: int | None
+    action: str = "next"
 
 
 @dataclass(frozen=True)
@@ -134,6 +145,18 @@ class TelegramNotifier:
         if not hmac.compare_digest(sig, self._sign(f"{code}:{ref}")):
             return None
         return TOPIC_ACTIONS[code], int(ref)
+
+    def parse_next_callback(self, data: str) -> int | None:
+        m = _NEXT_CALLBACK.fullmatch(data or "")
+        if not m or not hmac.compare_digest(m.group(2), self._sign(f"n:{m.group(1)}")):
+            return None
+        return int(m.group(1))
+
+    def next_markup(self, after_job_id: int, remaining: int) -> dict:
+        """[다음 승인 대기 글 보기(남은 n개)] 버튼 하나."""
+        payload = f"n:{int(after_job_id)}"
+        return {"inline_keyboard": [[{"text": f"다음 승인 대기 글 보기(남은 {int(remaining)}개)",
+                                      "callback_data": f"{payload}:{self._sign(payload)}"}]]}
 
     def parse_callback(self, data: str) -> tuple[int, str, str] | None:
         """(작업 번호, 행동, 요청 번호). 형식이 틀리거나 서명이 안 맞으면 None."""
@@ -250,9 +273,22 @@ class TelegramNotifier:
         except TelegramError as exc:
             log.warning("후보 버튼 바꾸기 실패: %s", exc)
 
-    def send_text(self, text: str) -> int:
-        msg = self._call("sendMessage", json={"chat_id": self.chat_id, "text": text[:4000]})
+    def send_text(self, text: str, reply_markup: dict | None = None) -> int:
+        body: dict[str, Any] = {"chat_id": self.chat_id, "text": text[:4000]}
+        if reply_markup:
+            body["reply_markup"] = reply_markup
+        msg = self._call("sendMessage", json=body)
         return int(msg["message_id"])
+
+    def clear_buttons(self, message_id: int | None) -> None:
+        """예전 메시지의 버튼을 없앤다(실패해도 무시: 예전 버튼은 요청 번호 확인으로 어차피 막힌다)."""
+        if message_id is None:
+            return
+        try:
+            self._call("editMessageReplyMarkup", json={"chat_id": self.chat_id, "message_id": message_id,
+                                                       "reply_markup": {"inline_keyboard": []}})
+        except TelegramError as exc:
+            log.warning("예전 메시지 버튼 정리 실패: %s", exc)
 
     def send_document(self, path: Path, caption: str = "") -> int:
         """파일 그대로 보낸다(긴 화면 캡처가 줄어들지 않게)."""
@@ -274,13 +310,13 @@ class TelegramNotifier:
 
     # ----- 받기 -----
     def poll_decisions(self, offset: int | None,
-                       wait_seconds: int = 25) -> tuple[list[Decision | TopicAction], int | None]:
+                       wait_seconds: int = 25) -> tuple[list[Decision | TopicAction | NextAction], int | None]:
         """버튼 응답을 가져온다. (결정 목록, 다음 offset). 우리 대화방·우리 서명이 아닌 것은 버린다."""
         params: dict[str, Any] = {"timeout": wait_seconds, "allowed_updates": ["callback_query"]}
         if offset is not None:
             params["offset"] = offset
         updates = self._call("getUpdates", timeout=wait_seconds + 15, json=params)
-        decisions: list[Decision | TopicAction] = []
+        decisions: list[Decision | TopicAction | NextAction] = []
         next_offset = offset
         for u in updates:
             next_offset = int(u["update_id"]) + 1
@@ -291,6 +327,10 @@ class TelegramNotifier:
             chat_ok = str((msg.get("chat") or {}).get("id")) == self.chat_id
             user_ok = str((cq.get("from") or {}).get("id")) == self.chat_id
             if chat_ok and user_ok:
+                after = self.parse_next_callback(cq.get("data", ""))
+                if after is not None:
+                    decisions.append(NextAction(after, cq.get("id", ""), msg.get("message_id")))
+                    continue
                 topic = self.parse_topic_callback(cq.get("data", ""))
                 if topic:
                     kb = (msg.get("reply_markup") or {}).get("inline_keyboard") or []

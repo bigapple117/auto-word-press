@@ -11,7 +11,7 @@ from src.content_schema import MasterContent
 from src.orchestrator import Orchestrator
 from src.pipeline import Services
 from src.source_fetcher import Source
-from src.telegram_notifier import ApprovalRequest, Decision
+from src.telegram_notifier import ApprovalRequest, Decision, NextAction
 from src.wp_client import WPMedia, WPPost
 from tests.test_content import good_data
 
@@ -142,8 +142,15 @@ class FakeTG:
         self.requests.append((job_id, req, list(warnings), video_path, list(screenshots), edit_url))
         return req
 
-    def send_text(self, text):
+    def send_text(self, text, reply_markup=None):
         self.texts.append(text)
+        self.markups = getattr(self, "markups", []) + [reply_markup]
+
+    def next_markup(self, after_job_id, remaining):
+        return {"next": after_job_id, "remaining": remaining}
+
+    def clear_buttons(self, message_id):
+        self.cleared = getattr(self, "cleared", []) + [message_id]
 
     def send_video(self, path, caption=""):
         if getattr(self, "fail_video", False):
@@ -697,3 +704,117 @@ def test_upload_kit_still_sent_when_number_warning_fails_to_send(env):
     svc.telegram.send_text = flaky_send
     assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
     assert len(sent) == 2 and len(svc.telegram.videos) == 1
+
+
+def _awaiting(orch, svc, conn, n):
+    ids = [db.create_job(conn, f"주제 {i}") for i in range(n)]
+    for _ in ids:
+        orch.run_once()
+    return ids
+
+
+def test_upload_kit_description_has_next_button_when_others_wait(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    req = svc.telegram.requests[0][1]
+    svc.telegram.texts.clear(); svc.telegram.markups = []
+    assert orch.handle_decision(decision(a, "publish", req.nonce)) == "발행했습니다"
+    assert svc.telegram.markups[-1] == {"next": a, "remaining": 1}
+
+
+def test_no_next_button_when_nothing_waits(env):
+    orch, svc, conn, _ = env
+    (a,) = _awaiting(orch, svc, conn, 1)
+    req = svc.telegram.requests[0][1]
+    svc.telegram.markups = []
+    orch.handle_decision(decision(a, "publish", req.nonce))
+    assert svc.telegram.markups[-1] is None
+
+
+def test_next_resends_following_job_with_new_nonce_and_old_buttons_stale(env):
+    orch, svc, conn, _ = env
+    a, b, c = _awaiting(orch, svc, conn, 3)
+    old_b = svc.telegram.requests[1][1]
+    note = orch.handle_next(NextAction(a, "cb", 9))
+    assert note == f"작업 {b}번을 아래로 보냈습니다"
+    assert svc.telegram.requests[-1][0] == b and svc.telegram.cleared == [9, old_b.message_id]
+    new_b = svc.telegram.requests[-1][1]
+    assert db.get_job(conn, b)["checkpoint"]["approval"]["nonce"] == new_b.nonce != old_b.nonce
+    assert "지난 승인 요청" in orch.handle_decision(decision(b, "publish", old_b.nonce))
+    assert orch.handle_decision(decision(b, "publish", new_b.nonce)) == "발행했습니다"
+
+
+def test_next_wraps_to_first_waiting_job(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    orch.handle_next(NextAction(b, "cb", None))
+    assert svc.telegram.requests[-1][0] == a
+
+
+def test_next_when_nothing_waits(env):
+    orch, svc, conn, _ = env
+    assert orch.handle_next(NextAction(0, "cb", None)) == "승인 대기 글이 없습니다"
+    assert svc.telegram.texts[-1] == "승인 대기 중인 글이 없습니다."
+
+
+def test_hold_and_cancel_offer_next_button(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    svc.telegram.markups = []
+    orch.handle_decision(decision(a, "hold", svc.telegram.requests[0][1].nonce))
+    assert svc.telegram.markups[-1] == {"next": a, "remaining": 2}
+    orch.handle_decision(decision(b, "cancel", svc.telegram.requests[1][1].nonce))
+    assert svc.telegram.markups[-1] == {"next": b, "remaining": 1}
+
+
+def test_blog_only_publish_offers_next_button(env):
+    orch, svc, conn, _ = env
+    a = db.create_job(conn, "블로그만", mode="blog")
+    orch.run_once()
+    _awaiting(orch, svc, conn, 1)
+    svc.telegram.markups = []
+    assert orch.handle_decision(decision(a, "publish", svc.telegram.requests[0][1].nonce)) == "발행했습니다"
+    assert svc.telegram.markups[-1] == {"next": a, "remaining": 1}
+
+
+def test_next_button_pressed_twice_resends_once(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    before = len(svc.telegram.requests)
+    orch.handle_next(NextAction(a, "cb1", 55))
+    assert "이미 처리한" in orch.handle_next(NextAction(a, "cb2", 55))
+    assert len(svc.telegram.requests) == before + 1 and 55 in svc.telegram.cleared
+
+
+def test_next_resend_failure_gives_retry_button(env, monkeypatch):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    monkeypatch.setattr(orch, "resend_approval", lambda job: (_ for _ in ()).throw(RuntimeError("캡처 실패")))
+    svc.telegram.markups = []
+    assert orch.handle_next(NextAction(a, "cb", 70)) == "다음 글을 보내지 못했습니다"
+    assert "다시 시도" in svc.telegram.texts[-1] and svc.telegram.markups[-1] == {"next": a, "remaining": 2}
+
+
+def test_resend_ledger_failure_clears_new_buttons_and_keeps_old_nonce(env, monkeypatch):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    old = db.get_job(conn, b)["checkpoint"]["approval"]["nonce"]
+    real = db.save_checkpoint
+    monkeypatch.setattr(db, "save_checkpoint", lambda *a_, **k: (_ for _ in ()).throw(sqlite3.OperationalError("잠김")))
+    assert orch.handle_next(NextAction(a, "cb", 71)) == "다음 글을 보내지 못했습니다"
+    monkeypatch.setattr(db, "save_checkpoint", real)
+    new_msg = svc.telegram.requests[-1][1].message_id
+    assert new_msg in svc.telegram.cleared
+    assert db.get_job(conn, b)["checkpoint"]["approval"]["nonce"] == old
+
+
+def test_reconcile_blog_only_publish_offers_next(env):
+    orch, svc, conn, _ = env
+    a = db.create_job(conn, "블로그만", mode="blog")
+    orch.run_once()
+    _awaiting(orch, svc, conn, 1)
+    assert db.begin_publishing(conn, a)
+    svc.wp.get_post = lambda pid: WPPost(pid, "publish", f"https://jalcheck.com/post-{pid}/")
+    svc.telegram.markups = []
+    assert orch.reconcile_publishing(older_than_seconds=0) == [a]
+    assert svc.telegram.markups[-1] == {"next": a, "remaining": 1}
