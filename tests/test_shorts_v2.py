@@ -42,6 +42,8 @@ HAS_FFMPEG = SETTINGS.ffmpeg_bin.exists()
     ("02-123-4567", "공이 일이삼 사오육칠"),
     ("2026-11-10", "이천이십육년 십일월 십일"),
     ("2026.12.31.까지", "이천이십육년 십이월 삼십일일까지"),
+    ("2026.1.5~2026.2.10", "이천이십육년 일월 오일에서 이천이십육년 이월 십일"),
+    ("1일~3일", "일일에서 삼일"),
 ])
 def test_spoken_text(text, spoken):
     assert G.spoken_text(text) == spoken

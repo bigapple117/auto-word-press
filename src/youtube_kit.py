@@ -136,6 +136,10 @@ def numbers_missing_from_post(content: MasterContent, post_html: str) -> list[st
     written_values = [a.value for a in written]
     places = [("쇼츠 제목", content.shorts.title)]
     places += [(f"장면 {i}", s.narration) for i, s in enumerate(content.shorts.scenes, 1)]
+    # 화면에만 보이는 글자(위쪽 질문, 장면 카드)도 확인한다: 글을 고친 뒤 카드에 옛 숫자가 남을 수 있음
+    places += [("쇼츠 위쪽 질문", content.shorts.hook)]
+    places += [(f"장면 {i} 카드", f"{s.card.small} {s.card.big}")
+               for i, s in enumerate(content.shorts.scenes, 1) if s.card]
     places += [("유튜브 설명", content.meta_description), ("정보 기준", content.reference_note)]
     missing: list[str] = []
     for where, text in places:

@@ -651,3 +651,9 @@
 - 검증: pytest 411 통과(전에 실패하던 1개 포함), genai 클라이언트 제한 시간 설정 생성 확인. 실제 Gemini 음성 호출은 사용량 때문에 안 함
 - 발견: 7e59ee7('HANDOFF' 커밋)에 다음 글 버튼 답장 방식 코드가 검토·기록 없이 들어감
 - 남은 일: (1) Codex 로그인 후 11f871f + 7e59ee7 + 이번 수정 함께 검토 → 실행기 재시작 (2) 보고서 '결정이 필요한 것' 2~5번 사용자 결정
+
+## 2026-11-11 검토 반영 후 실행기 재시작
+- 지시자: 사용자("1. 재시작해줘") / 작업자: Claude / 검토자: Codex BLOCKED(인증 만료) → Gemini gemini-4-argon-medium CHANGES_REQUESTED(REVIEW.md)
+- 변경: src/youtube_kit.py(쇼츠 위쪽 질문·장면 카드 숫자도 글 본문과 대조), src/gemini_tts.py(날짜 범위 '~' 읽기), 테스트 3개 추가
+- 검증: pytest 414 통과
+- 남은 일: Codex 다시 로그인(codex logout → login) 후 재검토, Gemini 낮음 항목 2·4·5 결정

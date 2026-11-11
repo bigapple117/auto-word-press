@@ -91,3 +91,14 @@ def test_full_won_in_shorts_matches_korean_units_in_post():
 def test_unitless_number_does_not_match_same_digits_with_unit():
     assert numbers_missing_from_post(shorts_content("수수료 36원"), "<p>2026년 36만 원</p>") == ["장면 1: 36"]
     assert numbers_missing_from_post(shorts_content("18개월 이상"), "<p>2026년 18개월</p>") == []
+
+
+def test_card_and_hook_numbers_are_checked():
+    """글을 고친 뒤 화면 카드·위쪽 질문에만 남은 옛 숫자도 잡는다(2026-11-11 검토 반영)."""
+    c = shorts_content("기준이 바뀌었습니다.")
+    data = c.model_dump()
+    data["shorts"]["hook"] = "5,400만 원 이하?"
+    data["shorts"]["scenes"][0]["card"] = {"kind": "number", "small": "총급여", "big": "5,400만 원"}
+    c = MasterContent.model_validate(data)
+    post = "<p>2026년 기준 총급여 5,500만 원 이하</p>"
+    assert numbers_missing_from_post(c, post) == ["쇼츠 위쪽 질문: 5,400만", "장면 1 카드: 5,400만"]
