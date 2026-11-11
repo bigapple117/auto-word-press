@@ -4,7 +4,7 @@
 - 숫자는 한글로 바꿔 읽힌다(아라비아 숫자는 잘못 읽는 일이 있었음). 자막에는 원래 숫자가 보인다.
 - 말투 지시를 붙이지 않는다: 지시문까지 소리 내 읽는 일이 있었음.
 - 받은 데이터는 WAV 파일(머리말 + 끝에 C2PA 'AI 생성' 정보)일 수 있다. 소리로 감싸면 그 정보가 '칙' 잡음이 됨.
-- 단어별 시간 정보가 없어서, 장면 경계는 쉬는 구간에서 찾고 자막 시간은 글자 수 비율로 정한다.
+- 단어별 시간 정보가 없어서, 장면 경계는 대본의 문장부호와 실제 쉼을 순서대로 맞춰 찾고 자막 시간은 글자 수 비율로 정한다.
 실패하면 GeminiTTSError → 호출하는 쪽(pipeline)이 edge-tts로 대체한다.
 """
 from __future__ import annotations
@@ -126,19 +126,105 @@ def spoken_text(text: str) -> str:
 
 # ---------- 장면 경계·자막 ----------
 
-def find_cuts(gaps: Sequence[tuple[float, float]], duration: float, weights: Sequence[int]) -> list[float]:
-    """쉬는 구간(gaps) 중 장면 경계를 고른다. 글자 수로 예상한 위치 근처에서 가장 긴 쉼."""
-    cuts, prev = [], 0.0
-    total = sum(weights)
-    for k in range(1, len(weights)):
-        expect = duration * sum(weights[:k]) / total
-        near = [g for g in gaps if g[0] > prev + 0.4 and abs((g[0] + g[1]) / 2 - expect) < duration * 0.12]
-        if not near:
-            raise GeminiTTSError(f"{k}번째 장면 경계를 찾지 못했습니다(예상 {expect:.1f}초)")
-        best = max(near, key=lambda g: (g[1] - g[0]) - 0.05 * abs((g[0] + g[1]) / 2 - expect))
-        cuts.append(round((best[0] + best[1]) / 2, 3))
-        prev = best[1]
+_PAUSE_MARKS = ".,!?…"
+MAX_DRIFT = 0.12            # 대본 위치와 실제 쉼의 위치가 이만큼(전체 말 길이 비율) 넘게 다르면 짝짓지 않는다
+SKIP_SITE_COST = 0.03       # 쉼표인데 실제로 쉬지 않은 경우
+SKIP_GAP_COST = 0.01        # 대본에 표시가 없는데 쉰 경우(길게 쉴수록 드문 일이라 더 비쌈)
+SKIP_GAP_PER_SECOND = 0.05
+BOUNDARY_LONG_BONUS = 0.03  # 장면 경계는 길게 쉬는 쪽을 조금 선호
+SCENE_RATE_RANGE = (0.5, 2.0)   # 장면별 말 속도가 전체 평균의 이 범위를 벗어나면 잘못 자른 것으로 본다
+
+
+def _letters(text: str) -> int:
+    return sum(1 for ch in text if not ch.isspace() and ch not in _PAUSE_MARKS)
+
+
+def _pause_sites(spoken: Sequence[str]) -> list[tuple[float, bool]]:
+    """대본에서 쉴 만한 자리 (전체 글자 중 위치 비율, 장면 경계인지)."""
+    total = sum(_letters(t) for t in spoken) or 1
+    sites, pos = [], 0
+    for i, text in enumerate(spoken):
+        remaining = _letters(text)
+        for ch in text:
+            if ch in _PAUSE_MARKS:
+                if remaining and (not sites or sites[-1][0] != pos / total):
+                    sites.append((pos / total, False))
+            elif not ch.isspace():
+                pos += 1
+                remaining -= 1
+        if i < len(spoken) - 1:
+            sites.append((pos / total, True))
+    return sites
+
+
+def find_cuts(gaps: Sequence[tuple[float, float]], duration: float, spoken: Sequence[str]) -> list[float]:
+    """쉬는 구간(gaps) 중 장면 경계를 고른다.
+
+    대본의 쉼표·마침표·장면 끝과 실제 쉼을 순서대로 짝지어, 문장 안의 쉼을 장면 경계로 착각하지 않게 한다.
+    위치는 쉼을 뺀 '말한 시간' 비율로 비교한다(앞쪽 쉼이 길어도 뒤쪽 예상이 밀리지 않게).
+    """
+    if len(spoken) < 2:
+        return []
+    gaps = sorted(g for g in gaps if g[1] > g[0])
+    speech = duration - sum(e - s for s, e in gaps)
+    if speech <= 0:
+        raise GeminiTTSError("음성에서 말하는 구간을 찾지 못했습니다")
+    fracs, silent = [], 0.0
+    for s, e in gaps:
+        fracs.append((s - silent) / speech)
+        silent += e - s
+    sites = _pause_sites(spoken)
+    n, m, inf = len(sites), len(gaps), float("inf")
+    cost = [[inf] * (m + 1) for _ in range(n + 1)]
+    step: list[list[str]] = [[""] * (m + 1) for _ in range(n + 1)]
+    cost[n][m] = 0.0
+    for i in range(n, -1, -1):
+        for j in range(m, -1, -1):
+            if i == n and j == m:
+                continue
+            best, how = inf, ""
+            if j < m:                       # 이 쉼은 대본 표시와 짝이 없음
+                c = SKIP_GAP_COST + SKIP_GAP_PER_SECOND * (gaps[j][1] - gaps[j][0]) + cost[i][j + 1]
+                if c < best:
+                    best, how = c, "gap"
+            if i < n and not sites[i][1]:   # 쉼표였지만 쉬지 않음(장면 경계는 건너뛸 수 없음)
+                c = SKIP_SITE_COST + cost[i + 1][j]
+                if c < best:
+                    best, how = c, "site"
+            if i < n and j < m and abs(sites[i][0] - fracs[j]) <= MAX_DRIFT:
+                bonus = BOUNDARY_LONG_BONUS * min(gaps[j][1] - gaps[j][0], 1.0) if sites[i][1] else 0.0
+                c = abs(sites[i][0] - fracs[j]) - bonus + cost[i + 1][j + 1]
+                if c < best:
+                    best, how = c, "match"
+            cost[i][j], step[i][j] = best, how
+    if cost[0][0] == inf:
+        raise GeminiTTSError("장면 경계를 대본과 맞추지 못했습니다")
+    cuts, i, j = [], 0, 0
+    while i < n or j < m:
+        how = step[i][j]
+        if how == "match":
+            if sites[i][1]:
+                cuts.append(round((gaps[j][0] + gaps[j][1]) / 2, 3))
+            i, j = i + 1, j + 1
+        elif how == "site":
+            i += 1
+        else:
+            j += 1
+    _check_scene_rates(cuts, duration, spoken)
     return cuts
+
+
+def _check_scene_rates(cuts: Sequence[float], duration: float, spoken: Sequence[str]) -> None:
+    """장면별 말 속도가 평균과 크게 다르면 경계를 잘못 고른 것이다(글자가 적은 장면은 편차가 커서 제외)."""
+    average = sum(_letters(t) for t in spoken) / duration
+    bounds = [0.0, *cuts, duration]
+    for k, text in enumerate(spoken):
+        length = bounds[k + 1] - bounds[k]
+        if _letters(text) < 8:
+            continue
+        ratio = _letters(text) / max(length, 0.1) / average
+        if not SCENE_RATE_RANGE[0] <= ratio <= SCENE_RATE_RANGE[1]:
+            raise GeminiTTSError(f"{k + 1}번째 장면 길이가 대본과 맞지 않습니다({length:.1f}초)")
 
 
 _PUNCT = ".,!?…"
@@ -263,8 +349,7 @@ def synthesize_gemini(
         chars = sum(len(s.replace(" ", "")) for s in spoken)
         if not CHARS_PER_SECOND_RANGE[0] <= chars / max(length, 0.1) <= CHARS_PER_SECOND_RANGE[1]:
             raise GeminiTTSError(f"음성 길이({length:.1f}초)가 대본({chars}자)과 맞지 않습니다")
-        weights = [len(s.replace(" ", "")) for s in spoken]
-        cuts = find_cuts(silences(ffmpeg, full), length, weights)
+        cuts = find_cuts(silences(ffmpeg, full), length, spoken)
         bounds = [0.0, *cuts, None]
         parts = []
         for i in range(len(spoken)):

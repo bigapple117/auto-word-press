@@ -56,12 +56,29 @@ def test_spoken_text(text, spoken):
     assert G.spoken_text(text) == spoken
 
 
-def test_find_cuts_picks_longest_pause_near_expected():
+def test_find_cuts_picks_pause_near_expected():
     gaps = [(1.0, 1.1), (2.9, 3.4), (3.6, 3.7), (6.0, 6.1), (7.2, 7.6)]
-    # 글자 수 3:4:3 → 예상 경계 3초, 7초
-    assert G.find_cuts(gaps, 10.0, [3, 4, 3]) == [3.15, 7.4]
+    assert G.find_cuts(gaps, 10.0, ["가" * 3, "나" * 4, "다" * 3]) == [3.15, 7.4]
     with pytest.raises(G.GeminiTTSError):
-        G.find_cuts([(0.5, 0.6)], 10.0, [5, 5])
+        G.find_cuts([(0.5, 0.6)], 10.0, ["가" * 5, "나" * 5])
+
+
+def test_find_cuts_ignores_long_pause_inside_scene():
+    """문장 안 쉼표에서 0.9초 쉬고 장면 경계는 0.3초만 쉬어도, 경계를 제자리에서 고른다."""
+    spoken = ["가" * 30 + ", " + "나" * 5 + ".", "다" * 35 + "."]
+    assert G.find_cuts([(3.0, 3.9), (4.4, 4.7)], 8.2, spoken) == [4.55]
+
+
+def test_find_cuts_handles_comma_without_pause_and_extra_pause():
+    spoken = ["가" * 10 + ", " + "나" * 10 + ".", "다" * 20 + ", " + "라" * 20 + "."]
+    # 말한 시간 8초, 글자 60자. 첫 쉼표에서는 안 쉬고, 표시 없는 곳(말한 시간 4초)에서 잠깐 쉼
+    gaps = [(2.67, 3.07), (4.4, 4.5), (5.83, 6.03)]
+    assert G.find_cuts(gaps, 8.7, spoken) == [2.87]
+
+
+def test_find_cuts_rejects_wrong_scene_lengths():
+    with pytest.raises(G.GeminiTTSError):
+        G._check_scene_rates([1.0], 10.0, ["가" * 30, "나" * 30])
 
 
 def test_scene_captions_break_at_punctuation():
