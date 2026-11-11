@@ -71,7 +71,7 @@ class Scene(BaseModel):
     narration: str = Field(description=(
         "성우가 읽고 자막으로 보일 한국어 1~2문장. 말하듯 짧게 끊고, 자막이 끊길 자리에 쉼표를 둔다"))
     video_query: str = Field(description=(
-        "배경 영상 영어 검색어 2~4단어. 분위기를 보여 주는 일반적인 장면(예: 'hands typing laptop', "
+        "배경 영상 영어 검색어 2~3단어. 눈에 보이는 사람·사물을 뜻하는 흔한 단어로(예: 'hands typing laptop', "
         "'family living room', 'city street night'). 특정 나라 지폐·동전, 달력·날짜, 국기, 글자·숫자가 "
         "보이는 화면, 로고, 사람 얼굴 클로즈업, 담배·술은 내용과 어긋날 수 있으니 피한다"))
     card: Card | None = Field(default=None, description="이 장면의 정보 카드. 카드가 필요 없는 장면은 null")

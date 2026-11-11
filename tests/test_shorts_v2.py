@@ -207,6 +207,23 @@ def test_banned_stock_tags():
     assert [h["id"] for h in by_relevance(hits, "hands holding papers")] == [2]
 
 
+def test_stock_filters_ai_look_and_weak_matches():
+    assert is_banned({"tags": "computers, office, anime, ai generated"})
+    assert is_banned({"tags": "smartphone, green screen, hand"})
+    assert is_banned({"tags": "mother and baby, mother tiger, animal care"})
+    assert is_banned({"tags": "christmas tree, holiday gifts"})
+    assert not is_banned({"tags": "newborn, baby, mother, family"})
+    hits = [{"id": 1, "tags": "sand, hand, beach"}, {"id": 2, "tags": "hands, paperwork, office"}]
+    assert [h["id"] for h in by_relevance(hits, "hands reviewing paperwork", strict=True)] == [2]
+    assert [h["id"] for h in by_relevance(hits, "hands reviewing paperwork")] == [2, 1]     # 블로그 사진은 기존대로
+
+
+def test_caption_keeps_amount_together():
+    caps = G.scene_captions("산후도우미 비용, 첫째아 기준 최대 152만 5,000원까지 지원돼요.", 5.0, 0.0)
+    assert not any(c.text.endswith("152만") for c in caps)
+    assert any("152만 5,000원" in c.text for c in caps)
+
+
 def test_upload_kit_has_music_credit():
     kit = build_upload_kit(MasterContent.model_validate(good_data()), "https://jalcheck.com/a")
     assert MUSIC_CREDIT in kit.description and "Kevin MacLeod" in kit.description

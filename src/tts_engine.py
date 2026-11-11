@@ -122,6 +122,8 @@ def _split_phrase(words: list[Word]) -> list[list[Word]]:
             continue
         if _is_number(w.text) and _is_number(nxt.text):   # '이억 사천만'은 한 덩어리
             continue
+        if re.search(r"\d[만억천]$", w.text) and nxt.text[:1].isdigit():   # '152만 5,000원'이 갈라지지 않게
+            continue
         # 목표 길이에 가까워졌고, 다음 단어를 더하면 목표에서 더 멀어지면 끊는다
         if abs(size - target) <= abs(size + len(nxt.text) - target):
             out.append(current)

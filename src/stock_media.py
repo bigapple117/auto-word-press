@@ -233,17 +233,24 @@ BANNED_TAGS = {
     "alcohol", "beer", "wine", "whiskey", "whisky", "vodka", "drunk", "liquor", "cocktail",
     "dollar", "dollars", "euro", "euros", "banknote", "banknotes", "bill", "bills", "usd",
     "gun", "weapon", "blood", "drug", "drugs", "syringe", "bikini", "lingerie", "flag",
+    # AI로 만든 티가 나는 영상, 합성용 화면
+    "anime", "cartoon", "cyberpunk", "futuristic", "scifi", "fantasy", "chroma", "greenscreen", "mockup",
+    # 생활 정보와 어긋나는 장면('mother holding baby'에 호랑이 어미가 나온 적이 있음)
+    "animal", "animals", "wildlife", "tiger", "lion", "bear", "cub", "zoo",
+    "christmas", "xmas", "halloween", "festive",
 }
+BANNED_PHRASES = ("ai generated", "ai-generated", "green screen", "mock up", "sci-fi")
 
 
 def is_banned(hit: dict[str, Any]) -> bool:
-    tags = set(re.findall(r"[a-z]+", str(hit.get("tags", "")).lower()))
-    return bool(tags & BANNED_TAGS)
+    text = str(hit.get("tags", "")).lower()
+    return bool(set(re.findall(r"[a-z]+", text)) & BANNED_TAGS) or any(p in text for p in BANNED_PHRASES)
 
 
-def by_relevance(hits: Sequence[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+def by_relevance(hits: Sequence[dict[str, Any]], query: str, strict: bool = False) -> list[dict[str, Any]]:
     """태그에 검색어 단어가 많이 든 결과를 앞으로(Pixabay 기본 순서는 인기순이라 엉뚱한 것이 먼저 올 수 있음).
-    어울리지 않는 장면(BANNED_TAGS)은 뺀다."""
+    어울리지 않는 장면(BANNED_TAGS)은 뺀다. strict면 검색어 단어가 2개 이상(한 단어 검색은 1개) 맞아야 쓴다
+    ('hands reviewing paperwork'에 모래 위의 손처럼 한 단어만 맞는 영상을 거름. 없으면 깔끔한 단색 배경이 낫다)."""
     hits = [h for h in hits if not is_banned(h)]
     words = {w for w in re.findall(r"[a-z]+", (query or "").lower()) if w not in _STOP}
     if not words:
@@ -260,6 +267,13 @@ def by_relevance(hits: Sequence[dict[str, Any]], query: str) -> list[dict[str, A
             total += 3 if forms & head else (1 if forms & rest else 0)
         return total
 
+    def matched_words(h: dict[str, Any]) -> int:
+        tags = set(re.findall(r"[a-z]+", str(h.get("tags", "")).lower()))
+        return sum(1 for w in words if {w, w.rstrip("s")} & tags)
+
+    if strict:
+        need = min(2, len(words))
+        hits = [h for h in hits if matched_words(h) >= need]
     scored = [(score(h), i, h) for i, h in enumerate(hits)]
     matched = [x for x in scored if x[0] > 0]
     return [h for _s, _i, h in sorted(matched, key=lambda x: (-x[0], x[1]))]   # 태그가 하나도 안 맞으면 쓰지 않음
@@ -377,7 +391,7 @@ class StockMediaPicker:
         hits = self.client.search_videos(query)
         skip = set(used)
         for _ in range(MAX_VIDEO_TRIES):
-            found = choose_video(by_relevance(hits, query), skip)
+            found = choose_video(by_relevance(hits, query, strict=True), skip)
             if not found:
                 return None
             hit, variant = found
@@ -401,7 +415,7 @@ class StockMediaPicker:
         skip = set(used)
         near = set(used) if series else set()
         for _ in range(MAX_VIDEO_TRIES):
-            hit = choose_image(by_relevance(hits, query), skip, min_height=1600 if orientation == "vertical" else 900,
+            hit = choose_image(by_relevance(hits, query, strict=orientation == "vertical"), skip, min_height=1600 if orientation == "vertical" else 900,
                                series=near)
             if not hit:
                 return None
