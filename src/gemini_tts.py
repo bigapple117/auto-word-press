@@ -79,18 +79,29 @@ def native(n: int, before_counter: bool = True) -> str:
 # 전화번호: 지역·휴대폰(02-123-4567, 010-1234-5678)과 대표번호(1588-1234)만. 2025-2026 같은 연도 범위는 아님
 _PHONE = re.compile(r"(?<![\d.])(?:0\d{1,2}-\d{3,4}-\d{4}|1\d{3}-\d{4})(?![\d])")
 _DATE = re.compile(r"(?<!\d)(\d{4})[-.](\d{1,2})[-.](\d{1,2})\.?(?![\d])")   # 2026-11-10 → 2026년 11월 10일
+# 끝 날짜의 연도를 줄인 날짜 범위(2026.1.5~2.10): 끝 날짜가 소수(이 점 일영)로 읽히지 않게 먼저 처리한다
+_DATE_RANGE = re.compile(r"(?<!\d)(\d{4})[-.](\d{1,2})[-.](\d{1,2})\.?\s*[~～–-]\s*(\d{1,2})[-.](\d{1,2})\.?(?![\d%％])")
 # 범위(12~13세, 10만~20만 원, 2025-2026년, 2026.1.5~2.10, 1일~3일) → '에서'
 _RANGE = re.compile(r"(?<=[\d만천억%년월일])\s*[~～–-]\s*(?=\d)")
 # 쉼표는 천 단위 자리(9,700)일 때만 숫자로 묶는다(1,2월은 '일, 이월')
 _NUMBER = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?")
 
 
+def _read_date_range(m: re.Match) -> str:
+    year, m1, d1, m2, d2 = (int(g) for g in m.groups())
+    if not (1 <= m1 <= 12 and 1 <= m2 <= 12 and 1 <= d1 <= 31 and 1 <= d2 <= 31):
+        return m.group()                    # 날짜가 될 수 없는 값은 건드리지 않는다
+    return f"{year}년 {m1}월 {d1}일에서 {m2}월 {d2}일"
+
+
 def spoken_text(text: str) -> str:
     """성우가 읽을 문장: 숫자·기호를 한글 읽기로 바꾼다. 자막은 원래 문장을 쓴다."""
     text = _PHONE.sub(lambda m: " ".join("".join(_DIGITS[int(d)] if d != "0" else "공" for d in part)
                                          for part in m.group().split("-")), text)
+    text = _DATE_RANGE.sub(_read_date_range, text)
     text = _DATE.sub(lambda m: f"{m.group(1)}년 {int(m.group(2))}월 {int(m.group(3))}일", text)
     text = _RANGE.sub("에서 ", text)
+    text = re.sub(r"\s*[%％]", " 퍼센트", text)      # 3.3 %처럼 띄어 써도 단위가 빠지지 않게
 
     def repl(m: re.Match) -> str:
         whole = m.group(1).replace(",", "")
@@ -107,11 +118,9 @@ def spoken_text(text: str) -> str:
             read = ""                       # 1만 원 → 만 원
         else:
             read = sino(n)
-        if after.startswith("%"):
-            read += " 퍼센트"
         return read
 
-    out = _NUMBER.sub(repl, text).replace("%", "")
+    out = _NUMBER.sub(repl, text)
     return re.sub(r" {2,}", " ", out).strip()
 
 
