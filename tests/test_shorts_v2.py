@@ -69,6 +69,11 @@ def test_find_cuts_ignores_long_pause_inside_scene():
     assert G.find_cuts([(3.0, 3.9), (4.4, 4.7)], 8.2, spoken) == [4.55]
 
 
+def test_find_cuts_long_pause_without_punctuation_does_not_steal_boundary():
+    """문장부호 없는 곳에서 1초 쉬고 실제 경계는 0.2초만 쉬어도 경계를 제자리에서 고른다(Codex 지적)."""
+    assert G.find_cuts([(4.5, 5.5), (6.0, 6.2)], 11.2, ["가" * 50, "나" * 50]) == [6.1]
+
+
 def test_find_cuts_handles_comma_without_pause_and_extra_pause():
     spoken = ["가" * 10 + ", " + "나" * 10 + ".", "다" * 20 + ", " + "라" * 20 + "."]
     # 말한 시간 8초, 글자 60자. 첫 쉼표에서는 안 쉬고, 표시 없는 곳(말한 시간 4초)에서 잠깐 쉼
@@ -210,8 +215,12 @@ def test_banned_stock_tags():
 def test_stock_filters_ai_look_and_weak_matches():
     assert is_banned({"tags": "computers, office, anime, ai generated"})
     assert is_banned({"tags": "smartphone, green screen, hand"})
-    assert is_banned({"tags": "mother and baby, mother tiger, animal care"})
-    assert is_banned({"tags": "christmas tree, holiday gifts"})
+    assert is_banned({"tags": "mother and baby, mother tiger, animal care"}, scene=True)
+    assert is_banned({"tags": "christmas tree, holiday gifts"}, scene=True)
+    # 블로그 사진은 주제에 맞으면 동물·크리스마스도 쓸 수 있다
+    assert not is_banned({"tags": "christmas tree, holiday gifts"})
+    assert [h["id"] for h in by_relevance([{"id": 7, "tags": "dog, animal, pet"}], "dog")] == [7]
+    assert by_relevance([{"id": 7, "tags": "dog, animal, pet"}], "dog", strict=True) == []
     assert not is_banned({"tags": "newborn, baby, mother, family"})
     hits = [{"id": 1, "tags": "sand, hand, beach"}, {"id": 2, "tags": "hands, paperwork, office"}]
     assert [h["id"] for h in by_relevance(hits, "hands reviewing paperwork", strict=True)] == [2]

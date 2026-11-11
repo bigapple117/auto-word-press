@@ -235,23 +235,26 @@ BANNED_TAGS = {
     "gun", "weapon", "blood", "drug", "drugs", "syringe", "bikini", "lingerie", "flag",
     # AI로 만든 티가 나는 영상, 합성용 화면
     "anime", "cartoon", "cyberpunk", "futuristic", "scifi", "fantasy", "chroma", "greenscreen", "mockup",
-    # 생활 정보와 어긋나는 장면('mother holding baby'에 호랑이 어미가 나온 적이 있음)
+}
+# 쇼츠 배경에서만 뺀다('mother holding baby'에 호랑이 어미가 나온 적이 있음). 블로그는 글 주제에 맞으면 쓸 수 있다
+SCENE_BANNED_TAGS = {
     "animal", "animals", "wildlife", "tiger", "lion", "bear", "cub", "zoo",
     "christmas", "xmas", "halloween", "festive",
 }
 BANNED_PHRASES = ("ai generated", "ai-generated", "green screen", "mock up", "sci-fi")
 
 
-def is_banned(hit: dict[str, Any]) -> bool:
+def is_banned(hit: dict[str, Any], scene: bool = False) -> bool:
     text = str(hit.get("tags", "")).lower()
-    return bool(set(re.findall(r"[a-z]+", text)) & BANNED_TAGS) or any(p in text for p in BANNED_PHRASES)
+    banned = BANNED_TAGS | SCENE_BANNED_TAGS if scene else BANNED_TAGS
+    return bool(set(re.findall(r"[a-z]+", text)) & banned) or any(p in text for p in BANNED_PHRASES)
 
 
 def by_relevance(hits: Sequence[dict[str, Any]], query: str, strict: bool = False) -> list[dict[str, Any]]:
     """태그에 검색어 단어가 많이 든 결과를 앞으로(Pixabay 기본 순서는 인기순이라 엉뚱한 것이 먼저 올 수 있음).
     어울리지 않는 장면(BANNED_TAGS)은 뺀다. strict면 검색어 단어가 2개 이상(한 단어 검색은 1개) 맞아야 쓴다
     ('hands reviewing paperwork'에 모래 위의 손처럼 한 단어만 맞는 영상을 거름. 없으면 깔끔한 단색 배경이 낫다)."""
-    hits = [h for h in hits if not is_banned(h)]
+    hits = [h for h in hits if not is_banned(h, scene=strict)]
     words = {w for w in re.findall(r"[a-z]+", (query or "").lower()) if w not in _STOP}
     if not words:
         return list(hits)

@@ -132,6 +132,7 @@ SKIP_SITE_COST = 0.03       # 쉼표인데 실제로 쉬지 않은 경우
 SKIP_GAP_COST = 0.01        # 대본에 표시가 없는데 쉰 경우(길게 쉴수록 드문 일이라 더 비쌈)
 SKIP_GAP_PER_SECOND = 0.05
 BOUNDARY_LONG_BONUS = 0.03  # 장면 경계는 길게 쉬는 쪽을 조금 선호
+BOUNDARY_DRIFT_WEIGHT = 3.0  # 장면 경계의 위치 오차는 더 비싸게
 SCENE_RATE_RANGE = (0.5, 2.0)   # 장면별 말 속도가 전체 평균의 이 범위를 벗어나면 잘못 자른 것으로 본다
 
 
@@ -192,8 +193,10 @@ def find_cuts(gaps: Sequence[tuple[float, float]], duration: float, spoken: Sequ
                 if c < best:
                     best, how = c, "site"
             if i < n and j < m and abs(sites[i][0] - fracs[j]) <= MAX_DRIFT:
-                bonus = BOUNDARY_LONG_BONUS * min(gaps[j][1] - gaps[j][0], 1.0) if sites[i][1] else 0.0
-                c = abs(sites[i][0] - fracs[j]) - bonus + cost[i + 1][j + 1]
+                drift = abs(sites[i][0] - fracs[j])
+                # 장면 경계는 위치가 가장 중요하다(문장부호 없는 곳의 긴 쉼이 경계를 가로채지 않게)
+                c = (BOUNDARY_DRIFT_WEIGHT * drift - BOUNDARY_LONG_BONUS * min(gaps[j][1] - gaps[j][0], 1.0)
+                     if sites[i][1] else drift) + cost[i + 1][j + 1]
                 if c < best:
                     best, how = c, "match"
             cost[i][j], step[i][j] = best, how
