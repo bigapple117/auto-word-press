@@ -665,3 +665,9 @@
 - 변경: 글 105 publish → draft(date null로 날짜 초기화, 나중에 발행하면 그때 날짜), 장부 작업 12 published → canceled(규칙상 published는 바꿀 수 없어 SQL로 직접 수정). 취소 상태라 [발행] 버튼 무효, `jobctl redo 12` 가능. 백업 ~/backups/2026-11-11-hold-post105/
 - 검증: 글 주소·?p=105 404, 홈·사이트 지도에 없음, 공개 API 401, 홈 200, 실행기 active, 승인 대기 목록에서 빠짐
 - 남은 일: 11-16 10:13 KST 공고 확인 예약 그대로. 쇼츠는 유튜브에 올리지 않기
+
+## 2026-11-11 Codex 재로그인·재검토
+- 지시자: 사용자("1") / 작업자: Claude / 검토자: Codex gpt-6.1-sol high, CHANGES_REQUESTED(REVIEW.md), 코드 변경 없음
+- 기기 코드 방식으로 재로그인 성공. codex-review.py는 bwrap 오류로 BLOCKED라 read-only + stdin 전달로 검토
+- 지적 4건(모두 중간): 수정 전 화면 캡처 재전송, '2026.1.5~2.10' 끝 날짜를 소수로 읽음, '3.3 %' 퍼센트 누락, 장면 안의 긴 쉼을 경계로 고를 수 있음
+- 남은 일: 4건 수정 여부 사용자 결정. 실행기는 이미 이 코드로 운영 중
