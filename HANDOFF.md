@@ -715,3 +715,4 @@
 - 지시자: 사용자("1": 어디까지 발행했는지 매번 보이게) / 작업자: Claude / 검토자: 없음(표시 문구만 바뀌는 작은 변경)
 - 변경: src/orchestrator.py waiting_line() 추가 → '다음 글로 이동' 메시지와 보류·취소·쇼츠 없는 발행 뒤 안내에 "남은 승인 대기 N개: 23, 24, …"(최대 15개) 한 줄. tests/test_orchestrator.py 확인 1줄
 - 검증: pytest 434 통과, 실행기 재시작 05:46 UTC(진행 작업 0건, 승인 대기 23~32) active
+- 2026-11-13 사용자 요청으로 복원 암호를 텔레그램에 1회 재전송(대화·로그 미출력, protect_content). 메시지 번호 data/.backup_pass_message.json — 사용자가 저장 확인하면 deleteMessage로 삭제(48시간 안)
