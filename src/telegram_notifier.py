@@ -174,6 +174,7 @@ class TelegramNotifier:
         self, job_id: int, title: str, summary: str, edit_url: str,
         warnings: Sequence[str] = (), video_path: Path | None = None,
         screenshots: Sequence[Path] = (), category: str = "", file_ids: dict | None = None,
+        fixes: Sequence[str] = (),
     ) -> ApprovalRequest:
         """승인 요청 메시지(버튼 포함)를 보내고 메시지 번호를 돌려준다.
 
@@ -194,9 +195,14 @@ class TelegramNotifier:
                  html.escape(clip(summary, SUMMARY_MAX)), "",
                  *([f"분류: {html.escape(clip(category, 40))}", ""] if category else []),
                  f'<a href="{html.escape(edit_url, quote=True)}">워드프레스에서 열기</a> (로그인 화면이 나오면 로그인)']
+        if fixes:
+            lines += ["", "<b>자동 검토에서 고친 것</b>"] + [f"- {html.escape(clip(f, WARNING_MAX))}"
+                                                       for f in list(fixes)[:WARNINGS_MAX]]
         if warnings:
             lines += ["", "<b>확인할 것</b>"] + [f"- {html.escape(clip(w, WARNING_MAX))}"
                                                for w in list(warnings)[:WARNINGS_MAX]]
+        else:
+            lines += ["", "확인할 것 없음. 화면만 보고 바로 발행해도 됩니다."]
         text = "\n".join(lines)
         keyboard = {"inline_keyboard": [[
             {"text": "발행", "callback_data": self.callback_data(job_id, "p", nonce)},

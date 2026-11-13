@@ -10,7 +10,7 @@ import logging
 import re
 import unicodedata
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 from google import genai
@@ -23,8 +23,9 @@ from src.link_check import check_action_links, home_links_overpromising
 from src.content_schema import (MasterContent, Shorts, paragraph_text, section_paragraphs,
                                 section_texts)
 from src.source_fetcher import Source
-from templates.prompt_template import (SHORTS_SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION, build_prompt,
-                                      build_shorts_repair_prompt, narration_budget, BODY_TARGET_CHARS)
+from templates.prompt_template import (REVIEW_SYSTEM_INSTRUCTION, SHORTS_SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION,
+                                      build_prompt, build_review_prompt, build_shorts_repair_prompt,
+                                      narration_budget, BODY_TARGET_CHARS)
 
 log = logging.getLogger(__name__)
 
@@ -64,21 +65,82 @@ class GenerationResult:
     content: MasterContent
     model: str
     attempts: int
-    warnings: list[str]
+    warnings: list[str]                                  # 사람이 확인할 것
+    fixes: list[str] = field(default_factory=list)       # 자동으로 고친 것(보고용)
 
 
-_EOK = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*억(?:\s*(\d)\s*천)?(?:\s*(\d[\d,]*)\s*만)?\s*원?")
-_MAN = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(천만|백만|만)\s*원?")
-_WON = re.compile(r"(\d[\d,]*)\s*원")
+MAX_TAKEAWAYS = 3
+# 발행 전 검토 뒤에도 남으면 숨기는 경고: 글이 틀린 것이 아니라 문체 참고이거나, 자동으로 처리된 것
+QUIET_WARNINGS = ("문단이 조금 깁니다", "같은 종결 표현", "같은 블록 구성", "본문이 짧습니다",
+                  "자료로 확인 안 된 내용", "바로가기 링크에서 뺀 것", "신청·조회 바로가기 링크가 없습니다")
+
+
+def needs_person(warning: str) -> bool:
+    return not any(mark in warning for mark in QUIET_WARNINGS)
+
+
+class ReviewOutcome(BaseModel):
+    fixes: list[str] = Field(default_factory=list, description="실제로 고친 것, 한 줄씩 쉬운 말로(최대 6개)")
+    unresolved: list[str] = Field(default_factory=list, description=(
+        "자료끼리 다르거나 자료만으로 판단할 수 없는데 글에 남긴 것. 없으면 빈 목록"))
+    content: MasterContent
+
+
+def trim_takeaways(c: MasterContent) -> tuple[MasterContent, list[str]]:
+    """요약 줄(takeaway)이 3곳을 넘으면 앞에서부터 3곳만 남긴다(AI 검토가 못 줄였을 때의 마지막 정리)."""
+    kept = 0
+    sections = []
+    for s in c.sections:
+        if s.takeaway:
+            kept += 1
+            if kept > MAX_TAKEAWAYS:
+                s = s.model_copy(update={"takeaway": None})
+        sections.append(s)
+    if kept <= MAX_TAKEAWAYS:
+        return c, []
+    return (c.model_copy(update={"sections": sections}),
+            [f"소제목 요약 줄을 {kept}곳에서 {MAX_TAKEAWAYS}곳으로 줄임"])
+
+
+_N = r"\d[\d,]*(?:\.\d+)?"
+# 한글 단위를 섞은 금액 한 덩어리: '34만 9,700원', '1억 3,500만 원', '1억3천5백만원', '7천2백5십만원', '2.4억원'
+_AMOUNT = re.compile(rf"{_N}\s*[억천백십만]+(?:\s*(?:{_N})?\s*[억천백십만]+)*(?:\s*{_N}(?=\s*원))?\s*원?|{_N}\s*원")
+_AMOUNT_TOKEN = re.compile(rf"{_N}|[억천백십만]")
+_SMALL_UNIT = {"천": 1_000, "백": 100, "십": 10}
+_BIG_UNIT = {"억": 100_000_000, "만": 10_000}
 _PCT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 _FRAC_SLASH = re.compile(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)")
 _FRAC_KO = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(천만|백만|만|천)?\s*분의\s*(\d[\d,]*)")
 _KO_UNIT = {"천만": 10_000_000, "백만": 1_000_000, "만": 10_000, "천": 1_000, None: 1}
-_UNIT = {"천만": 10_000_000, "백만": 1_000_000, "만": 10_000}
 
 
 def _num(text: str) -> float:
     return float(text.replace(",", ""))
+
+
+def _amounts(span: str) -> list[float]:
+    """'1억 3,500만 원' → [135000000]. 큰 단위(억·만)가 작아지지 않고 다시 나오면 다른 금액으로 본다('8만 8만원')."""
+    out: list[float] = []
+    total = block = 0.0
+    num: float | None = None
+    small_seen = False                      # 천·백·십을 읽었는지('0천만'의 0을 숫자 생략으로 보지 않게)
+    last_big = float("inf")
+    for tok in _AMOUNT_TOKEN.findall(span):
+        if tok[0].isdigit():
+            num = _num(tok)
+        elif tok in _SMALL_UNIT:
+            block += (1 if num is None else num) * _SMALL_UNIT[tok]
+            num, small_seen = None, True
+        else:
+            big = _BIG_UNIT[tok]
+            if big >= last_big:
+                out.append(total)
+                total = 0.0
+            base = 1 if num is None and not small_seen else block + (num or 0)   # '만'만 있으면 1만, '0만'은 0
+            total += base * big
+            block, num, last_big, small_seen = 0.0, None, big, False
+    out.append(total + block + (num or 0))
+    return out
 
 
 def extract_figures(text: str) -> dict[str, str]:
@@ -94,9 +156,13 @@ def extract_figures(text: str) -> dict[str, str]:
     # 분수는 금액보다 먼저: '10만 분의 22'를 10만 원으로 오해하지 않게
     take(_FRAC_KO, lambda m: f"ratio:{_num(m.group(3)):g}/{round(_num(m.group(1)) * _KO_UNIT[m.group(2)])}")
     take(_FRAC_SLASH, lambda m: f"ratio:{_num(m.group(1)):g}/{round(_num(m.group(2)))}")
-    take(_EOK, lambda m: f"won:{round(_num(m.group(1)) * 1e8 + int(m.group(2) or 0) * 1e7 + _num(m.group(3) or '0') * 1e4)}")
-    take(_MAN, lambda m: f"won:{round(_num(m.group(1)) * _UNIT[m.group(2)])}")
-    take(_WON, lambda m: f"won:{round(_num(m.group(1)))}")
+    for m in _AMOUNT.finditer(text):
+        shown = m.group(0).strip()
+        # '3천 명'처럼 억·만·원이 없는 덩어리는 금액으로 보지 않는다
+        if any(u in shown for u in "억만원"):
+            for value in _amounts(shown):
+                found.setdefault(f"won:{round(value)}", shown)
+    text = _AMOUNT.sub(" ", text)
     take(_PCT, lambda m: f"pct:{_num(m.group(1)):g}")
     return found
 
@@ -332,14 +398,25 @@ def check_content(
     if relayed:
         warnings.append("AI가 옮겨 적은 자료(원문 대조 권장): " + ", ".join(relayed))
 
-    # 금액·비율이 자료에 있는지 대조. 표기 차이로 틀리게 걸릴 수 있어 경고로 남기고 사람이 확인한다.
-    # 쇼츠 내레이션은 숫자를 한글로 풀어 쓰므로 대조하지 않는다.
-    source_figures = extract_figures("\n".join(s.text for s in sources))
-    blog_text = "\n".join(t for t in texts if t not in {sc.narration for sc in c.shorts.scenes})
-    missing = [shown for key, shown in extract_figures(blog_text).items() if key not in source_figures]
+    missing = missing_figures(c, sources)
     if missing:
         warnings.append("자료에서 못 찾은 숫자(확인 필요): " + ", ".join(missing))
     return problems, warnings
+
+
+# 단위가 바로 붙지 않은 맨숫자(표의 '(단위: 원)' 아래 숫자). '30만원'의 30, '2026년'의 2026은 빼다.
+_BARE_NUMBER = re.compile(rf"(?<![\d.,\-/:]){_N}(?![\d.,\-/:]|\s*[억천백십만원%세년월일개명인회건차호분초시])")
+
+
+def missing_figures(c: MasterContent, sources: Sequence[Source]) -> list[str]:
+    """블로그 글의 금액·비율 중 자료에서 못 찾은 것(원래 표기). 쇼츠 내레이션은 숫자를 풀어 쓰므로 빼고 본다.
+    자료의 표는 '(단위: 원)' 아래 숫자만 늘어놓는 일이 많아, 자료 쪽은 맨숫자도 금액 후보로 인정한다."""
+    source_text = "\n".join(s.text for s in sources)
+    source_figures = set(extract_figures(source_text))
+    source_figures |= {f"won:{round(_num(m))}" for m in _BARE_NUMBER.findall(source_text) if _num(m) >= 100}
+    narrations = {sc.narration for sc in c.shorts.scenes}
+    blog_text = "\n".join(t for t in _all_texts(c) if t not in narrations)
+    return [shown for key, shown in extract_figures(blog_text).items() if key not in source_figures]
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -475,8 +552,8 @@ class ContentGenerator:
                 if problems and all(p.startswith(NARRATION_PROBLEM) for p in problems):
                     content, problems, warnings = self._repair_shorts(content, sources, target_seconds)
                 if not problems:
-                    content, card_warnings = tidy_shorts_cards(content)
-                    return GenerationResult(content, model, round_no, warnings + card_warnings)
+                    content, card_fixes = tidy_shorts_cards(content)
+                    return GenerationResult(content, model, round_no, warnings, card_fixes)
                 last_problems = problems_for_next = list(problems)
                 if not any(p.startswith(BODY_SHORT_PROBLEM) for p in problems):
                     # 다른 곳을 고치다가 본문을 줄여 다시 불합격하는 일을 막는다(불합격 이유 기록에는 넣지 않음)
@@ -487,6 +564,61 @@ class ContentGenerator:
             log.info("검사 불합격(%s회차): %s", round_no, last_problems)
             feedback = "\n".join(f"- {p}" for p in problems_for_next)
         raise GenerationError("검사를 통과하지 못했습니다: " + " / ".join(last_problems))
+
+    def review(self, topic: str, sources: Sequence[Source], target_seconds: int,
+               result: GenerationResult) -> GenerationResult:
+        """발행 전 자동 검토: AI가 글을 자료와 다시 대조해 고친다. 사람에게는 고친 것 요약과,
+        끝내 판단하지 못한 것만 넘긴다. 검토 결과가 검사를 통과하지 못하면 처음 글을 그대로 쓴다."""
+        original = result.content
+        _, before = check_content(original, sources, target_seconds)
+        fixes = list(result.fixes)
+        notes: list[str] = []
+        content = original
+        try:
+            raw, _model = self._call_with_retry(
+                build_review_prompt(topic, sources, original.model_dump_json(), before),
+                models=self.blog_models, schema=ReviewOutcome, system=REVIEW_SYSTEM_INSTRUCTION)
+            outcome = ReviewOutcome.model_validate_json(raw)
+        except Exception as exc:  # noqa: BLE001 - 검토는 덧붙이는 단계라 실패해도 처음 글로 진행
+            log.warning("발행 전 자동 검토 실패(처음 글 유지): %s: %s", exc.__class__.__name__, exc)
+            notes.append("자동 검토를 하지 못했습니다(모델 오류). 숫자·표를 직접 한 번 봐 주세요.")
+        else:
+            try:
+                candidate, why = self._accept_review(original, outcome, sources, target_seconds)
+            except Exception as exc:  # noqa: BLE001 - 검토 결과 확인 중 오류도 처음 글로 진행
+                candidate, why = None, [f"{exc.__class__.__name__}: {exc}"]
+            if candidate is None:
+                log.warning("자동 검토 결과 불합격(처음 글 유지): %s", why)
+                notes.append("자동 검토 결과가 검사를 통과하지 못해 처음 글을 그대로 두었습니다. 숫자·표를 직접 한 번 봐 주세요.")
+            else:
+                content = candidate
+                fixes += [f.strip() for f in outcome.fixes if f.strip()][:6]
+                notes += [f"자동 검토가 판단하지 못한 것: {u.strip()}" for u in outcome.unresolved if u.strip()]
+        trimmed_content, trimmed = trim_takeaways(content)
+        if trimmed and check_content(trimmed_content, sources, target_seconds)[0]:
+            trimmed = []          # 요약 줄을 빼면 분량 검사에 걸리면 그대로 둔다(경고로 남음)
+        else:
+            content = trimmed_content
+        content, card_fixes = tidy_shorts_cards(content)
+        _, after = check_content(content, sources, target_seconds)
+        warnings = [w for w in after if needs_person(w)] + notes
+        return GenerationResult(content, result.model, result.attempts, warnings, fixes + trimmed + card_fixes)
+
+    def _accept_review(self, original: MasterContent, outcome: ReviewOutcome, sources: Sequence[Source],
+                       target_seconds: int) -> tuple[MasterContent | None, list[str]]:
+        """검토 결과를 쓸 수 있으면 (글, []), 아니면 (None, 이유)."""
+        candidate = outcome.content.model_copy(update={"slug": original.slug})
+        problems, _ = check_content(candidate, sources, target_seconds)
+        if problems and all(p.startswith(NARRATION_PROBLEM) for p in problems):
+            # 대본 길이만 틀어졌으면 고친 글을 기준으로 대본 길이만 다시 맞춘다
+            # (처음 대본으로 되돌리면 검토에서 바로잡은 숫자가 대본에서 다시 틀어질 수 있음)
+            candidate, problems, _ = self._repair_shorts(candidate, sources, target_seconds)
+        if problems:
+            return None, problems[:2]
+        added = len(missing_figures(candidate, sources)) - len(missing_figures(original, sources))
+        if added > 0:
+            return None, [f"자료에 없는 숫자가 {added}개 늘어남"]
+        return candidate, []
 
     def choose_category(self, title: str, summary: str, tags: Sequence[str],
                         options: Sequence[tuple[str, str, str]]) -> str:

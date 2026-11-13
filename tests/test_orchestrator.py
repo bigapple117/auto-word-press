@@ -38,6 +38,9 @@ class FakeGenerator:
         self.calls += 1
         return GenerationResult(MasterContent.model_validate(good_data()), self.model, 1, ["경고 하나"])
 
+    def review(self, topic, sources, seconds, result):
+        return GenerationResult(result.content, result.model, result.attempts, result.warnings, ["표 하나 고침"])
+
     category = "tax"
 
     def choose_category(self, title, summary, tags, options):
@@ -132,7 +135,8 @@ class FakeTG:
         self.counter = 0
 
     def send_approval_request(self, job_id, title, summary, edit_url, warnings=(), video_path=None, screenshots=(),
-                              category="", file_ids=None):
+                              category="", file_ids=None, fixes=()):
+        self.last_fixes = list(fixes)
         self.last_file_ids = file_ids
         if getattr(self, "fail_request", 0):
             self.fail_request -= 1

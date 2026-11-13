@@ -4,7 +4,7 @@ import pytest
 from google.genai import errors as genai_errors
 
 from src import source_fetcher
-from src.ai_generator import ContentGenerator, GenerationError, ModelBusyError, check_content
+from src.ai_generator import ContentGenerator, GenerationError, GenerationResult, ModelBusyError, check_content
 from src.blog_html import SectionImage, render_blog_html
 from src.content_schema import MasterContent, Shorts
 from src.source_fetcher import Source, SourceError, fetch_source, html_to_text
@@ -879,3 +879,88 @@ def test_choose_category_rejects_unknown_or_empty_list():
         gen.choose_category("t", "s", [], CATS)
     with pytest.raises(GenerationError):
         make_gen([])[0].choose_category("t", "s", [], [])
+
+
+# ---------- 한글 단위 금액 읽기 · 발행 전 자동 검토 ----------
+
+def test_korean_compound_amounts_read_as_one_value():
+    from src.ai_generator import extract_figures
+    cases = {"34만 9,700원": 349_700, "1억 3,500만 원": 135_000_000, "1억3천5백만원": 135_000_000,
+             "7천2백5십만원": 72_500_000, "152만 5,000원": 1_525_000, "2.4억원": 240_000_000}
+    for text, value in cases.items():
+        assert set(extract_figures(text)) == {f"won:{value}"}, text
+    assert set(extract_figures("8만 8만원")) == {"won:80000"}          # 같은 단위가 다시 나오면 다른 금액
+    assert set(extract_figures("0만원")) == {"won:0"}                  # 명시한 0을 1로 보지 않음
+    assert set(extract_figures("0천만원")) == {"won:0"} and set(extract_figures("천만 원")) == set()
+    assert extract_figures("3천 명") == {}
+
+
+def test_bare_numbers_in_source_tables_count_but_not_unit_numbers():
+    from src.ai_generator import missing_figures
+    srcs = [Source("S1", "https://a.go.kr", "t", "(단위: 원)\n2인\n6,299,000\n229,357\n지원금 30만원, 2026년, 공고 2025-11-13, 쪽 45")]
+    data = good_data()
+    data["intro"].append(P("2인 가구는 6,299,000원, 보험료는 229,357원입니다. 잘못 쓴 30원과 2026원, 2025원, 45원."))
+    missing = missing_figures(model(data), srcs)
+    assert "6,299,000원" not in missing and "229,357원" not in missing
+    assert {"30원", "2026원", "2025원", "45원"} <= set(missing)
+
+
+def _with_takeaways(n):
+    data = good_data()
+    for i, s in enumerate(data["sections"][:n]):
+        s["takeaway"] = f"요약 {i}"
+    return data
+
+
+def test_review_adopts_fixed_content_and_reports_fixes():
+    fixed = good_data()
+    fixed["title"] = "2026년 근로장려금 신청 자격과 기간 정리(검토)"
+    reply = {"fixes": ["표를 자료대로 고침"], "unresolved": [], "content": fixed}
+    gen, client = make_gen([json.dumps(reply)])
+    first = GenerationResult(model(_with_takeaways(4)), "main-model", 1, [], ["카드 뺌"])
+    r = gen.review("근로장려금", SOURCES, 45, first)
+    assert r.content.title.endswith("(검토)") and "카드 뺌" in r.fixes and "표를 자료대로 고침" in r.fixes
+    assert "[검수할 글]" in client.calls[0][1]
+    assert not any("자동 검토" in w for w in r.warnings)
+
+
+def test_review_trims_takeaways_when_model_leaves_four():
+    reply = {"fixes": [], "unresolved": ["자료끼리 금액이 다름"], "content": _with_takeaways(4)}
+    gen, _ = make_gen([json.dumps(reply)])
+    r = gen.review("근로장려금", SOURCES, 45, GenerationResult(model(_with_takeaways(4)), "m", 1, []))
+    assert sum(1 for s in r.content.sections if s.takeaway) == 3
+    assert any("요약 줄" in f for f in r.fixes)
+    assert any("판단하지 못한 것: 자료끼리 금액이 다름" in w for w in r.warnings)
+
+
+def test_review_keeps_original_when_result_fails_checks():
+    broken = good_data()
+    broken["sections"] = broken["sections"][:2]                       # 소제목 개수 불합격
+    reply = {"fixes": ["무언가 고침"], "unresolved": [], "content": broken}
+    gen, _ = make_gen([json.dumps(reply)])
+    original = model(good_data())
+    r = gen.review("근로장려금", SOURCES, 45, GenerationResult(original, "m", 1, []))
+    assert r.content == original and "무언가 고침" not in r.fixes
+    assert any("처음 글을 그대로" in w for w in r.warnings)
+
+
+def test_review_keeps_original_when_new_unsourced_figure_appears():
+    invented = good_data()
+    invented["intro"].append(P("최대 777만 원까지 받습니다."))
+    gen, _ = make_gen([json.dumps({"fixes": [], "unresolved": [], "content": invented})])
+    original = model(good_data())
+    assert gen.review("근로장려금", SOURCES, 45, GenerationResult(original, "m", 1, [])).content == original
+
+
+def test_review_model_error_keeps_original_and_asks_person():
+    gen, _ = make_gen([api_error(400)])
+    original = model(good_data())
+    r = gen.review("근로장려금", SOURCES, 45, GenerationResult(original, "m", 1, []))
+    assert r.content == original and any("자동 검토를 하지 못했습니다" in w for w in r.warnings)
+
+
+def test_style_only_warnings_are_hidden_after_review():
+    from src.ai_generator import needs_person
+    assert not needs_person("소제목 1 문단이 조금 깁니다(260자).")
+    assert not needs_person("자료로 확인 안 된 내용: 지자체 추가 지원")
+    assert needs_person("자료에서 못 찾은 숫자(확인 필요): 500만 원")

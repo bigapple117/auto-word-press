@@ -111,7 +111,8 @@ class Orchestrator:
         # 승인 요청은 매번 새로 보낸다(재시작 후 다시 보내도 새 요청 번호만 유효)
         draft = cp["draft"]
         approval = request_approval(self.svc, job_id, content, self.approval_warnings(cp, content, post_id),
-                                    post_id, video_path, category=draft.get("category", ""))
+                                    post_id, video_path, category=draft.get("category", ""),
+                                    fixes=cp["content"].get("fixes", []))
         db.save_checkpoint(self.conn, job_id, "approval", approval)
         db.set_status(self.conn, job_id, "awaiting_approval")
         log.info("작업 %s번 승인 대기(글 %s번)", job_id, post_id)
@@ -318,7 +319,8 @@ class Orchestrator:
         approval = request_approval(self.svc, job["id"], content, self.approval_warnings(cp, content, post_id),
                                     post_id, video_path, category=cp["draft"].get("category", ""),
                                     screenshots=[saved] if saved.exists() else None,
-                                    file_ids=old.get("file_ids") or {})
+                                    file_ids=old.get("file_ids") or {},
+                                    fixes=cp["content"].get("fixes", []))
         try:
             db.save_checkpoint(self.conn, job["id"], "approval", approval)
         except Exception:

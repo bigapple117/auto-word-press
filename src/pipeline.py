@@ -93,6 +93,8 @@ def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
         raise PipelineError("읽을 수 있는 공식 자료를 찾지 못했습니다: " + " / ".join(errors[:3]))
     result = svc.generator.generate(topic, sources, target_seconds,
                                     news=[(n.published[5:16], n.title) for n in news])
+    # 발행 전 자동 검토: 자료와 다시 대조해 고치고, 사람에게는 끝내 판단 못 한 것만 넘긴다
+    result = svc.generator.review(topic, sources, target_seconds, result)
     warnings = list(result.warnings)
     fallback = result.model != svc.settings.gemini_model
     if fallback:
@@ -100,6 +102,7 @@ def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
     return {
         "content": json.loads(result.content.model_dump_json()),
         "warnings": warnings,
+        "fixes": list(result.fixes),
         "fallback_model": fallback,
         "source_errors": errors,
         "model": result.model,
@@ -213,7 +216,8 @@ def take_screenshot(post_id: int, out_dir: Path) -> list[Path]:
 
 def request_approval(svc: Services, job_id: int, content: MasterContent, warnings: Sequence[str],
                      post_id: int, video_path: Path | None, category: str = "",
-                     screenshots: Sequence[Path] | None = None, file_ids: dict | None = None) -> dict:
+                     screenshots: Sequence[Path] | None = None, file_ids: dict | None = None,
+                     fixes: Sequence[str] = ()) -> dict:
     """승인 요청을 보낸다. screenshots를 주면 새로 찍지 않고 그 파일을 쓴다(다시 보내기를 빠르게).
     file_ids: 전에 올린 파일의 텔레그램 번호(있으면 다시 올리지 않음). 돌려주는 값에 새 번호까지 담는다."""
     shots: list[Path] = list(screenshots or [])
@@ -226,5 +230,5 @@ def request_approval(svc: Services, job_id: int, content: MasterContent, warning
     edit_url = f"{svc.settings.wp_base_url}/wp-admin/post.php?post={int(post_id)}&action=edit"
     req = svc.telegram.send_approval_request(job_id, content.title, content.meta_description, edit_url,
                                              warnings=list(warnings), video_path=video_path, screenshots=shots,
-                                             category=category, file_ids=file_ids)
+                                             category=category, file_ids=file_ids, fixes=list(fixes))
     return {"nonce": req.nonce, "message_id": req.message_id, "file_ids": dict(req.file_ids or {})}
