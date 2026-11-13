@@ -259,6 +259,13 @@ class Orchestrator:
     def awaiting_jobs(self) -> list[dict[str, Any]]:
         return sorted(db.list_jobs(self.conn, "awaiting_approval", limit=-1), key=lambda j: j["id"])   # -1: 개수 제한 없음
 
+    @staticmethod
+    def waiting_line(jobs: list[dict[str, Any]]) -> str:
+        """남은 승인 대기 글 번호를 한 줄로(어디까지 발행했는지 한눈에 보이게)."""
+        ids = [str(j["id"]) for j in jobs]
+        shown = ", ".join(ids[:15]) + (" …" if len(ids) > 15 else "")
+        return f"남은 승인 대기 {len(ids)}개: {shown}" if ids else "남은 승인 대기 글 없음"
+
     def next_markup(self, after_job_id: int) -> dict | None:
         """승인 대기 글이 남아 있으면 [다음 승인 대기 글 보기] 버튼, 없으면 None."""
         remaining = len(self.awaiting_jobs())
@@ -267,9 +274,10 @@ class Orchestrator:
     def offer_next(self, after_job_id: int, text: str) -> None:
         """다음 글로 넘어가는 버튼을 맨 아래에 보낸다(승인 대기 글이 없으면 보내지 않음). 실패해도 무시."""
         try:
+            jobs = self.awaiting_jobs()
             markup = self.next_markup(after_job_id)
             if markup:
-                self.svc.telegram.send_text(text, reply_markup=markup)
+                self.svc.telegram.send_text(f"{text}\n{self.waiting_line(jobs)}", reply_markup=markup)
         except Exception as exc:  # noqa: BLE001
             log.warning("다음 글 버튼 전송 실패: %s", exc)
 
@@ -288,8 +296,8 @@ class Orchestrator:
             message_id = (job["checkpoint"].get("approval") or {}).get("message_id")
             if message_id:
                 try:
-                    tg.send_text(f"[작업 {job['id']}] {title}\n↑ 위 인용을 누르면 이 글의 승인 요청으로 이동합니다. "
-                                 f"(승인 대기 {len(jobs)}개)", reply_to=message_id)
+                    tg.send_text(f"[작업 {job['id']}] {title}\n↑ 위 인용을 누르면 이 글의 승인 요청으로 이동합니다.\n"
+                                 f"{self.waiting_line(jobs)}", reply_to=message_id)
                     return f"작업 {job['id']}번으로 가는 메시지를 보냈습니다"
                 except TelegramError as exc:
                     log.warning("작업 %s번 승인 요청에 답장 실패(새로 보냄): %s", job["id"], exc)

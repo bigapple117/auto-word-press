@@ -754,6 +754,7 @@ def test_next_replies_to_original_approval_message_instantly(env):
     note = orch.handle_next(NextAction(a, "cb", 9))
     assert note == f"작업 {b}번으로 가는 메시지를 보냈습니다"
     assert svc.telegram.replies[-1] == b_req.message_id and f"[작업 {b}]" in svc.telegram.texts[-1]
+    assert f"남은 승인 대기 3개: {a}, {b}, {c}" in svc.telegram.texts[-1]   # 어디까지 했는지 보이게
     assert len(svc.telegram.requests) == sent_before                      # 새로 보내지 않음
     assert db.get_job(conn, b)["checkpoint"]["approval"]["nonce"] == b_req.nonce   # 원래 버튼 그대로 유효
     assert orch.handle_decision(decision(b, "publish", b_req.nonce)) == "발행했습니다"
