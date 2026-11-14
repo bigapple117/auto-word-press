@@ -112,6 +112,7 @@ add_action('wp_head', function () {
             '@context' => 'https://schema.org',
             '@type' => 'WebSite',
             'name' => $site_name,
+            'alternateName' => 'jalcheck',
             'url' => $home,
             'description' => $desc,
             'inLanguage' => 'ko-KR',
