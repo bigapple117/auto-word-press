@@ -500,7 +500,7 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
         threading.Thread(target=weekly_topics, name="topic-weekly", daemon=True).start()
 
         def daily_publish() -> None:
-            """하루 1편 발행 안전장치(저녁 7시 알림, 밤 10시 자동 발행). 실패하면 5분 뒤 다시 확인."""
+            """매일 오전 8시 가장 오래된 승인 대기 글 자동 발행. 실패하면 1분 뒤 다시 확인."""
             guard = DailyGuard(Orchestrator(db.connect(settings.db_path), services),
                                settings.data_dir / "daily_guard.json")
             while not stop.is_set():          # 켜지자마자 한 번 확인(자정 직전 재시작에도 놓치지 않게)

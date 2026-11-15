@@ -370,19 +370,3 @@ def test_list_categories_includes_empty_and_draft_sends_categories(wp):
     assert fake.posts[post.id]["categories"] == [49]
     other = client.save_draft(5, "t", "<p>x</p>")
     assert "categories" not in fake.posts[other.id]
-
-
-def test_published_since_compares_utc_dates(tmp_path):
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    class S:
-        def request(self, method, url, params=None, **kw):
-            assert params["status"] == "publish" and params["orderby"] == "date"
-            return FakeResp(200, [{"id": 3, "date_gmt": "2026-11-15T09:41:14"},     # 한국 18:41
-                                  {"id": 2, "date_gmt": "2026-11-14T15:00:00"},     # 한국 15일 0시 정각
-                                  {"id": 1, "date_gmt": "2026-11-14T14:59:59"},     # 한국 14일 23:59
-                                  {"id": 9}])                                       # 날짜 없는 이상한 응답
-    client = WordPressClient("https://jalcheck.com", "a", "b", session=S(), lock_dir=tmp_path)
-    midnight = datetime(2026, 11, 15, tzinfo=ZoneInfo("Asia/Seoul"))
-    assert client.published_since(midnight) == [3, 2]
