@@ -13,6 +13,7 @@ import mimetypes
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
@@ -232,6 +233,20 @@ class WordPressClient:
         if p.get("status") == "trash":
             return None
         return WPPost(p["id"], p["status"], p.get("link", ""))
+
+    def published_since(self, since_utc: datetime) -> list[int]:
+        """since_utc 이후 발행된 글 번호(최근 20개 안에서). 관리자 화면에서 직접 올린 글도 포함."""
+        data = self._request("GET", "/posts", params={"status": "publish", "orderby": "date", "order": "desc",
+                                                      "per_page": 20, "_fields": "id,date_gmt"})
+        since = since_utc.astimezone(timezone.utc).replace(tzinfo=None)   # date_gmt는 시간대 표시 없는 UTC
+        found = []
+        for p in data:
+            try:
+                if datetime.fromisoformat(p["date_gmt"]) >= since:
+                    found.append(int(p["id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return found
 
     def get_post_content(self, post_id: int) -> str:
         """글 본문 HTML(관리자 화면에서 직접 고친 내용 포함)."""

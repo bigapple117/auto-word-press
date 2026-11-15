@@ -29,7 +29,8 @@ from src.ai_generator import ModelBusyError
 from src.content_schema import MasterContent
 from src.pipeline import (PipelineError, Services, job_dir, make_content, make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
-from src import topic_service
+from src import daily_guard, topic_service
+from src.daily_guard import DailyGuard
 from src.telegram_notifier import Decision, NextAction, TelegramError, TopicAction
 from src.wp_client import WPError
 from src.youtube_kit import MAX_REPORTED_NUMBERS, build_upload_kit, numbers_missing_from_post
@@ -497,6 +498,21 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
                     log.exception("주간 주제 후보 확인 오류")
 
         threading.Thread(target=weekly_topics, name="topic-weekly", daemon=True).start()
+
+        def daily_publish() -> None:
+            """하루 1편 발행 안전장치(저녁 7시 알림, 밤 10시 자동 발행). 실패하면 5분 뒤 다시 확인."""
+            guard = DailyGuard(Orchestrator(db.connect(settings.db_path), services),
+                               settings.data_dir / "daily_guard.json")
+            while not stop.is_set():          # 켜지자마자 한 번 확인(자정 직전 재시작에도 놓치지 않게)
+                try:
+                    note = guard.run_if_due()
+                    if note:
+                        log.info("오늘의 발행: %s", note)
+                except Exception:  # noqa: BLE001
+                    log.exception("오늘의 발행 확인 오류")
+                stop.wait(daily_guard.CHECK_SECONDS)
+
+        threading.Thread(target=daily_publish, name="daily-publish", daemon=True).start()
         worker = Orchestrator(main_conn, services)
         log.info("실행기 시작")
         try:
