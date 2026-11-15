@@ -24,6 +24,13 @@ WEEKLY_HOUR = 9                   # 한국 시간 월요일 이 시각부터 그
 WEEKLY_MAX_TRIES = 2              # 실패하면 다음 날 한 번 더
 RETRY_AFTER = timedelta(hours=20)
 CHECK_SECONDS = 600               # 실행기가 10분마다 확인
+# 자동 등록(2026-11-15 사용자 결정): 글쓰기·승인 대기 글이 AUTO_TARGET편보다 적으면 하루 한 번 채운다.
+AUTO_HOUR = 9                     # 한국 시간 이 시각 이후(아침 8시 자동 발행 뒤)
+AUTO_TARGET = 5                   # 대기 글을 이만큼 유지
+AUTO_MAX_PER_DAY = 3              # 하루 자동 등록 상한
+AUTO_MAX_TRIES = 2                # 찾기가 실패하면 그날 한 번 더
+AUTO_RETRY_AFTER = timedelta(hours=1)
+PENDING = ("queued", "generating", "tts", "media", "rendering", "awaiting_approval")
 HEADERS = {"weekly": "이번 주 블로그 주제 후보", "more": "새 블로그 주제 후보", "manual": "블로그 주제 후보"}
 
 
@@ -119,6 +126,25 @@ def _job_for_same_topic(store: sqlite3.Connection, jobs_conn: sqlite3.Connection
     return int(row["id"])
 
 
+def _register_candidate(store: sqlite3.Connection, jobs_conn: sqlite3.Connection, cand: dict[str, Any],
+                        now: datetime | None) -> tuple[int | None, bool, str]:
+    """후보 하나를 글쓰기 대기열에 넣는다(버튼·자동 등록 공용). (작업 번호, 이미 있었는지, 못 넣은 이유)."""
+    if cand["kind"] == "update":
+        return None, False, "고치기 후보는 등록 대상이 아닙니다"
+    ref = f"topic:{cand['id']}"
+    existing = jobs_conn.execute("SELECT id FROM jobs WHERE source = 'web' AND source_ref = ?",
+                                 (ref,)).fetchone()
+    if existing is None:
+        same = _job_for_same_topic(store, jobs_conn, cand)   # 다른 메시지에서 같은 주제를 이미 고름
+        if same is not None:
+            return None, False, f"같은 주제를 이미 등록했습니다(작업 {same}번)"
+        if topic_store.is_expired(cand, now):
+            return None, False, "기한(7일)이 지난 후보입니다. [새 후보 더 받기]를 눌러 주세요"
+    job_id = db.create_job(jobs_conn, cand["topic"], source="web", source_ref=ref)
+    topic_store.mark_chosen(store, cand["id"], job_id, now=now)
+    return job_id, existing is not None, ""
+
+
 def register(deps: TopicDeps, jobs_conn: sqlite3.Connection, a: TopicAction,
              now: datetime | None = None) -> str:
     """[n번 등록]: 후보를 글쓰기 대기열에 넣는다. 두 번 눌러도 한 건."""
@@ -127,24 +153,14 @@ def register(deps: TopicDeps, jobs_conn: sqlite3.Connection, a: TopicAction,
         cand = topic_store.get_candidate(store, a.ref_id)
         if cand is None:
             return "없는 후보입니다"
-        if cand["kind"] == "update":
-            return "고치기 후보는 등록 대상이 아닙니다"
-        ref = f"topic:{cand['id']}"
-        existing = jobs_conn.execute("SELECT id FROM jobs WHERE source = 'web' AND source_ref = ?",
-                                     (ref,)).fetchone()
-        if existing is None:
-            same = _job_for_same_topic(store, jobs_conn, cand)   # 다른 메시지에서 같은 주제를 이미 고름
-            if same is not None:
-                return f"같은 주제를 이미 등록했습니다(작업 {same}번)"
-            if topic_store.is_expired(cand, now):
-                return "기한(7일)이 지난 후보입니다. [새 후보 더 받기]를 눌러 주세요"
-        job_id = db.create_job(jobs_conn, cand["topic"], source="web", source_ref=ref)
-        topic_store.mark_chosen(store, cand["id"], job_id, now=now)
+        job_id, existed, why = _register_candidate(store, jobs_conn, cand, now)
+        if job_id is None:
+            return why
     finally:
         store.close()
     # 이미 '등록됨'으로 바뀐 버튼은 건너뛰고, 지난번 바꾸기가 실패했으면 이번에 바꾼다
     deps.telegram.mark_topic_registered(a.message_id, a.keyboard, a.ref_id, f"등록됨(작업 {job_id})")
-    if existing is not None:
+    if existed:
         return f"이미 등록된 후보입니다(작업 {job_id}번)"
     return f"작업 {job_id}번으로 등록했습니다"
 
@@ -234,3 +250,113 @@ def run_weekly_if_due(deps: TopicDeps, now: datetime | None = None) -> str | Non
         except Exception:  # noqa: BLE001
             log.warning("주간 후보 실패 안내도 보내지 못했습니다")
         return note
+
+
+def auto_due(store: sqlite3.Connection, now: datetime) -> bool:
+    """오늘 자동 등록을 해도 되는가(대기 글 수는 따로 본다). 성공한 회차가 있으면 끝, 실패는 1시간 뒤 1번만 재시도."""
+    if now.astimezone(topic_store.KST).hour < AUTO_HOUR:
+        return False
+    topic_store.fail_stale_running(store, now=now)
+    batches = topic_store.auto_batches_today(store, now)
+    if any(b["status"] != "failed" for b in batches) or len(batches) >= AUTO_MAX_TRIES:
+        return False
+    if batches:
+        last = datetime.fromisoformat(batches[-1]["finished_at"] or batches[-1]["created_at"])
+        return now >= last + AUTO_RETRY_AFTER
+    return True
+
+
+def auto_register_if_due(deps: TopicDeps, now: datetime | None = None) -> str | None:
+    """실행기가 주기적으로 부른다. 대기 글이 넉넉하거나 오늘 이미 했으면 None.
+
+    - 기본 제도 목록에서만 고른다(뉴스에서 새로 찾은 제도·기존 글 고치기는 자동 등록하지 않음).
+    - 등록은 [n번 등록] 버튼과 같은 코드(같은 주제 두 번 등록 방지 포함).
+    - 텔레그램에 무엇을 넣었는지 알린다. 마음에 안 들면 승인 요청 때 [취소].
+    """
+    now = now or datetime.now(timezone.utc)
+    jobs_conn = db.connect(deps.settings.db_path)
+    store = topic_store.connect(deps.settings.data_dir / "topics.sqlite3")
+    try:
+        if not auto_due(store, now):
+            return None
+        pending = _pending(jobs_conn)
+        need = min(AUTO_TARGET - pending, AUTO_MAX_PER_DAY)
+        if need <= 0:
+            return None
+        if not _RUN_LOCK.acquire(blocking=False):
+            return None                                   # 다른 후보 찾기가 도는 중 → 다음 확인 때
+        try:
+            if not auto_due(store, now):                  # 잠금 잡는 사이 바뀌었을 수 있음
+                return None
+            tries = len(topic_store.auto_batches_today(store, now)) + 1
+            batch_id = topic_store.start_batch(store, "auto", now=now)
+            try:
+                return _auto_register(deps, store, jobs_conn, batch_id, need, now)
+            except Exception as exc:  # noqa: BLE001 - 실패는 장부에 남기고 알린다
+                log.exception("주제 자동 등록 회차 %s 실패", batch_id)
+                err = f"{exc.__class__.__name__}: {exc}"
+                if topic_store.get_batch(store, batch_id)["status"] != "running":
+                    # 등록을 시작한 뒤 멈춤: 일부가 이미 들어갔을 수 있어 오늘은 다시 돌리지 않는다
+                    topic_store.finish_batch(store, batch_id, None, now=now, note=f"등록 중 오류: {err}"[:500])
+                    _send(deps, f"[주제 자동 등록] 등록 도중 오류가 났습니다({exc.__class__.__name__}). "
+                                "일부만 들어갔을 수 있어 오늘은 더 시도하지 않습니다.")
+                    return f"등록 중 오류: {exc.__class__.__name__}"
+                topic_store.fail_batch(store, batch_id, err, now=now)
+                note = f"[주제 자동 등록] 실패({exc.__class__.__name__})"
+                if tries >= AUTO_MAX_TRIES:
+                    _send(deps, f"{note}. 오늘은 더 시도하지 않습니다. 대기 글이 {pending}편이니 "
+                                f"월요일 후보 메시지에서 직접 등록해 주세요.")
+                return note
+        finally:
+            _RUN_LOCK.release()
+    finally:
+        store.close()
+        jobs_conn.close()
+
+
+def _send(deps: TopicDeps, text: str) -> None:
+    try:
+        deps.telegram.send_text(text)
+    except Exception:  # noqa: BLE001
+        log.warning("자동 등록 안내를 보내지 못했습니다")
+
+
+def _pending(jobs_conn: sqlite3.Connection) -> int:
+    return sum(j["status"] in PENDING for j in _all_jobs(jobs_conn))
+
+
+def _auto_register(deps: TopicDeps, store: sqlite3.Connection, jobs_conn: sqlite3.Connection,
+                   batch_id: int, need: int, now: datetime) -> str:
+    seeds = load_seeds()
+    written = written_from_jobs(_all_jobs(jobs_conn), seeds)
+    writer = TopicWriter(deps.generator) if deps.generator is not None else None
+    # 쉬는 후보(보냈는데 안 고른 것)도 본다: 사람이 안 눌렀다고 빼면 좋은 주제가 3주씩 빠지고 목록이 금방 바닥난다.
+    # 자동으로 넣은 뒤 월요일 메시지에서 같은 주제를 누르면 _job_for_same_topic이 막는다.
+    result = deps.finder(deps.search, writer, seeds, written, today=now.astimezone(topic_store.KST).date(),
+                         skip_keys=(), discover=False)
+    picks = [c for c in result.candidates if c.kind != "update" and not c.seed.discovered]
+    pending = _pending(jobs_conn)                     # 찾는 1~2분 사이 버튼으로 등록했을 수 있어 다시 셈
+    need = min(need, AUTO_TARGET - pending)
+    ids = topic_store.add_candidates(store, batch_id, picks, now=now) if need > 0 else []
+    topic_store.mark_sending(store, batch_id)        # 여기부터는 작업이 생기므로 같은 날 다시 돌리지 않는다
+    done: list[str] = []
+    for cid in ids:
+        if len(done) >= need:
+            break
+        cand = topic_store.get_candidate(store, cid)
+        job_id, _, why = _register_candidate(store, jobs_conn, cand, now)
+        if job_id is None:
+            log.info("자동 등록 건너뜀(후보 %s): %s", cid, why)
+            continue
+        done.append(f"- 작업 {job_id}번: {cand['topic']}")
+    topic_store.finish_batch(store, batch_id, None, now=now, note=f"자동 등록 {len(done)}편")
+    if done:
+        _send(deps, f"[주제 자동 등록] 대기 글이 {pending}편으로 줄어 {len(done)}편을 글쓰기 대기열에 넣었습니다.\n"
+                    + "\n".join(done)
+                    + "\n주제가 마음에 안 들면 승인 요청이 왔을 때 [취소]를 눌러 주세요.")
+        return f"자동 등록 {len(done)}편"
+    if need <= 0:
+        return "그사이 대기 글이 채워져 등록 안 함"
+    _send(deps, f"[주제 자동 등록] 대기 글이 {pending}편인데 자동으로 넣을 만한 주제를 찾지 못했습니다. "
+                "월요일 후보 메시지에서 직접 등록하거나 [새 후보 더 받기]를 눌러 주세요.")
+    return "자동 등록할 후보 없음"

@@ -528,15 +528,17 @@ def find_candidates(
     max_calls: int = 400,
     seconds: float = 300,
     clock: Callable[[], float] = time.monotonic,
+    discover: bool = True,
 ) -> FindResult:
-    """주제 후보를 고른다. skip_keys: 최근에 보냈지만 안 고른 후보 key(잠시 쉼)."""
+    """주제 후보를 고른다. skip_keys: 최근에 보냈지만 안 고른 후보 key(잠시 쉼).
+    discover=False: 뉴스에서 새 제도 찾기를 건너뛰고 기본 목록만 본다(자동 등록용, 주제 문장 다듬기는 함)."""
     today = today or date.today()
     budget = _Budget(max_calls, seconds, clock)
     notes: list[str] = []
     skip = set(skip_keys)
 
     pool = list(seeds)
-    if writer is not None:
+    if writer is not None and discover:
         titles = recent_headlines(search, today, budget)
         try:
             found = writer.discover(titles, seeds)

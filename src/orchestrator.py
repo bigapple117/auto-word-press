@@ -487,7 +487,7 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
         listener.start()
 
         def weekly_topics() -> None:
-            """주 1회 블로그 주제 후보(월요일 오전, 한국 시간). 실패해도 글 작성·승인 버튼과 무관."""
+            """주 1회 블로그 주제 후보(월요일 오전, 한국 시간)와 주제 자동 등록. 실패해도 글 작성·승인 버튼과 무관."""
             deps = topic_service.TopicDeps(settings, services.search, services.generator, services.telegram)
             while not stop.wait(topic_service.CHECK_SECONDS):
                 try:
@@ -496,6 +496,12 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
                         log.info("주간 주제 후보: %s", note)
                 except Exception:  # noqa: BLE001
                     log.exception("주간 주제 후보 확인 오류")
+                try:   # 대기 글이 줄면 하루 한 번 자동 등록(오전 9시 이후)
+                    note = topic_service.auto_register_if_due(deps)
+                    if note:
+                        log.info("주제 자동 등록: %s", note)
+                except Exception:  # noqa: BLE001
+                    log.exception("주제 자동 등록 확인 오류")
 
         threading.Thread(target=weekly_topics, name="topic-weekly", daemon=True).start()
 

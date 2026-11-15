@@ -45,8 +45,8 @@ def env(tmp_path):
                             written=Written("에너지바우처", 2026, 6, 70, date(2026, 11, 1)))]}
     calls = []
 
-    def finder(search, writer, seeds, written, today=None, skip_keys=()):
-        calls.append({"written": written, "skip": set(skip_keys), "writer": writer})
+    def finder(search, writer, seeds, written, today=None, skip_keys=(), **kw):
+        calls.append({**kw, "written": written, "skip": set(skip_keys), "writer": writer})
         return FindResult(list(found["cands"]), ["메모"], 10)
 
     deps = TopicDeps(settings, search=None, generator=None, telegram=tg, finder=finder)

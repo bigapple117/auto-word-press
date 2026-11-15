@@ -21,12 +21,13 @@ KST = ZoneInfo("Asia/Seoul")
 EXPIRE_DAYS = 7
 SKIP_DAYS = 21                 # 보냈는데 안 고른 후보는 이 기간 쉼
 MORE_PER_DAY = 3
-BATCH_KINDS = ("weekly", "more", "manual")
+BATCH_KINDS = ("weekly", "more", "manual", "auto")   # auto: 대기 글이 줄면 자동 등록(2026-11-15)
 
-_SCHEMA = """
+_WEEKLY_INDEX = "CREATE UNIQUE INDEX IF NOT EXISTS batches_weekly ON batches (week) WHERE kind = 'weekly' AND status != 'failed'"
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS batches (
     id          INTEGER PRIMARY KEY,
-    kind        TEXT NOT NULL CHECK (kind IN ('weekly', 'more', 'manual')),
+    kind        TEXT NOT NULL CHECK (kind IN ('weekly', 'more', 'manual', 'auto')),
     week        TEXT,                       -- 한국 시간 기준 주차(예: 2026-W45), weekly만
     status      TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'sending', 'sent', 'failed')),
     message_id  INTEGER,
@@ -34,7 +35,7 @@ CREATE TABLE IF NOT EXISTS batches (
     created_at  TEXT NOT NULL,
     finished_at TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS batches_weekly ON batches (week) WHERE kind = 'weekly' AND status != 'failed';
+{_WEEKLY_INDEX};
 CREATE TABLE IF NOT EXISTS candidates (
     id          INTEGER PRIMARY KEY,
     batch_id    INTEGER NOT NULL REFERENCES batches(id),
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     year        INTEGER NOT NULL,
     category    TEXT NOT NULL,
     topic       TEXT NOT NULL CHECK (length(trim(topic)) > 0),
-    info        TEXT NOT NULL DEFAULT '{}', -- 이유·경고·공식 자료 등(보여 주기용)
+    info        TEXT NOT NULL DEFAULT '{{}}', -- 이유·경고·공식 자료 등(보여 주기용)
     created_at  TEXT NOT NULL,
     expires_at  TEXT NOT NULL,
     job_id      INTEGER,
@@ -72,8 +73,32 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
+    _migrate_batch_kinds(conn)
     conn.executescript(_SCHEMA)
     return conn
+
+
+def _migrate_batch_kinds(conn: sqlite3.Connection) -> None:
+    """예전 장부는 회차 종류 제한에 'auto'가 없다. SQLite는 제한을 못 고쳐 표를 새로 만들어 옮긴다(번호 유지)."""
+    def old() -> bool:
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'batches'").fetchone()
+        return row is not None and "'auto'" not in row[0]
+    if not old():
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if old():                                     # 다른 연결이 먼저 옮겼을 수 있음
+            new_table = _SCHEMA.split("CREATE TABLE IF NOT EXISTS batches", 1)[1].split(";", 1)[0]
+            conn.execute("CREATE TABLE batches_new" + new_table)
+            conn.execute("INSERT INTO batches_new (id, kind, week, status, message_id, error, created_at, finished_at) "
+                         "SELECT id, kind, week, status, message_id, error, created_at, finished_at FROM batches")
+            conn.execute("DROP TABLE batches")        # 색인도 함께 지워진다
+            conn.execute("ALTER TABLE batches_new RENAME TO batches")
+            conn.execute(_WEEKLY_INDEX)               # 주 1회 제한 색인도 같은 묶음 안에서 다시 만든다
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def week_of(t: datetime) -> str:
@@ -165,7 +190,7 @@ def recent_skip_keys(conn: sqlite3.Connection, now: datetime | None = None, days
     since = _iso((now or _now()) - timedelta(days=days))
     rows = conn.execute(
         "SELECT c.ckey FROM candidates c JOIN batches b ON b.id = c.batch_id "
-        "WHERE c.created_at >= ? AND c.job_id IS NULL AND b.status = 'sent'", (since,)).fetchall()
+        "WHERE c.created_at >= ? AND c.job_id IS NULL AND b.status = 'sent' AND b.kind != 'auto'", (since,)).fetchall()
     return {r[0] for r in rows}
 
 
@@ -216,6 +241,14 @@ def reserve_more(conn: sqlite3.Connection, limit: int = MORE_PER_DAY, now: datet
 def candidate_ids_for_key(conn: sqlite3.Connection, ckey: str) -> list[int]:
     """같은 주제(제도명:연도:종류)로 보낸 모든 후보 번호(회차 상관없이)."""
     return [int(r[0]) for r in conn.execute("SELECT id FROM candidates WHERE ckey = ? ORDER BY id", (ckey,))]
+
+
+def auto_batches_today(conn: sqlite3.Connection, now: datetime | None = None) -> list[dict[str, Any]]:
+    """오늘(한국 시간) 자동 등록 회차들(실패 포함), 오래된 순."""
+    now = now or _now()
+    start = datetime.combine(now.astimezone(KST).date(), datetime.min.time(), KST)
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM batches WHERE kind = 'auto' AND created_at >= ? ORDER BY id", (_iso(start),))]
 
 
 def weekly_batches(conn: sqlite3.Connection, week: str) -> list[dict[str, Any]]:
