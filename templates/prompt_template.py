@@ -256,3 +256,43 @@ def build_review_prompt(topic: str, sources: Sequence[Source], content_json: str
         "[검수할 글]", content_json,
         "검수 순서대로 고친 전체 글(content)과 보고(fixes, unresolved)를 JSON으로 돌려준다.",
     ])
+
+
+FACT_SYSTEM_INSTRUCTION = """\
+너는 한국 생활 정보 블로그 '잘체크'의 사실 확인 담당이다. 글을 고치지 않고, 글의 사실 문장이 [자료]에
+실제로 적혀 있는지 하나씩 대조해 보고만 한다. 이 글은 사람이 보지 않고 자동 발행될 수 있으므로,
+자료에 없는 내용을 '맞다'고 판정하지 않는 것이 가장 중요하다.
+
+[고를 문장]
+- 대상·자격 조건, 금액·비율·한도, 날짜·기한, 신청 방법·장소·서류, 기관명, 예외 규정을 말하는 문장.
+- '꼼꼼히 확인하세요', '도움이 됩니다'처럼 사실 주장이 없는 안내·권유 문장은 고르지 않는다.
+- 표 한 줄은 한 문장으로 본다. 최대 20개, 중요한 것(대상·금액·기한)부터 고른다.
+
+[판정]
+- supported: [자료] 어딘가에 같은 내용이 적혀 있다. 자료 숫자로 바로 계산되는 값(한도×비율)도 여기에 든다.
+- contradicted: [자료]에 다른 값·다른 조건이 적혀 있다.
+- unsupported: [자료] 어디에도 근거가 없다. 상식이나 기억으로 '맞을 것 같다'는 이유로 supported로 하지 않는다.
+
+[적는 법]
+- sentence: 글에 있는 문장을 한 글자도 바꾸지 않고 그대로 복사한다(표 줄은 칸을 ' | '로 이은 그대로).
+- source_id, evidence: supported·contradicted이면 근거 자료 id와, 그 자료 본문에서 근거 부분을 한 글자도 바꾸지 않고
+  그대로 복사한 짧은 구절(120자 이내). 요약하거나 말을 바꾸면 근거 없음으로 처리된다.
+  계산으로 나온 값이면 계산 결과가 아니라 자료에 적힌 계산 재료(한도, 비율)를 인용한다.
+- note: contradicted이면 자료에는 어떻게 적혀 있는지, unsupported이면 무엇이 자료에 없는지 쉬운 말로 한 줄.
+"""
+
+
+def build_fact_prompt(topic: str, sources: Sequence[Source], article: Sequence[str],
+                      today: date | None = None) -> str:
+    """사실 확인 지시문. 글은 문단·표 줄 단위로 나눠 준다."""
+    today = today or date.today()
+    blocks = "\n\n".join(source_block(s) for s in sources)
+    lines = "\n".join(f"- {t}" for t in article if t.strip())
+    return "\n\n".join([
+        f"오늘 날짜: {today.isoformat()}",
+        f"주제: {topic}",
+        *([LAW_NOTE] if any(s.via == "law" for s in sources) else []),
+        "[자료]", blocks,
+        "[확인할 글 - 문단·표 줄 단위]", lines,
+        "사실 문장마다 판정을 JSON(claims)으로 돌려준다.",
+    ])

@@ -41,6 +41,15 @@ class FakeGenerator:
     def review(self, topic, sources, seconds, result):
         return GenerationResult(result.content, result.model, result.attempts, result.warnings, ["표 하나 고침"])
 
+    hold_topics: set = set()           # 사실 확인에서 근거 못 찾은 문장이 남는 주제(자동 발행 보류)
+
+    def fact_check(self, topic, sources, seconds, result):
+        from src.ai_generator import FactReport
+        hold = topic in self.hold_topics
+        warnings = list(result.warnings) + (["사실 확인: 자료에서 근거를 못 찾음: '문장'"] if hold else [])
+        return (GenerationResult(result.content, result.model, result.attempts, warnings, result.fixes),
+                FactReport(hold=hold, remaining=["문장"] if hold else []))
+
     category = "tax"
 
     def choose_category(self, title, summary, tags, options):

@@ -85,7 +85,7 @@ def main() -> int:
         print(f"작업 {args.job_id}번을 다시 쓰기 대기열에 넣었습니다(예전 사진 {len(removed)}장 삭제, 임시 글 번호 유지)")
     elif args.cmd == "redraft":
         # 글 내용·쇼츠는 그대로 두고 HTML(디자인)만 다시 만들어 같은 임시 글에 반영, 승인 요청은 새로
-        from src.ai_generator import check_content
+        from src.ai_generator import FACT_WARNING, check_content
         from src.content_schema import MasterContent
         from src.pipeline import sources_from
         j = db.get_job(conn, args.job_id)
@@ -97,6 +97,7 @@ def main() -> int:
         _problems, warnings = check_content(content, sources_from(cp["sources"]), j["target_seconds"])
         if cp.get("fallback_model"):
             warnings.insert(0, next(w for w in cp["warnings"] if w.startswith("예비 모델")))
+        warnings += [w for w in cp["warnings"] if w.startswith(FACT_WARNING)]   # 사실 확인 결과는 글이 같으면 그대로
         db.save_checkpoint(conn, args.job_id, "content", {**cp, "warnings": warnings})
         if j["status"] not in ("failed", "canceled"):
             db.set_status(conn, args.job_id, "canceled")

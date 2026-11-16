@@ -11,7 +11,7 @@ import re
 import unicodedata
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Literal, Sequence
 
 from google import genai
 from google.genai import errors as genai_errors
@@ -23,8 +23,8 @@ from src.link_check import check_action_links, home_links_overpromising
 from src.content_schema import (MasterContent, Shorts, paragraph_text, section_paragraphs,
                                 section_texts)
 from src.source_fetcher import Source
-from templates.prompt_template import (REVIEW_SYSTEM_INSTRUCTION, SHORTS_SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION,
-                                      build_prompt, build_review_prompt, build_shorts_repair_prompt,
+from templates.prompt_template import (FACT_SYSTEM_INSTRUCTION, REVIEW_SYSTEM_INSTRUCTION, SHORTS_SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION,
+                                      build_fact_prompt, build_prompt, build_review_prompt, build_shorts_repair_prompt,
                                       narration_budget, BODY_TARGET_CHARS)
 
 log = logging.getLogger(__name__)
@@ -84,6 +84,94 @@ class ReviewOutcome(BaseModel):
     unresolved: list[str] = Field(default_factory=list, description=(
         "자료끼리 다르거나 자료만으로 판단할 수 없는데 글에 남긴 것. 없으면 빈 목록"))
     content: MasterContent
+
+
+class ClaimCheck(BaseModel):
+    sentence: str = Field(description="글의 문장을 그대로 복사")
+    verdict: Literal["supported", "unsupported", "contradicted"]
+    source_id: str = ""
+    evidence: str = Field(default="", description="근거 자료 본문을 그대로 복사한 짧은 구절")
+    note: str = ""
+
+
+class FactCheckOutcome(BaseModel):
+    claims: list[ClaimCheck] = Field(default_factory=list)
+
+
+MAX_FACT_CLAIMS = 20
+MAX_FACT_WARNINGS = 5
+FACT_WARNING = "사실 확인:"          # 이 말로 시작하는 경고가 있으면 아침 자동 발행에서 뺀다
+_FACT_DROP = re.compile(r"[\s'\"‘’“”`·.,|:;()\[\]「」<>-]")
+_QUOTE_GAP = re.compile(r"\.{3,}|…|⋯|(?:\s/\s)")     # AI가 떨어진 구절을 이어 붙일 때 쓰는 표시
+
+
+def _fact_norm(text: str) -> str:
+    """띄어쓰기·따옴표·마침표 차이를 무시하고 비교하려고 지운 글자."""
+    return _FACT_DROP.sub("", unicodedata.normalize("NFKC", text))
+
+
+def _article_units(c: MasterContent) -> list[str]:
+    """사실 확인에 넘길 글 조각(문단·표 줄 단위, 대본 제외, 중복 제거)."""
+    extra = [f"대상: {c.eligibility}" if c.eligibility.strip() else ""] + [l.note or "" for l in c.action_links]
+    return [u for u in dict.fromkeys(extra + [unit for _, unit, _ in _text_units(c)]) if u.strip()]
+
+
+@dataclass
+class FactIssue:
+    sentence: str
+    verdict: str          # unsupported / contradicted
+    note: str
+
+    def line(self) -> str:
+        kind = "자료와 다름" if self.verdict == "contradicted" else "자료에서 근거를 못 찾음"
+        why = f" — {self.note.strip()}" if self.note.strip() else ""
+        return f"{kind}: '{self.sentence.strip()[:80]}'{why[:100]}"
+
+
+def _quoted_in_sources(evidence: str, texts: Any) -> bool:
+    """인용의 낱말(띄어쓰기·줄바꿈·'…'로 나눈 조각)이 모두 같은 자료 한 곳에 있으면 True.
+    AI는 표의 여러 칸, 떨어진 구절을 한 줄로 이어 인용하므로 연속된 글로는 대조하지 않는다.
+    숫자·기관명 같은 낱말이 하나라도 그 자료에 없으면 근거 없음(기억으로 지어낸 인용을 막음)."""
+    words = [_fact_norm(w) for w in re.split(r"\s+", _QUOTE_GAP.sub(" ", evidence))]
+    words = [w for w in words if len(w) >= 2 or w.isdigit()]     # '연 3 회'의 3처럼 숫자는 한 글자도 대조
+    if sum(len(w) for w in words) < 6:
+        return False
+    return any(all(w in t for w in words) for t in texts)
+
+
+def judge_claims(outcome: FactCheckOutcome, sources: Sequence[Source]) -> list[FactIssue]:
+    """AI 판정을 프로그램이 다시 확인한다. '근거 있음'이어도 그 인용이 자료 본문에 그대로 없으면 근거 없음으로 본다
+    (AI가 기억으로 맞다고 하는 것을 막음). 문제 있는 문장만 돌려준다."""
+    texts = {s.id: _fact_norm(s.text) for s in sources}
+    issues: list[FactIssue] = []
+    seen: set[str] = set()
+    for claim in outcome.claims:
+        key = _fact_norm(claim.sentence)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if len(seen) > MAX_FACT_CLAIMS:
+            break
+        if claim.verdict == "supported":
+            if _quoted_in_sources(claim.evidence, texts.values()):
+                continue
+            log.info("사실 확인: 근거 인용이 자료에 없음 — 문장 %r / 인용 %r", claim.sentence[:80], claim.evidence[:160])
+            issues.append(FactIssue(claim.sentence, "unsupported",
+                                    "AI가 근거라고 든 구절이 자료 본문에 그대로 없음"))
+        else:
+            issues.append(FactIssue(claim.sentence, claim.verdict, claim.note))
+    return issues
+
+
+@dataclass
+class FactReport:
+    hold: bool                                   # True면 아침 자동 발행에서 뺀다(사람이 [발행]을 누르면 올라감)
+    remaining: list[str] = field(default_factory=list)   # 사람이 확인할 문장
+    fixed: int = 0                               # 자동으로 고친(글에서 바뀐) 문장 수
+    failed: bool = False                         # 사실 확인 자체를 못 함
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"hold": self.hold, "remaining": list(self.remaining), "fixed": self.fixed, "failed": self.failed}
 
 
 def trim_takeaways(c: MasterContent) -> tuple[MasterContent, list[str]]:
@@ -556,6 +644,9 @@ def missing_figures(c: MasterContent, sources: Sequence[Source], with_calc: bool
     return _unsourced(c, sources, with_calc)[0]
 
 
+CALC_NOTE = "자료의 숫자로 검산 확인:"
+
+
 def calc_check_note(c: MasterContent, sources: Sequence[Source]) -> list[str]:
     """사람에게 보여 줄 검산 결과 한 줄(없으면 빈 목록)."""
     derived = derived_figures(c, sources).values()
@@ -563,7 +654,7 @@ def calc_check_note(c: MasterContent, sources: Sequence[Source]) -> list[str]:
     assumed = [v.split("(")[0] for v in derived if " = " not in v]
     if not calcs:
         return []
-    note = "자료의 숫자로 검산 확인: " + ", ".join(calcs)
+    note = CALC_NOTE + " " + ", ".join(calcs)
     if assumed:
         note += " (예시로 가정한 값: " + ", ".join(assumed) + ")"
     return [note]
@@ -776,6 +867,77 @@ class ContentGenerator:
         warnings = [w for w in after if needs_person(w)] + notes
         return GenerationResult(content, result.model, result.attempts, warnings,
                                 calc_check_note(content, sources) + fixes + trimmed + card_fixes)
+
+    def _fact_issues(self, topic: str, sources: Sequence[Source], units: Sequence[str]) -> list[FactIssue]:
+        raw, _model = self._call_with_retry(build_fact_prompt(topic, sources, units), models=self.blog_models,
+                                            schema=FactCheckOutcome, system=FACT_SYSTEM_INSTRUCTION)
+        return judge_claims(FactCheckOutcome.model_validate_json(raw), sources)
+
+    def fact_check(self, topic: str, sources: Sequence[Source], target_seconds: int,
+                   result: GenerationResult) -> tuple[GenerationResult, FactReport]:
+        """자동 검토 뒤 사실 확인: 사실 문장을 자료와 하나씩 대조하고, 근거 없거나 자료와 다른 문장은
+        한 번 고쳐 보게 한 뒤 고치면서 바뀐 문장만 다시 대조한다. 끝내 남은 문장은 사람에게 넘기고
+        아침 자동 발행에서 뺀다(hold). AI 호출: 대조 1번, 문제 있으면 고치기 1번 + 바뀐 문장 대조 1번.
+        모델 오류로 확인을 못 하면 글 전체를 다시 쓰지 않고 보류로 둔다(사람이 보고 [발행] 가능)."""
+        content = result.content
+        units = _article_units(content)
+        try:
+            issues = self._fact_issues(topic, sources, units)
+        except Exception as exc:  # noqa: BLE001 - 확인을 못 했으면 글은 두고 자동 발행만 막는다
+            log.warning("사실 확인 실패(자동 발행 보류): %s: %s", exc.__class__.__name__, exc)
+            note = f"{FACT_WARNING} 사실 확인을 하지 못했습니다(모델 오류). 직접 보고 [발행]을 눌러 주세요."
+            return (GenerationResult(content, result.model, result.attempts, list(result.warnings) + [note],
+                                     list(result.fixes)), FactReport(hold=True, failed=True))
+        if not issues:
+            return result, FactReport(hold=False)
+        fixes = list(result.fixes)
+        warnings = list(result.warnings)
+        located = _fact_norm("\n".join(units))
+        extra: list[FactIssue] = []           # 고치기·재대조에서 새로 나온 문제
+        failed = False
+        try:
+            problems = [f"사실 확인 결과 {i.line()}. 자료대로 고치거나, 자료에 없으면 빼거나 '담당 기관 확인'으로 바꾼다."
+                        for i in issues]
+            raw, _model = self._call_with_retry(
+                build_review_prompt(topic, sources, content.model_dump_json(), problems),
+                models=self.blog_models, schema=ReviewOutcome, system=REVIEW_SYSTEM_INSTRUCTION)
+            outcome = ReviewOutcome.model_validate_json(raw)
+            candidate, why = self._accept_review(content, outcome, sources, target_seconds)
+        except Exception as exc:  # noqa: BLE001 - 고치기에 실패하면 문장을 그대로 사람에게 넘긴다
+            candidate, why = None, [f"{exc.__class__.__name__}: {exc}"]
+        if candidate is None:
+            log.warning("사실 확인 후 고치기 불합격(글 유지): %s", why)
+        else:
+            candidate, trimmed = trim_takeaways(candidate)
+            candidate, card_fixes = tidy_shorts_cards(candidate)
+            new_units = [u for u in _article_units(candidate) if u not in set(units)]
+            try:                               # 고치면서 바뀐·새로 생긴 문장만 다시 대조(말만 바꿔 넘어가는 것 방지)
+                extra = self._fact_issues(topic, sources, new_units) if new_units else []
+            except Exception as exc:  # noqa: BLE001
+                log.warning("고친 문장 재대조 실패(자동 발행 보류): %s: %s", exc.__class__.__name__, exc)
+                failed = True
+            extra += [FactIssue(u.strip(), "unsupported", "고치는 AI가 자료만으로 판단하지 못함")
+                      for u in outcome.unresolved if u.strip()]
+            before_checks = {w for w in check_content(content, sources, target_seconds)[1] if needs_person(w)}
+            notes = [w for w in warnings if w not in before_checks]
+            after = [w for w in check_content(candidate, sources, target_seconds)[1] if needs_person(w)]
+            content, warnings = candidate, after + notes
+            fixes = ([f for f in fixes if not f.startswith(CALC_NOTE)] + calc_check_note(content, sources)
+                     + [f"사실 확인 후 고침: {f.strip()}" for f in outcome.fixes if f.strip()][:4]
+                     + trimmed + card_fixes)
+        article = _fact_norm("\n".join(_article_units(content)))
+        # 처음 글에서 찾지 못한 문장(AI가 바꿔 옮겨 적음)은 고쳐졌는지 알 수 없으므로 남은 것으로 본다
+        remaining = [i for i in issues if _fact_norm(i.sentence) in article
+                     or _fact_norm(i.sentence) not in located] + extra
+        lines = [i.line() for i in remaining]
+        if failed:
+            lines.append("고친 문장을 다시 대조하지 못했습니다(모델 오류). 고친 부분을 직접 봐 주세요.")
+        shown = [f"{FACT_WARNING} {line}" for line in lines[:MAX_FACT_WARNINGS]]
+        if len(lines) > MAX_FACT_WARNINGS:
+            shown.append(f"{FACT_WARNING} 그 밖에 {len(lines) - MAX_FACT_WARNINGS}개 문장도 근거 확인 필요")
+        report = FactReport(hold=bool(lines), remaining=lines, fixed=len(issues) - (len(remaining) - len(extra)),
+                            failed=failed)
+        return GenerationResult(content, result.model, result.attempts, warnings + shown, fixes), report
 
     def _accept_review(self, original: MasterContent, outcome: ReviewOutcome, sources: Sequence[Source],
                        target_seconds: int) -> tuple[MasterContent | None, list[str]]:

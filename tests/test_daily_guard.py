@@ -148,3 +148,31 @@ def test_rejected_job_is_not_retried_same_day(guard):
     assert g.run_if_due(at(8, 5)) == f"자동 발행: 작업 {b}번"
     assert sum("발행 실패" in t for t in svc.telegram.texts) == fails   # A 실패 알림이 다시 오지 않음
     assert db.get_job(conn, a)["status"] == "awaiting_approval"
+
+
+def test_skips_job_with_unchecked_facts(guard):
+    g, orch, svc, conn = guard
+    svc.generator.hold_topics = {"A"}
+    a, b = awaiting(orch, conn, "A", "B")
+    assert db.get_job(conn, a)["checkpoint"]["content"]["fact_check"]["hold"] is True
+    assert g.run_if_due(at(8, 0)) == f"자동 발행: 작업 {b}번"
+    assert db.get_job(conn, a)["status"] == "awaiting_approval"
+
+
+def test_only_held_jobs_notifies_and_publishes_nothing(guard):
+    g, orch, svc, conn = guard
+    svc.generator.hold_topics = {"A"}
+    (a,) = awaiting(orch, conn, "A")
+    assert g.run_if_due(at(8, 0)) == "사실 확인 보류 글만 있음"
+    assert svc.wp.published == [] and db.get_job(conn, a)["status"] == "awaiting_approval"
+    assert "사실 확인" in svc.telegram.texts[-1] and str(a) in svc.telegram.texts[-1]
+    assert g.run_if_due(at(8, 1)) is None                       # 하루 한 번만 알림
+
+
+def test_rejected_then_only_held_reports_failure_not_hold(guard, monkeypatch):
+    g, orch, svc, conn = guard
+    svc.generator.hold_topics = {"B"}
+    a, b = awaiting(orch, conn, "A", "B")
+    monkeypatch.setattr(orch, "handle_decision", lambda d: "발행에 실패했습니다")
+    assert g.run_if_due(at(8, 0)) == "자동 발행 실패"
+    assert "실패" in svc.telegram.texts[-1] and "사실 확인" not in svc.telegram.texts[-1]

@@ -1062,3 +1062,123 @@ def test_wide_calc_only_inside_sections_and_by_structure():
     data["intro"].pop()
     data["sections"][1]["blocks"].insert(0, para("연 1,000만 원까지입니다."))
     assert "150만 원" not in missing_figures(model(data), srcs)
+
+
+# ---------- 사실 확인 단계 ----------
+
+FACT_SOURCES = [
+    Source("S1", "https://www.nts.go.kr/a", "근로장려금", "부채는 재산에서 빼지 않습니다. 반기신청은 근로소득만 있는 거주자가 할 수 있습니다. " + "자료1 " * 30),
+    Source("S2", "https://www.nts.go.kr/b", "신청자격", "자료2 " * 50),
+]
+
+
+def _claims(*items):
+    return json.dumps({"claims": [dict(zip(("sentence", "verdict", "source_id", "evidence", "note"), i))
+                                  for i in items]})
+
+
+def test_fact_check_passes_when_quotes_are_in_sources():
+    gen, client = make_gen([_claims(("빼지 않습니다.", "supported", "S1", "부채는 재산에서  빼지 않습니다", ""))])
+    first = GenerationResult(model(good_data()), "m", 1, ["경고"], ["고침"])
+    r, report = gen.fact_check("근로장려금", FACT_SOURCES, 45, first)
+    assert report.hold is False and report.remaining == [] and r is first
+    assert len(client.calls) == 1 and "[확인할 글" in client.calls[0][1]
+
+
+def test_fact_check_quote_not_in_source_counts_as_unsupported():
+    from src.ai_generator import FactCheckOutcome, judge_claims
+    outcome = FactCheckOutcome.model_validate_json(_claims(
+        ("빼지 않습니다.", "supported", "S1", "부채는 빼 줍니다", ""),            # 자료에 없는 인용
+        ("빼지 않습니다.", "supported", "S1", "부채는 재산에서 빼지 않습니다", ""),  # 같은 문장 반복은 한 번만
+        ("가 나 다", "supported", "S2", "자료", "")))                             # 너무 짧은 인용
+    issues = judge_claims(outcome, FACT_SOURCES)
+    assert [(i.sentence, i.verdict) for i in issues] == [("빼지 않습니다.", "unsupported"), ("가 나 다", "unsupported")]
+
+
+def test_fact_check_fixes_contradicted_sentence_and_does_not_hold():
+    fixed = good_data()
+    fixed["faq"][1]["answer"] = "근로소득만 있는 거주자입니다."
+    gen, client = make_gen([
+        _claims(("근로소득만 있는 분입니다.", "contradicted", "S1", "근로소득만 있는 거주자", "자료에는 거주자로 적힘")),
+        json.dumps({"fixes": ["반기신청 대상을 자료대로 고침"], "unresolved": [], "content": fixed}),
+        _claims(("근로소득만 있는 거주자입니다.", "supported", "S1", "근로소득만 있는 거주자", ""))])
+    r, report = gen.fact_check("근로장려금", FACT_SOURCES, 45, GenerationResult(model(good_data()), "m", 1, []))
+    assert report.hold is False and report.fixed == 1 and report.remaining == []
+    assert r.content.faq[1].answer == "근로소득만 있는 거주자입니다."
+    assert "사실 확인 후 고침: 반기신청 대상을 자료대로 고침" in r.fixes
+    assert "사실 확인 결과 자료와 다름" in client.calls[1][1] and not any(w.startswith("사실 확인:") for w in r.warnings)
+    article_part = client.calls[2][1].split("[확인할 글")[1]
+    assert "근로소득만 있는 거주자입니다." in article_part and "빼지 않습니다" not in article_part  # 바뀐 문장만 재대조
+
+
+def test_fact_check_holds_when_fix_is_rejected():
+    broken = good_data()
+    broken["sections"] = broken["sections"][:2]                       # 소제목 개수 불합격 → 고친 글 버림
+    gen, _ = make_gen([_claims(("12월 1일까지는 기한 후 신청이 가능하니 홈택스에서 먼저 조회해 보세요.",
+                                "unsupported", "", "", "기한 후 신청 마감일이 자료에 없음")),
+                       json.dumps({"fixes": ["무언가"], "unresolved": [], "content": broken})])
+    original = model(good_data())
+    r, report = gen.fact_check("근로장려금", FACT_SOURCES, 45, GenerationResult(original, "m", 1, []))
+    assert r.content == original and report.hold is True and report.fixed == 0
+    assert any(w.startswith("사실 확인: 자료에서 근거를 못 찾음") and "마감일" in w for w in r.warnings)
+
+
+def test_fact_check_keeps_unlocatable_sentence_as_remaining():
+    fixed = good_data()
+    fixed["closing"] = P("기한 후 신청 기간은 국세청 안내에서 확인해 보세요.")
+    gen, _ = make_gen([_claims(("12월 1일까지 신청 가능", "unsupported", "", "", "")),   # 글과 다르게 옮겨 적음
+                       json.dumps({"fixes": ["마감일 뺌"], "unresolved": [], "content": fixed}),
+                       _claims()])
+    r, report = gen.fact_check("근로장려금", FACT_SOURCES, 45, GenerationResult(model(good_data()), "m", 1, []))
+    assert report.hold is True and report.remaining and report.fixed == 0
+
+
+def test_fact_check_model_error_holds_and_keeps_content():
+    gen, _ = make_gen([api_error(400)])
+    original = model(good_data())
+    r, report = gen.fact_check("근로장려금", FACT_SOURCES, 45, GenerationResult(original, "m", 1, []))
+    assert r.content == original and report.hold and report.failed
+    assert any("사실 확인을 하지 못했습니다" in w for w in r.warnings)
+
+
+def test_fact_quote_allows_table_pipes_and_joined_pieces():
+    from src.ai_generator import _quoted_in_sources, _fact_norm
+    texts = [_fact_norm("예정신고\n1.1.~3.31.\n4.1.~4.25.\n법인사업자\n신청방법\n인터넷, 방문, 우편\n수수료\n수수료 없음")]
+    assert _quoted_in_sources("예정신고 | 1.1.~3.31. | 4.1.~4.25. | 법인사업자", texts)
+    assert _quoted_in_sources("인터넷, 방문, 우편 … 수수료 없음", texts)
+    assert not _quoted_in_sources("인터넷, 방문, 우편 … 수수료 5천 원", texts)     # 조각 하나라도 없으면 안 됨
+    assert not _quoted_in_sources("방문 … 우편", texts)                            # 너무 짧은 인용
+    assert _quoted_in_sources("신청방법\n인터넷, 방문, 우편\n수수료 없음", texts)   # 떨어진 구절을 줄바꿈으로 이음
+    assert not _quoted_in_sources("예정신고 1.1.~3.31. 5.1.~5.25. 법인사업자", texts)  # 날짜 하나가 자료에 없음
+
+
+def test_fact_check_rechecks_rewritten_sentence_and_holds_new_unsupported():
+    fixed = good_data()
+    fixed["faq"][1]["answer"] = "근로소득만 있는 분이 7월에 신청합니다."       # 고치면서 자료에 없는 내용이 들어감
+    gen, _ = make_gen([
+        _claims(("근로소득만 있는 분입니다.", "contradicted", "S1", "근로소득만 있는 거주자", "")),
+        json.dumps({"fixes": ["고침"], "unresolved": ["반기 신청 시기"], "content": fixed}),
+        _claims(("근로소득만 있는 분이 7월에 신청합니다.", "supported", "S1", "근로소득만 있는 7월", ""))])
+    r, report = gen.fact_check("근로장려금", FACT_SOURCES, 45, GenerationResult(model(good_data()), "m", 1, []))
+    assert report.hold is True and report.fixed == 1
+    assert any("7월에 신청" in line for line in report.remaining)
+    assert any("반기 신청 시기" in line for line in report.remaining)       # 고치는 AI가 판단 못 한 것도 보류
+
+
+def test_fact_check_recheck_error_holds():
+    fixed = good_data()
+    fixed["faq"][1]["answer"] = "근로소득만 있는 거주자입니다."
+    gen, _ = make_gen([_claims(("근로소득만 있는 분입니다.", "contradicted", "S1", "", "")),
+                       json.dumps({"fixes": [], "unresolved": [], "content": fixed}), api_error(400)])
+    _, report = gen.fact_check("근로장려금", FACT_SOURCES, 45, GenerationResult(model(good_data()), "m", 1, []))
+    assert report.hold and report.failed
+
+
+def test_fact_units_include_eligibility_and_link_notes():
+    from src.ai_generator import _article_units, _quoted_in_sources, _fact_norm
+    data = good_data()
+    data["eligibility"] = "총급여 7천만 원 이하 무주택 세대주"
+    data["action_links"] = [{"label": "홈택스", "url": "https://hometax.go.kr", "purpose": "apply", "note": "평일 9~18시 상담"}]
+    units = _article_units(model(data))
+    assert "대상: 총급여 7천만 원 이하 무주택 세대주" in units and "평일 9~18시 상담" in units
+    assert not _quoted_in_sources("연 3 회 신청", [_fact_norm("연 2 회 신청할 수 있습니다")])   # 한 글자 숫자도 대조

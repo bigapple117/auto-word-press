@@ -106,6 +106,8 @@ def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
                                     news=[(n.published[5:16], n.title) for n in news])
     # 발행 전 자동 검토: 자료와 다시 대조해 고치고, 사람에게는 끝내 판단 못 한 것만 넘긴다
     result = svc.generator.review(topic, sources, target_seconds, result)
+    # 사실 확인: 문장마다 자료와 대조, 끝내 근거를 못 찾은 글은 아침 자동 발행에서 뺀다
+    result, fact = svc.generator.fact_check(topic, sources, target_seconds, result)
     warnings = list(result.warnings)
     fallback = result.model != svc.settings.gemini_model
     if fallback:
@@ -114,6 +116,7 @@ def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
         "content": json.loads(result.content.model_dump_json()),
         "warnings": warnings,
         "fixes": list(result.fixes),
+        "fact_check": fact.as_dict(),
         "fallback_model": fallback,
         "source_errors": errors,
         "model": result.model,
