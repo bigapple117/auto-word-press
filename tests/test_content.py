@@ -964,3 +964,42 @@ def test_style_only_warnings_are_hidden_after_review():
     assert not needs_person("소제목 1 문단이 조금 깁니다(260자).")
     assert not needs_person("자료로 확인 안 된 내용: 지자체 추가 지원")
     assert needs_person("자료에서 못 찾은 숫자(확인 필요): 500만 원")
+
+
+def test_calculated_example_figures_pass_but_wrong_math_is_still_flagged():
+    from src.ai_generator import calc_check_note, missing_figures
+    srcs = [Source("S1", "https://a.go.kr", "t", "월세액 연 1,000만 원 한도, 총급여 5,500만 원 이하 17%, 8,000만 원 이하 15%")]
+    data = good_data()
+    data["intro"].append(P("월세로 600만 원을 냈다면 17%를 적용해 102만 원을 공제받습니다. "
+                           "한도 1,000만 원을 채우면 최대 170만 원입니다."))
+    data["intro"].append(P("15%를 적용하면 1,000만 원에서 160만 원이 공제됩니다."))      # 틀린 계산
+    data["title"] = "월세 세액공제 최대 170만 원 받는 법 정리"          # 제목은 본문 검산을 따른다
+    c = model(data)
+    missing = missing_figures(c, srcs)
+    assert "160만 원" in missing
+    assert not {"600만 원", "170만 원"} & set(missing)
+    note = calc_check_note(c, srcs)[0]
+    assert "170만 원 = 1,000만 원 × 17%" in note and "가정한 값: 600만 원" in note and "160만" not in note
+
+
+def test_calculation_needs_rate_from_sources():
+    from src.ai_generator import missing_figures
+    srcs = [Source("S1", "https://a.go.kr", "t", "한도 1,000만 원")]
+    data = good_data()
+    data["intro"].append(P("1,000만 원에 30%를 적용하면 300만 원입니다."))         # 30%가 자료에 없음
+    assert {"300만 원", "30%"} <= set(missing_figures(model(data), srcs))
+
+
+def test_calculation_does_not_excuse_invented_limits_or_other_paragraphs():
+    from src.ai_generator import missing_figures
+    srcs = [Source("S1", "https://a.go.kr", "t", "공제율 17%, 지원율 100%, 한도 1,000만 원")]
+    data = good_data()
+    data["intro"].append(P("한도는 600만 원이며 17%를 적용해 최대 102만 원입니다."))   # 단정문의 600만 원은 가정값 아님
+    data["intro"].append(P("가입 한도는 170만 원입니다."))         # 다른 문단에서 검산돼도 여기서는 근거 없음
+    data["intro"].append(P("1,000만 원의 17%인 170만 원을 공제합니다."))
+    data["intro"].append(P("1,000만 원에 100%를 적용해 995만 원을 받습니다."))        # 100%는 검산에 안 씀
+    data["intro"].append(P("1,000만 원에 17%를 적용하면 169만 원입니다."))            # 반올림 범위를 넘는 오차
+    missing = set(missing_figures(model(data), srcs))
+    # 단정문의 600만 원은 근거가 없어 곱하는 쪽으로도 못 쓰므로 102만 원도 함께 남는다
+    assert {"600만 원", "102만 원", "170만 원", "995만 원", "169만 원"} <= missing
+    assert "600만 원" in missing_figures(model(data), srcs, with_calc=False)

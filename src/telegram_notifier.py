@@ -196,7 +196,7 @@ class TelegramNotifier:
                  *([f"분류: {html.escape(clip(category, 40))}", ""] if category else []),
                  f'<a href="{html.escape(edit_url, quote=True)}">워드프레스에서 열기</a> (로그인 화면이 나오면 로그인)']
         if fixes:
-            lines += ["", "<b>자동 검토에서 고친 것</b>"] + [f"- {html.escape(clip(f, WARNING_MAX))}"
+            lines += ["", "<b>자동 검토에서 고치고 확인한 것</b>"] + [f"- {html.escape(clip(f, WARNING_MAX))}"
                                                        for f in list(fixes)[:WARNINGS_MAX]]
         if warnings:
             lines += ["", "<b>확인할 것</b>"] + [f"- {html.escape(clip(w, WARNING_MAX))}"

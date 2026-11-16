@@ -408,15 +408,106 @@ def check_content(
 _BARE_NUMBER = re.compile(rf"(?<![\d.,\-/:]){_N}(?![\d.,\-/:]|\s*[억천백십만원%세년월일개명인회건차호분초시])")
 
 
-def missing_figures(c: MasterContent, sources: Sequence[Source]) -> list[str]:
-    """블로그 글의 금액·비율 중 자료에서 못 찾은 것(원래 표기). 쇼츠 내레이션은 숫자를 풀어 쓰므로 빼고 본다.
-    자료의 표는 '(단위: 원)' 아래 숫자만 늘어놓는 일이 많아, 자료 쪽은 맨숫자도 금액 후보로 인정한다."""
+def _source_figures(sources: Sequence[Source]) -> set[str]:
+    """자료의 금액·비율 키. 자료의 표는 '(단위: 원)' 아래 숫자만 늘어놓는 일이 많아 맨숫자도 금액 후보로 인정한다."""
     source_text = "\n".join(s.text for s in sources)
-    source_figures = set(extract_figures(source_text))
-    source_figures |= {f"won:{round(_num(m))}" for m in _BARE_NUMBER.findall(source_text) if _num(m) >= 100}
+    found = set(extract_figures(source_text))
+    return found | {f"won:{round(_num(m))}" for m in _BARE_NUMBER.findall(source_text) if _num(m) >= 100}
+
+
+def _blog_texts(c: MasterContent) -> list[str]:
+    """숫자 대조 대상 글. 쇼츠 내레이션은 숫자를 풀어 쓰므로 뺀다."""
     narrations = {sc.narration for sc in c.shorts.scenes}
-    blog_text = "\n".join(t for t in _all_texts(c) if t not in narrations)
-    return [shown for key, shown in extract_figures(blog_text).items() if key not in source_figures]
+    return [t for t in _all_texts(c) if t not in narrations]
+
+
+# 예시로 든 가정값을 인정하는 문장 표시('만약 600만 원을 냈다면'). 단정하는 문장의 금액은 가정값으로 보지 않는다
+_EXAMPLE_SENTENCE = re.compile(r"만약|예를 들어|예컨대|가령|가정|했다면|낸다면|냈다면|이라면|라면")
+
+
+def _calc_tolerance(value: float) -> float:
+    """검산 허용 오차: 글에 적힌 자릿수의 반올림만('102만 원'이면 5천 원). 큰 금액도 0.5%를 넘지 않게."""
+    digits = str(round(value))
+    unit = 10 ** (len(digits) - len(digits.rstrip("0")))
+    return max(1.0, min(unit / 2, value * 0.005))
+
+
+def _derive_in_text(text: str, known: set[str]) -> dict[str, str]:
+    """한 문단 안에서 '금액 × 자료에 있는 비율'로 계산되는 자료 밖 금액. {키: 설명}.
+    곱하는 쪽 금액이 자료에 없으면, 예시라고 밝힌 문장에 있을 때만 가정값으로 인정한다."""
+    figs = extract_figures(text)
+    sentences = _SENTENCE_END.split(text)
+    example_keys: set[str] = set()
+    for sent in sentences:
+        if _EXAMPLE_SENTENCE.search(sent):
+            example_keys |= set(extract_figures(sent))
+    wons = [(k, float(k[4:]), shown) for k, shown in figs.items() if k.startswith("won:")]
+    wons.sort(key=lambda w: w[0] not in known)          # 자료에 있는 금액을 먼저 곱해 본다
+    rates = [float(k[4:]) for k in figs if k.startswith("pct:") and k in known and 0 < float(k[4:]) < 100]
+    out: dict[str, str] = {}
+    for key, value, shown in wons:
+        if key in known or value <= 0:
+            continue
+        for bkey, base, bshown in wons:
+            if bkey == key or base <= value or not (bkey in known or bkey in example_keys):
+                continue
+            hit = next((r for r in rates if abs(base * r / 100 - value) <= _calc_tolerance(value)), None)
+            if hit is None:
+                continue
+            out[key] = f"{shown} = {bshown} × {hit:g}%"
+            if bkey not in known:
+                out.setdefault(bkey, f"{bshown}(계산 예시의 가정값)")
+            break
+    return out
+
+
+def _unsourced(c: MasterContent, sources: Sequence[Source], with_calc: bool) -> tuple[list[str], dict[str, str]]:
+    known = _source_figures(sources)
+    missing: dict[str, str] = {}
+    derived: dict[str, str] = {}
+    # 제목·요약 문구는 본문을 줄여 쓴 것이라, 본문 어딘가에서 검산된 금액이면 인정한다
+    headlines = {c.title, c.meta_description, c.shorts.title}
+    pending: dict[str, str] = {}
+    for text in _blog_texts(c):
+        here = _derive_in_text(text, known) if with_calc else {}
+        for key, shown in extract_figures(text).items():
+            if key in known:
+                continue
+            if key in here:
+                derived.setdefault(key, here[key])
+            elif text in headlines:
+                pending.setdefault(key, shown)
+            else:
+                missing.setdefault(key, shown)      # 다른 문단에서 검산됐어도 여기서 근거 없이 쓰였으면 남긴다
+    for key, shown in pending.items():
+        if key not in derived:
+            missing.setdefault(key, shown)
+    return list(missing.values()), {k: v for k, v in derived.items() if k not in missing}
+
+
+def derived_figures(c: MasterContent, sources: Sequence[Source]) -> dict[str, str]:
+    """자료에 없지만 같은 문단에서 '금액 × 자료의 비율'로 검산되는 금액. {키: 설명}.
+    예: '만약 월세로 600만 원을 냈다면 17%를 적용해 102만 원' → 102만 원은 검산 통과, 600만 원은 예시의 가정값."""
+    return _unsourced(c, sources, with_calc=True)[1]
+
+
+def missing_figures(c: MasterContent, sources: Sequence[Source], with_calc: bool = True) -> list[str]:
+    """블로그 글의 금액·비율 중 자료에서 못 찾고, 같은 문단에서 자료의 숫자로 검산도 안 되는 것(원래 표기).
+    with_calc=False면 검산 없이 자료에 있는지만 본다(자동 검토 채택 판정용: 검토가 숫자를 새로 지어내지 못하게)."""
+    return _unsourced(c, sources, with_calc)[0]
+
+
+def calc_check_note(c: MasterContent, sources: Sequence[Source]) -> list[str]:
+    """사람에게 보여 줄 검산 결과 한 줄(없으면 빈 목록)."""
+    derived = derived_figures(c, sources).values()
+    calcs = [v for v in derived if " = " in v]
+    assumed = [v.split("(")[0] for v in derived if " = " not in v]
+    if not calcs:
+        return []
+    note = "자료의 숫자로 검산 확인: " + ", ".join(calcs)
+    if assumed:
+        note += " (예시로 가정한 값: " + ", ".join(assumed) + ")"
+    return [note]
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -602,7 +693,8 @@ class ContentGenerator:
         content, card_fixes = tidy_shorts_cards(content)
         _, after = check_content(content, sources, target_seconds)
         warnings = [w for w in after if needs_person(w)] + notes
-        return GenerationResult(content, result.model, result.attempts, warnings, fixes + trimmed + card_fixes)
+        return GenerationResult(content, result.model, result.attempts, warnings,
+                                calc_check_note(content, sources) + fixes + trimmed + card_fixes)
 
     def _accept_review(self, original: MasterContent, outcome: ReviewOutcome, sources: Sequence[Source],
                        target_seconds: int) -> tuple[MasterContent | None, list[str]]:
@@ -615,7 +707,8 @@ class ContentGenerator:
             candidate, problems, _ = self._repair_shorts(candidate, sources, target_seconds)
         if problems:
             return None, problems[:2]
-        added = len(missing_figures(candidate, sources)) - len(missing_figures(original, sources))
+        added = (len(missing_figures(candidate, sources, with_calc=False))
+                 - len(missing_figures(original, sources, with_calc=False)))
         if added > 0:
             return None, [f"자료에 없는 숫자가 {added}개 늘어남"]
         return candidate, []
