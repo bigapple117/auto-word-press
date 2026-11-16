@@ -3,7 +3,7 @@
 
 담는 것: 워드프레스 DB, 사진, 작업·주제 장부, 사이트 설정과 비밀값 파일.
 담지 않는 것: 쇼츠 영상과 스톡 재료(크고 다시 만들 수 있음), 암호 파일 자체.
-보관: 서버 안 ~/backups/auto에 최근 14개 + 월별 6개, BACKUP_GIT_REMOTE가 있으면 그 저장소에 최근 7개 + 월별 3개.
+보관: 서버 안 ~/backups/auto에 최근 14일치(하루 1개) + 월별 6개, BACKUP_GIT_REMOTE가 있으면 그 저장소에 최근 7일치 + 월별 3개.
 월별본은 각 달의 첫 백업이다. 데이터가 망가진 채 며칠이 지나도 망가지기 전 상태로 돌아갈 수 있게 남긴다.
 암호는 ~/.backup_pass에 있고, 서버를 잃어도 복원하려면 서버 밖에도 보관해야 한다.
 복원: gpg --decrypt 파일 | zstd -dc | tar -xf - -C 빈폴더
@@ -74,14 +74,24 @@ class BackupError(Exception):
 
 
 def old_files(files: Sequence[Path], keep: int, monthly: int = 0) -> list[Path]:
-    """이름에 시각이 들어 있으므로 이름순으로 정렬해, 최근 keep개와 월별본 monthly개를 뺀 나머지를 돌려준다."""
+    """지울 백업을 돌려준다. 남기는 것: 최근 keep일 각각의 마지막 백업 + (그 날짜들과 겹치지 않는) 달별 첫 백업 최근 monthly개.
+    날짜 단위로 세므로 하루에 여러 번 실행해도 지난 날짜 백업이 밀려 지워지지 않는다(2026-11-09 하루 3회 실행 사례)."""
     ordered = sorted(files, key=lambda p: p.name)
-    firsts: dict[str, Path] = {}
+    day = lambda p: p.name[len(PREFIX):len(PREFIX) + 8]     # YYYYMMDD
+    month = lambda p: p.name[len(PREFIX):len(PREFIX) + 6]   # YYYYMM
+    last_of_day: dict[str, Path] = {}
+    first_of_month: dict[str, Path] = {}
     for p in ordered:
-        firsts.setdefault(p.name[len(PREFIX):len(PREFIX) + 6], p)
-    kept = set(ordered[-keep:]) if keep > 0 else set()
+        last_of_day[day(p)] = p
+    # 월별본도 '그날의 마지막 백업' 중에서 고른다. 서버 안과 GitHub가 같은 파일을 남겨야 덮어쓰기 보호가 오작동하지 않는다.
+    for d in sorted(last_of_day):
+        first_of_month.setdefault(month(last_of_day[d]), last_of_day[d])
+    days = sorted(last_of_day)[-keep:] if keep > 0 else []
+    kept = {last_of_day[d] for d in days}
     if monthly > 0:
-        kept |= set(sorted(firsts.values(), key=lambda p: p.name)[-monthly:])
+        # 첫 백업 날이 이미 최근 keep일에 들어간 달은 세지 않음(같은 날 여러 번 실행해도 월별 자리를 뺏지 않게)
+        older = [m for m in sorted(first_of_month) if day(first_of_month[m]) not in days]
+        kept |= {first_of_month[m] for m in older[-monthly:]}
     return [p for p in ordered if p not in kept]
 
 
@@ -196,16 +206,53 @@ def prune_local() -> None:
         log.info("오래된 백업 삭제: %s", p.name)
 
 
+GIT_ENV_SSH = "ssh -o BatchMode=yes -o ConnectTimeout=30"
+
+
+def remote_names(remote: str) -> list[str]:
+    """GitHub에 지금 있는 백업 파일 이름 목록(내용은 받지 않고 이름만)."""
+    env = {**os.environ, "GIT_SSH_COMMAND": GIT_ENV_SSH}
+    with tempfile.TemporaryDirectory(dir=BACKUP_DIR, prefix=OFFSITE_TEMP_PREFIX) as tmp:
+        r = subprocess.run(["git", "clone", "-q", "-b", "main", "--single-branch", "--depth", "1", "--filter=blob:none",
+                            "--no-checkout", remote, tmp],
+                           env=env, capture_output=True, timeout=300)
+        if r.returncode != 0:
+            err = r.stderr.decode("utf-8", "replace")
+            if "empty repository" in err or "Remote branch main not found" in err:
+                return []
+            raise BackupError("바깥 보관", f"GitHub 목록 확인 실패: {err.strip()[-300:]}")
+        head = subprocess.run(["git", "-C", tmp, "rev-parse", "--verify", "-q", "HEAD"], capture_output=True, timeout=60)
+        if head.returncode != 0:       # 아직 아무것도 올라가지 않은 빈 저장소
+            return []
+        r = subprocess.run(["git", "-C", tmp, "ls-tree", "--name-only", "HEAD"], capture_output=True, timeout=60)
+        if r.returncode != 0:          # 목록을 못 읽으면 보호가 무력해지므로 멈춤
+            raise BackupError("바깥 보관", f"GitHub 목록 읽기 실패: {r.stderr.decode('utf-8', 'replace').strip()[-300:]}")
+        return [n for n in r.stdout.decode().splitlines() if n.startswith(PREFIX) and n.endswith(SUFFIX)]
+
+
+def guard_remote(remote: str, local: Sequence[Path]) -> None:
+    """서버 안 백업이 사라진 상태에서 덮어쓰면 GitHub의 지난 백업까지 잃는다.
+    GitHub에만 있고 보관 규칙상 남아야 할 백업이 있으면 덮어쓰지 않고 멈춘다."""
+    local_names = {p.name for p in local}
+    union = [Path(n) for n in set(remote_names(remote)) | local_names]
+    drop = {p.name for p in old_files(union, KEEP_OFFSITE, KEEP_OFFSITE_MONTHLY)}
+    missing = sorted(n for n in (p.name for p in union) if n not in drop and n not in local_names)
+    if missing:
+        raise BackupError("바깥 보관", f"GitHub에만 있는 백업 {len(missing)}개({missing[0]} 등)가 덮어써질 수 있어 올리지 않았습니다. "
+                          "서버 안 ~/backups/auto가 비었는지 확인하세요")
+
+
 def push_offsite(remote: str) -> None:
     """최근 백업만 담은 새 기록 하나로 덮어써, 저장소 크기가 계속 늘지 않게 한다."""
     check_offsite_remote(remote)
     backups = all_backups()
+    guard_remote(remote, backups)
     remove = set(old_files(backups, KEEP_OFFSITE, KEEP_OFFSITE_MONTHLY))
     latest = sorted((p for p in backups if p not in remove), key=lambda p: p.name)
     for f in latest:
         if f.stat().st_size > MAX_OFFSITE_FILE:
             raise BackupError("바깥 보관", f"{f.name}이 GitHub 파일 크기 한도를 넘습니다")
-    env = {**os.environ, "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=30"}
+    env = {**os.environ, "GIT_SSH_COMMAND": GIT_ENV_SSH}
 
     def git(repo: Path, *args: str) -> None:
         r = subprocess.run(["git", "-C", str(repo), "-c", "user.name=jalcheck-backup",
