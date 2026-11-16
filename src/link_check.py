@@ -65,7 +65,7 @@ def _key(url: str) -> str:
     return f"{host}{p.path or '/'}" + (f";{p.params}" if p.params else "") + (f"?{p.query}" if p.query else "")
 
 
-def _is_home(url: str) -> bool:
+def is_home(url: str) -> bool:
     p = urlparse(url)
     return p.path in ("", "/") and not p.params and not p.query
 
@@ -90,7 +90,7 @@ def _known_urls(sources: Sequence[Source]) -> tuple[set[str], set[str]]:
             if not n:
                 continue                          # 덩어리 전체가 주소 형식이 아니면 버린다
             full.add(_key(n))
-            if _is_home(n) and not re.search(r"[/?#;]", candidate.split("://", 1)[-1].rstrip("/")):
+            if is_home(n) and not re.search(r"[/?#;]", candidate.split("://", 1)[-1].rstrip("/")):
                 hosts.add((urlparse(n).hostname or "").removeprefix("www."))
     return full, hosts
 
@@ -126,10 +126,10 @@ def check_action_links(links: Sequence[ActionLink], sources: Sequence[Source]) -
             continue
         key = _key(url)
         host = (urlparse(url).hostname or "").removeprefix("www.")
-        if not is_official(url) and not (_is_home(url) and host in vouched_hosts):
+        if not is_official(url) and not (is_home(url) and host in vouched_hosts):
             rejected.append(f"공식 사이트가 아님(서로 다른 공식 자료 2곳 이상에 안내되지 않음): {url[:80]}")
             continue
-        if key not in full and not (_is_home(url) and host in hosts):
+        if key not in full and not (is_home(url) and host in hosts):
             rejected.append(f"자료에서 확인되지 않은 주소: {url[:80]}")
             continue
         if key in seen:
@@ -149,4 +149,4 @@ def home_links_overpromising(links: Sequence[CheckedLink]) -> list[str]:
     첫 화면 링크는 '○○ 바로가기'로 쓰고, 어느 메뉴로 가는지는 설명(note)에 적는 것이 맞다.
     """
     return [l.label for l in links
-            if _is_home(l.url) and _ACTION_WORDS.search(l.label) and "바로가기" not in l.label]
+            if is_home(l.url) and _ACTION_WORDS.search(l.label) and "바로가기" not in l.label]

@@ -19,6 +19,8 @@ from typing import Any, Callable, Collection, Sequence
 from src.ai_generator import ContentGenerator
 from src.blog_html import SectionImage, render_blog_html
 from src.config import ROOT, Settings
+from src.law_source import LawClient, find_law_sources
+from src.link_check import is_home
 from src.content_schema import MasterContent
 from src.remote_reader import GeminiPageReader
 from src.source_fetcher import Source, fetch_sources
@@ -54,6 +56,8 @@ class Services:
     fetch: Callable = fetch_sources
     find_urls: Callable = find_official_urls
     screenshot: Callable | None = None
+    laws: Any = None                 # 국가법령정보 API(LAW_OC가 없으면 법령 조회를 건너뜀)
+    find_laws: Callable = find_law_sources
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "Services":
@@ -66,6 +70,7 @@ class Services:
             wp=WordPressClient.from_settings(settings),
             telegram=TelegramNotifier.from_settings(settings),
             screenshot=take_screenshot,
+            laws=LawClient(settings.law_oc) if settings.law_oc else None,
         )
 
 
@@ -82,15 +87,21 @@ def sources_from(data: Sequence[dict]) -> list[Source]:
 # ---------- 1. 자료 + 글 ----------
 
 def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
-    urls = svc.find_urls(svc.search, topic)
+    # 사이트 첫 화면(예: hometax.go.kr/)은 메뉴뿐이라 근거 자료에서 뺀다.
+    # 바로가기 링크로는 다른 자료 본문에 그 도메인이 적혀 있을 때만 남는다(link_check)
+    urls = [u for u in svc.find_urls(svc.search, topic) if not is_home(u)]
     try:
         news = svc.search.news(topic, display=5)
     except Exception as exc:  # noqa: BLE001 - 뉴스는 참고용이라 실패해도 진행
         log.warning("뉴스 검색 실패: %s", exc)
         news = []
-    sources, errors = svc.fetch(urls, max_sources=MAX_SOURCES, fallback=svc.reader)
+    sources, errors = svc.fetch(urls, max_sources=MAX_SOURCES, fallback=svc.reader) if urls else ([], [])
     if not sources:
+        # 법령 조문만으로는 신청 방법·기간·누리집을 쓸 수 없으므로 공식 안내 자료가 꼭 있어야 한다
         raise PipelineError("읽을 수 있는 공식 자료를 찾지 못했습니다: " + " / ".join(errors[:3]))
+    if svc.laws is not None:
+        laws, law_errors = svc.find_laws(svc.laws, svc.generator.choose_law_articles, topic, len(sources) + 1)
+        sources, errors = list(sources) + laws, list(errors) + law_errors
     result = svc.generator.generate(topic, sources, target_seconds,
                                     news=[(n.published[5:16], n.title) for n in news])
     # 발행 전 자동 검토: 자료와 다시 대조해 고치고, 사람에게는 끝내 판단 못 한 것만 넘긴다

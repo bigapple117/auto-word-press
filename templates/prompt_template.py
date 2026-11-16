@@ -116,6 +116,17 @@ def scene_plan(target_seconds: int) -> tuple[int, int]:
     return scenes, round((low + high) / 2 / scenes)
 
 
+LAW_NOTE = ("종류=\"현행 법령\"인 [자료]는 국가법령정보센터의 현행 조문 원문이다. 대상·금액·비율·한도·요건은 "
+            "법령 원문을 우선한다. 법령은 '100분의 17', '8천만원'처럼 쓰므로 글에서는 '17%', '8,000만 원'으로 풀어 쓴다. "
+            "안내 자료와 법령이 다르면 법령을 따르고 그 차이를 unverified에 적는다. 법률 조문이 '대통령령으로 정하는'처럼 "
+            "세부 기준을 넘긴 부분은 법률 조문만으로 숫자를 짐작하지 말고, 시행령이나 안내 자료에 적힌 숫자를 쓴다.")
+
+
+def source_block(s: Source) -> str:
+    kind = ' 종류="현행 법령"' if s.via == "law" else ""
+    return f"<자료 id=\"{s.id}\"{kind} 제목=\"{s.title}\" 주소=\"{s.url}\">\n{s.text}\n</자료>"
+
+
 def build_prompt(
     topic: str,
     sources: Sequence[Source],
@@ -134,7 +145,7 @@ def build_prompt(
     low, high = narration_budget(target_seconds)
     blocks = []
     for s in sources:
-        blocks.append(f"<자료 id=\"{s.id}\" 제목=\"{s.title}\" 주소=\"{s.url}\">\n{s.text}\n</자료>")
+        blocks.append(source_block(s))
     parts = [
         f"오늘 날짜: {today.isoformat()}",
         f"주제: {topic}",
@@ -145,6 +156,7 @@ def build_prompt(
         f" 들어가지 않으므로, 표가 있는 소제목도 문단으로 구분법·예외·다음 행동을 설명한다"
         f" (권장: 소제목마다 문단·주의·요약 합계 약 {SECTION_TARGET_CHARS[0]}~{SECTION_TARGET_CHARS[1]}자).",
         "아래 [자료]만 근거로 마스터 콘텐츠 JSON을 만든다. 자료 밖 지식으로 숫자나 기준을 채우지 않는다.",
+        *([LAW_NOTE] if any(s.via == "law" for s in sources) else []),
         "[자료]",
         "\n\n".join(blocks),
     ]
@@ -232,12 +244,12 @@ def build_review_prompt(topic: str, sources: Sequence[Source], content_json: str
                         warnings: Sequence[str], today: date | None = None) -> str:
     """발행 전 최종 검수 지시문. 글 JSON을 자료와 대조해 고친 글과 보고를 돌려받는다."""
     today = today or date.today()
-    blocks = "\n\n".join(f"<자료 id=\"{s.id}\" 제목=\"{s.title}\" 주소=\"{s.url}\">\n{s.text}\n</자료>"
-                         for s in sources)
+    blocks = "\n\n".join(source_block(s) for s in sources)
     found = "\n".join(f"- {w}" for w in warnings) or "- 없음"
     return "\n\n".join([
         f"오늘 날짜: {today.isoformat()}",
         f"주제: {topic}",
+        *([LAW_NOTE] if any(s.via == "law" for s in sources) else []),
         "[자료]", blocks,
         "[자동 검사 경고 - 프로그램이 찾은 것. 숫자 경고는 표기 차이로 잘못 걸린 것일 수 있으니 자료와 대조해 판단한다]",
         found,

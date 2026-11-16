@@ -20,6 +20,7 @@ SECRET_FIELDS = frozenset({
     "pixabay_api_key",
     "naver_client_secret",
     "telegram_bot_token",
+    "law_oc",
 })
 
 
@@ -69,6 +70,9 @@ class Settings:
     # 네이버 검색 (NAVER API HUB)
     naver_client_id: str = ""
     naver_client_secret: str = ""
+
+    # 국가법령정보 OPEN API (open.law.go.kr 신청 시 정한 OC 값, 서버 IP 등록 필요). 비우면 법령 조회 안 함
+    law_oc: str = ""
 
     # 텔레그램 알림·승인
     telegram_bot_token: str = ""
@@ -137,6 +141,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         pixabay_api_key=_env("PIXABAY_API_KEY"),
         naver_client_id=_env("NAVER_CLIENT_ID"),
         naver_client_secret=_env("NAVER_CLIENT_SECRET"),
+        law_oc=_env("LAW_OC"),
         telegram_bot_token=_env("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_env("TELEGRAM_CHAT_ID"),
         google_service_account_file=_env("GOOGLE_SERVICE_ACCOUNT_FILE"),

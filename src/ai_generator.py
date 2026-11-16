@@ -110,7 +110,7 @@ _SMALL_UNIT = {"천": 1_000, "백": 100, "십": 10}
 _BIG_UNIT = {"억": 100_000_000, "만": 10_000}
 _PCT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 _FRAC_SLASH = re.compile(r"(\d[\d,]*)\s*/\s*(\d[\d,]*)")
-_FRAC_KO = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(천만|백만|만|천)?\s*분의\s*(\d[\d,]*)")
+_FRAC_KO = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(천만|백만|만|천)?\s*분의\s*(\d[\d,]*(?:\.\d+)?)")
 _KO_UNIT = {"천만": 10_000_000, "백만": 1_000_000, "만": 10_000, "천": 1_000, None: 1}
 
 
@@ -394,7 +394,7 @@ def check_content(
         warnings.append(f"본문이 짧습니다({body_chars}자).")
     if c.unverified:
         warnings.append("자료로 확인 안 된 내용: " + " / ".join(c.unverified))
-    relayed = [f"{s.id} {s.url}" for s in sources if s.via != "direct"]
+    relayed = [f"{s.id} {s.url}" for s in sources if s.via == "gemini"]
     if relayed:
         warnings.append("AI가 옮겨 적은 자료(원문 대조 권장): " + ", ".join(relayed))
 
@@ -412,6 +412,12 @@ def _source_figures(sources: Sequence[Source]) -> set[str]:
     """자료의 금액·비율 키. 자료의 표는 '(단위: 원)' 아래 숫자만 늘어놓는 일이 많아 맨숫자도 금액 후보로 인정한다."""
     source_text = "\n".join(s.text for s in sources)
     found = set(extract_figures(source_text))
+    # 법령은 비율을 '100분의 17'로 쓴다 → 글의 '17%'와 같은 값으로 본다
+    for key in list(found):
+        if key.startswith("ratio:"):
+            num, den = (float(x) for x in key[6:].split("/"))
+            if den:
+                found.add(f"pct:{num * 100 / den:g}")
     return found | {f"won:{round(_num(m))}" for m in _BARE_NUMBER.findall(source_text) if _num(m) >= 100}
 
 
@@ -521,6 +527,28 @@ def count_body_chars(c: MasterContent) -> int:
     """검사에서 세는 본문 글자 수: 도입 문단 + 소제목의 문단·주의·요약(표·체크리스트·FAQ 제외)."""
     return sum(len(t) for s in c.sections for t in section_paragraphs(s)) + \
         sum(len(paragraph_text(p)) for p in c.intro)
+
+
+class LawChoice(BaseModel):
+    keys: list[str] = Field(description="[후보 조문]에서 고른 번호(key)를 그대로. 맞는 조문이 없으면 빈 목록")
+
+
+LAW_SYSTEM_INSTRUCTION = (
+    "너는 법령 조사 담당이다. 생활 제도 안내 글의 주제를 보고, 검색으로 나온 [후보 조문] 가운데 "
+    "그 제도의 지원 대상·금액·비율·한도·요건·신청 절차를 직접 정한 조문만 고른다. 이름만 비슷한 다른 제도"
+    "(예: 전기요금 ↔ 전기통신 요금)나 목적·정의·권한 위임·과태료 조문은 고르지 않는다. 제도가 법령이 아니라 "
+    "공기업 약관·지자체 공고로 운영되어 맞는 조문이 없으면 빈 목록을 돌려준다. 목록에 없는 번호는 쓰지 않는다."
+)
+
+
+LAW_CANDIDATE_CHARS = 500  # 금액·요건이 ②항 이하에 있는 조문도 고를 수 있게 앞부분을 넉넉히
+
+
+def build_law_prompt(topic: str, candidates: Sequence[Any], limit: int) -> str:
+    lines = "\n".join(f"- key={a.key} | {a.law} {a.heading} | {a.text[:LAW_CANDIDATE_CHARS].replace(chr(10), ' ')}"
+                      for a in candidates)
+    return (f"주제: {topic}\n\n[후보 조문]\n{lines}\n\n"
+            f"이 주제의 근거 조문을 중요한 순서로 최대 {limit}개 골라 JSON으로 돌려준다.")
 
 
 class CategoryChoice(BaseModel):
@@ -712,6 +740,19 @@ class ContentGenerator:
         if added > 0:
             return None, [f"자료에 없는 숫자가 {added}개 늘어남"]
         return candidate, []
+
+    def choose_law_articles(self, topic: str, candidates: Sequence[Any], limit: int = 4) -> list[str]:
+        """법령 검색 후보 가운데 주제의 근거 조문 번호. 목록 밖 번호는 버린다."""
+        if not candidates:
+            return []
+        raw, _model = self._call_with_retry(build_law_prompt(topic, candidates, limit),
+                                            schema=LawChoice, system=LAW_SYSTEM_INSTRUCTION)
+        try:
+            keys = LawChoice.model_validate_json(raw).keys
+        except ValidationError as exc:
+            raise GenerationError(f"조문 고르기 응답 형식 오류: {exc.errors()[:1]}") from exc
+        valid = {a.key for a in candidates}
+        return [k for k in dict.fromkeys(k.strip() for k in keys) if k in valid][:limit]
 
     def choose_category(self, title: str, summary: str, tags: Sequence[str],
                         options: Sequence[tuple[str, str, str]]) -> str:
