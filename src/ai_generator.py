@@ -421,12 +421,6 @@ def _source_figures(sources: Sequence[Source]) -> set[str]:
     return found | {f"won:{round(_num(m))}" for m in _BARE_NUMBER.findall(source_text) if _num(m) >= 100}
 
 
-def _blog_texts(c: MasterContent) -> list[str]:
-    """숫자 대조 대상 글. 쇼츠 내레이션은 숫자를 풀어 쓰므로 뺀다."""
-    narrations = {sc.narration for sc in c.shorts.scenes}
-    return [t for t in _all_texts(c) if t not in narrations]
-
-
 # 예시로 든 가정값을 인정하는 문장 표시('만약 600만 원을 냈다면'). 단정하는 문장의 금액은 가정값으로 보지 않는다
 _EXAMPLE_SENTENCE = re.compile(r"만약|예를 들어|예컨대|가령|가정|했다면|낸다면|냈다면|이라면|라면")
 
@@ -467,6 +461,60 @@ def _derive_in_text(text: str, known: set[str]) -> dict[str, str]:
     return out
 
 
+def _text_units(c: MasterContent) -> list[tuple[str, str, dict[str, str] | None]]:
+    """숫자 대조할 글 조각마다 (글, 그 조각의 문단 단위, 계산 근거를 찾을 소제목의 숫자들).
+    문단 단위는 보통 그 조각 자체, 표 칸이면 같은 줄 전체. 소제목 밖 글(제목·도입·FAQ 등)은 근거 범위가 없다(None).
+    글자가 같은 조각이 여러 곳에 있어도 섞이지 않게 글의 구조를 따라 만든다(_all_texts와 같은 순서)."""
+    narrations = {sc.narration for sc in c.shorts.scenes}
+    units: list[tuple[str, str, dict[str, str] | None]] = [
+        (t, t, None) for t in [c.title, c.meta_description, c.reference_note, paragraph_text(c.closing),
+                               *(paragraph_text(p) for p in c.intro), c.shorts.title]]
+    for sec in c.sections:
+        figs = extract_figures("\n".join(section_texts(sec)))
+        units.append((sec.heading, sec.heading, figs))
+        if sec.takeaway:
+            units.append((sec.takeaway, sec.takeaway, figs))
+        for b in sec.blocks:
+            if b.type == "paragraph":
+                t = paragraph_text(b.paragraph)
+                units.append((t, t, figs))
+            elif b.type == "note":
+                t = paragraph_text(b.note)
+                units.append((t, t, figs))
+            elif b.type == "checklist":
+                units += [(t, t, figs) for t in b.items or []]
+            elif b.type == "table" and b.table:
+                units += [(t, t, figs) for t in [b.table.caption, *b.table.headers]]
+                units += [(cell, " | ".join(row), figs) for row in b.table.rows for cell in row]
+    for f in c.faq:
+        units += [(f.question, f.question, None), (f.answer, f.answer, None)]
+    return [u for u in units if u[0] not in narrations]
+
+
+def _derive_in_context(unit: str, figs: dict[str, str], known: set[str]) -> dict[str, str]:
+    """'15%가 적용됩니다. … 최대 150만 원'처럼 곱하는 금액(한도)이 같은 소제목의 다른 문단에 있는 결과 금액. {키: 설명}.
+    인정 조건: 곱하는 금액과 비율이 모두 자료에 있는 숫자이고 같은 소제목에 적혀 있으며,
+    둘 중 하나는 이 문단(표는 같은 줄)에 직접 적혀 있을 것. '가입 한도는 170만 원입니다'처럼
+    계산과 무관하게 단정한 문장은 다른 곳에 같은 계산이 있어도 인정하지 않는다."""
+    own = extract_figures(unit)
+    bases = [(k, float(k[4:]), shown) for k, shown in figs.items() if k.startswith("won:") and k in known]
+    rates = [k for k in figs if k.startswith("pct:") and k in known and 0 < float(k[4:]) < 100]
+    out: dict[str, str] = {}
+    for key, shown in own.items():
+        if not key.startswith("won:") or key in known:
+            continue
+        value = float(key[4:])
+        for bkey, base, bshown in bases:
+            if base <= value:
+                continue
+            hit = next((r for r in rates if (bkey in own or r in own)
+                        and abs(base * float(r[4:]) / 100 - value) <= _calc_tolerance(value)), None)
+            if hit is not None:
+                out[key] = f"{shown} = {bshown} × {float(hit[4:]):g}%"
+                break
+    return out
+
+
 def _unsourced(c: MasterContent, sources: Sequence[Source], with_calc: bool) -> tuple[list[str], dict[str, str]]:
     known = _source_figures(sources)
     missing: dict[str, str] = {}
@@ -474,8 +522,13 @@ def _unsourced(c: MasterContent, sources: Sequence[Source], with_calc: bool) -> 
     # 제목·요약 문구는 본문을 줄여 쓴 것이라, 본문 어딘가에서 검산된 금액이면 인정한다
     headlines = {c.title, c.meta_description, c.shorts.title}
     pending: dict[str, str] = {}
-    for text in _blog_texts(c):
-        here = _derive_in_text(text, known) if with_calc else {}
+    for text, unit, section_figs in _text_units(c):
+        here: dict[str, str] = {}
+        if with_calc:
+            here = _derive_in_text(text, known)
+            if section_figs is not None:
+                # 자료의 숫자만으로 맞춘 계산식이 예시 가정값 계산식보다 우선
+                here.update(_derive_in_context(unit, section_figs, known))
         for key, shown in extract_figures(text).items():
             if key in known:
                 continue

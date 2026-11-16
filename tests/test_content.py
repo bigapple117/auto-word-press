@@ -1003,3 +1003,62 @@ def test_calculation_does_not_excuse_invented_limits_or_other_paragraphs():
     # 단정문의 600만 원은 근거가 없어 곱하는 쪽으로도 못 쓰므로 102만 원도 함께 남는다
     assert {"600만 원", "102만 원", "170만 원", "995만 원", "169만 원"} <= missing
     assert "600만 원" in missing_figures(model(data), srcs, with_calc=False)
+
+
+def test_max_amount_with_limit_in_another_paragraph_of_same_section():
+    """'15%가 적용됩니다. … 최대 150만 원'처럼 한도가 같은 소제목의 다른 문단에 있으면 검산으로 인정."""
+    from src.ai_generator import derived_figures, missing_figures
+    srcs = [Source("S1", "https://a.go.kr", "t", "공제율 100분의 15, 100분의 17. 연 1천만원 한도. 3,200만 원")]
+    data = good_data()
+    sec = data["sections"][0]
+    sec["blocks"] = [
+        para("월세액은 연 1,000만 원까지 인정됩니다."),
+        para("이 구간은 15% 공제율이 적용되어 연간 최대 150만 원까지 공제됩니다."),     # 비율은 이 문단, 한도는 위 문단
+        {"type": "table", "table": {"caption": "구간별", "headers": ["구간", "공제율", "최대"],
+                                    "rows": [["낮은 구간", "17%", "170만 원"]]}},       # 표는 같은 줄의 비율
+        para("가입 한도는 102만 원입니다."),                  # 비율도 한도도 이 문단에 없음 → 인정 안 함
+        para("3,200만 원 이하이면 최대 480만 원입니다."),     # 금액이 이 문단에 있어 인정되지만 계산식이 그대로 보고됨
+    ]
+    missing = set(missing_figures(model(data), srcs))
+    derived = derived_figures(model(data), srcs)
+    assert derived["won:1500000"] == "150만 원 = 1,000만 원 × 15%"
+    assert derived["won:1700000"] == "170만 원 = 1,000만 원 × 17%"
+    assert "102만 원" in missing and not {"150만 원", "170만 원"} & missing
+    # 억지로 맞춘 계산도 사람에게 계산식으로 보이므로 승인 때 걸러진다(한도만 적힌 요약 문장을 살리기 위한 선택)
+    assert derived["won:4800000"] == "480만 원 = 3,200만 원 × 15%"
+
+
+def test_max_amount_needs_limit_and_rate_from_sources_in_same_section():
+    from src.ai_generator import missing_figures
+    srcs = [Source("S1", "https://a.go.kr", "t", "공제율 15%")]
+    data = good_data()
+    data["sections"][0]["blocks"] = [para("한도는 1,000만 원입니다."), para("15%를 적용해 최대 150만 원입니다.")]
+    data["sections"][1]["blocks"] = [para("연 1,000만 원까지입니다.")]
+    data["sections"][2]["blocks"] = [para("다른 소제목에서는 20%를 적용해 최대 200만 원입니다.")]
+    missing = set(missing_figures(model(data), [*srcs, Source("S2", "https://b.go.kr", "t", "비율 20%")]))
+    # 1,000만 원이 자료에 없으니 150만 원도 인정 안 함. 200만 원은 한도가 다른 소제목에만 있어 인정 안 함
+    assert {"1,000만 원", "150만 원", "200만 원"} <= missing
+
+
+def test_text_units_cover_same_texts_as_all_texts_without_narration():
+    from src.ai_generator import _all_texts, _text_units
+    c = model(good_data())
+    narr = {sc.narration for sc in c.shorts.scenes}
+    assert [u[0] for u in _text_units(c)] == [t for t in _all_texts(c) if t not in narr]
+
+
+def test_wide_calc_only_inside_sections_and_by_structure():
+    """소제목 밖(도입)은 넓은 범위 검산 안 함. 같은 글자의 표 칸이 다른 소제목에 있어도 그 소제목 근거로만 본다."""
+    from src.ai_generator import missing_figures
+    srcs = [Source("S1", "https://a.go.kr", "t", "한도 1천만원, 공제율 100분의 15")]
+    data = good_data()
+    data["intro"].append(P("15%를 적용하면 최대 150만 원입니다."))      # 한도가 본문 소제목에만 있음
+    data["sections"][0]["blocks"] = [para("한도는 1,000만 원입니다."),
+                                     {"type": "table", "table": {"caption": "표", "headers": ["율", "최대"],
+                                                                 "rows": [["15%", "최대 150만 원"]]}}]
+    data["sections"][1]["blocks"] = [{"type": "table", "table": {"caption": "표", "headers": ["율", "최대"],
+                                                                 "rows": [["15%", "최대 150만 원"]]}}]
+    assert "150만 원" in missing_figures(model(data), srcs)     # 도입과 둘째 소제목은 한도 근거 없음
+    data["intro"].pop()
+    data["sections"][1]["blocks"].insert(0, para("연 1,000만 원까지입니다."))
+    assert "150만 원" not in missing_figures(model(data), srcs)
