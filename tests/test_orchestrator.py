@@ -873,3 +873,19 @@ def test_next_reuses_saved_screenshot_and_file_ids(env):
     orch.handle_next(NextAction(a, "cb", 80))
     assert svc.telegram.requests[-1][4] == [saved] and svc.telegram.last_file_ids == stored
     assert len(svc.telegram.requests) == len(shots_before) + 1
+
+
+def test_first_photo_is_featured_and_also_in_body(env, tmp_path):
+    """글 화면 맨 위엔 대표 사진이 없으므로 첫 사진도 본문 제 소제목 아래에 들어가야 한다."""
+    from PIL import Image
+    from src.pipeline import make_draft
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "주제")
+    content = MasterContent.model_validate(good_data())
+    photo = tmp_path / "p.jpg"
+    Image.new("RGB", (1600, 1000), "white").save(photo)
+    pick = {"file": str(photo), "credit": "Pixabay", "page": "https://pixabay.com/x"}
+    media = {"blog": [pick] + [None] * (len(content.sections) - 1), "scenes": []}
+    out = make_draft(svc, job_id, content, [], media, None)
+    assert out["featured"] == 100
+    assert f"jcjob-{job_id}-0.jpg" in svc.wp.drafts[job_id][1]

@@ -178,7 +178,10 @@ def make_video(svc: Services, job_id: int, content: MasterContent, tts: dict, me
 
 def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list[Source], media: dict,
                post_id: int | None) -> dict:
-    """사진을 올리고 임시 글을 저장한다. 첫 사진은 대표 사진(본문에는 다시 넣지 않음)."""
+    """사진을 올리고 임시 글을 저장한다. 첫 사진은 대표 사진으로도 쓴다.
+
+    글 화면 맨 위에는 대표 사진을 보여 주지 않으므로(single.html) 첫 사진도 본문 제 소제목 아래에 넣는다.
+    """
     w, h = BLOG_IMAGE_SIZE
     images: dict[int, SectionImage] = {}
     featured = None
@@ -190,7 +193,6 @@ def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list
         up = svc.wp.upload_media(fitted, job_id, i, alt=alt, caption=pick["credit"])
         if featured is None:
             featured = up.id
-            continue
         images[i] = SectionImage(up.url, alt, f"사진: {pick['credit']}", pick["page"],
                                  width=w, height=h, media_id=up.id)
     checked_on = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %-m월 %-d일")

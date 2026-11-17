@@ -5,6 +5,7 @@ AI가 쓴 글자는 모두 이스케이프한다(태그·스크립트가 섞여�
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from html import escape
 from typing import Mapping, Sequence
@@ -150,6 +151,13 @@ def _editorial_box(checked_on: str | None) -> str:
     )
 
 
+def reference_note_text(note: str) -> str:
+    """'기준:' 표기 뒤에 붙일 정보 기준 문구. 끝의 '기준'을 떼어 '기준: … 기준' 중복을 막는다."""
+    text = note.strip()
+    trimmed = re.sub(r"\s*기준\s*$", "", text)
+    return trimmed or text
+
+
 def render_blog_html(
     content: MasterContent,
     sources: Sequence[Source],
@@ -163,7 +171,7 @@ def render_blog_html(
     images = images or {}
     out: list[str] = ['<div class="jc-article">']
     out += [_paragraph(p) for p in content.intro]
-    out.append(f'<p class="jc-reference">기준: {escape(content.reference_note)}</p>')
+    out.append(f'<p class="jc-reference">기준: {escape(reference_note_text(content.reference_note))}</p>')
     if content.eligibility.strip():
         out.append(f'<p class="jc-reference">대상: {escape(content.eligibility.strip())}</p>')
     links, _rejected = check_action_links(content.action_links, sources)

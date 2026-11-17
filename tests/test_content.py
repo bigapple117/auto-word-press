@@ -1182,3 +1182,13 @@ def test_fact_units_include_eligibility_and_link_notes():
     units = _article_units(model(data))
     assert "대상: 총급여 7천만 원 이하 무주택 세대주" in units and "평일 9~18시 상담" in units
     assert not _quoted_in_sources("연 3 회 신청", [_fact_norm("연 2 회 신청할 수 있습니다")])   # 한 글자 숫자도 대조
+
+
+def test_reference_line_does_not_repeat_gijun():
+    from src.blog_html import reference_note_text
+    assert reference_note_text("2026년 정기신청(2025년 소득) 기준") == "2026년 정기신청(2025년 소득)"
+    assert reference_note_text("금융위원회 공식 안내 및 정책 자료 기준 ") == "금융위원회 공식 안내 및 정책 자료"
+    assert reference_note_text("2026년 1월 공고") == "2026년 1월 공고"
+    assert reference_note_text("기준") == "기준"
+    html = render_blog_html(MasterContent.model_validate(good_data()), [])
+    assert '<p class="jc-reference">기준: 2026년 정기신청(2025년 소득)</p>' in html
