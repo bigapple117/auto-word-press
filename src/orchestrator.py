@@ -29,7 +29,7 @@ from src.ai_generator import ModelBusyError
 from src.content_schema import MasterContent
 from src.pipeline import (PipelineError, Services, job_dir, make_content, make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
-from src import daily_guard, topic_service
+from src import daily_guard, freshness, topic_service
 from src.daily_guard import DailyGuard
 from src.telegram_notifier import Decision, NextAction, TelegramError, TopicAction
 from src.wp_client import WPError
@@ -519,6 +519,19 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
                 stop.wait(daily_guard.CHECK_SECONDS)
 
         threading.Thread(target=daily_publish, name="daily-publish", daemon=True).start()
+
+        def freshness_check() -> None:
+            """하루 한 번(오전 10시 이후) 발행된 글의 '다시 볼 날짜'를 정하고 지난 글을 알린다. 글은 고치지 않는다."""
+            deps = freshness.Deps(services.wp, services.generator, services.telegram, settings.data_dir)
+            while not stop.wait(freshness.CHECK_SECONDS):
+                try:
+                    note = freshness.run_if_due(deps)
+                    if note:
+                        log.info("글 점검: %s", note)
+                except Exception:  # noqa: BLE001
+                    log.exception("글 점검 오류")
+
+        threading.Thread(target=freshness_check, name="freshness", daemon=True).start()
         worker = Orchestrator(main_conn, services)
         log.info("실행기 시작")
         try:

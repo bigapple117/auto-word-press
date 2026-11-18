@@ -21,7 +21,7 @@ from src.blog_html import SectionImage, render_blog_html
 from src.config import ROOT, Settings
 from src.law_source import LawClient, find_law_sources
 from src.link_check import is_home
-from src.content_schema import MasterContent
+from src.content_schema import MasterContent, slug_without_year
 from src.remote_reader import GeminiPageReader
 from src.source_fetcher import Source, fetch_sources
 from src.source_finder import NaverSearch, find_official_urls
@@ -199,7 +199,7 @@ def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list
     html = render_blog_html(content, sources, images, checked_on=checked_on)
     tag_ids = svc.wp.ensure_tags([content.focus_keyword, *content.tags][:5])
     category, category_warning = choose_category(svc, content)
-    post = svc.wp.save_draft(job_id, content.title, html, slug=content.slug,
+    post = svc.wp.save_draft(job_id, content.title, html, slug=slug_without_year(content.slug),
                              excerpt=content.meta_description, featured_media=featured, post_id=post_id,
                              tags=tag_ids, categories=[category["id"]] if category else None)
     return {"post_id": post.id, "status": post.status, "link": post.link, "featured": featured,

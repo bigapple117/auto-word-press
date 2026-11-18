@@ -969,6 +969,10 @@ class ContentGenerator:
         valid = {a.key for a in candidates}
         return [k for k in dict.fromkeys(k.strip() for k in keys) if k in valid][:limit]
 
+    def structured(self, prompt: str, schema: type, system: str) -> tuple[str, str]:
+        """정해진 형식(JSON)으로 답을 받는 짧은 질문. (응답 글자, 실제 쓴 모델)."""
+        return self._call_with_retry(prompt, schema=schema, system=system)
+
     def choose_category(self, title: str, summary: str, tags: Sequence[str],
                         options: Sequence[tuple[str, str, str]]) -> str:
         """글에 맞는 분류 slug 하나. 목록 밖의 답이면 GenerationError."""

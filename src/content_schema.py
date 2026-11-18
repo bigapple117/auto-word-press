@@ -5,6 +5,7 @@ AI는 HTML을 쓰지 않고 구조화된 글자만 돌려준다. HTML은 blog_ht
 """
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -93,7 +94,7 @@ class ActionLink(BaseModel):
 
 class MasterContent(BaseModel):
     title: str = Field(description="블로그 제목 25~45자, 핵심 검색어를 앞쪽에. '총정리'·'한눈에' 같은 상투어 금지")
-    slug: str = Field(description="주소용 이름. 주제를 영어 단어로 옮겨 영문 소문자·숫자·하이픈만 쓴다(한글 금지). 예: 2026-year-end-tax-preview")
+    slug: str = Field(description="주소용 이름. 주제를 영어 단어로 옮겨 영문 소문자·숫자·하이픈만 쓴다(한글 금지). 연도 숫자는 넣지 않는다(해가 바뀌어도 같은 주소로 고쳐 쓰기 때문). 예: year-end-tax-preview")
     meta_description: str = Field(description="검색 결과 설명 80~150자")
     focus_keyword: str = Field(description="핵심 검색어 하나")
     tags: list[str] = Field(default_factory=list, description="글 태그 2~4개(짧은 명사, 예: '자녀장려금', '홈택스')")
@@ -113,6 +114,16 @@ class MasterContent(BaseModel):
         default_factory=list,
         description="독자에게 필요하지만 제공된 자료로 확인되지 않아 본문에 쓰지 않은 내용",
     )
+
+
+_YEAR = re.compile(r"(19|20)\d\d")
+
+
+def slug_without_year(slug: str) -> str:
+    """주소에서 연도 조각(2026 등)을 뺀다. 글을 해마다 같은 주소로 고쳐 쓰기 위해서다(주소가 바뀌면 검색 순위가 처음부터).
+    빼고 나서 남는 것이 없으면 원래 주소."""
+    parts = [p for p in slug.strip().split("-") if p and not _YEAR.fullmatch(p)]
+    return "-".join(parts) or slug.strip()
 
 
 def paragraph_text(p: Paragraph | None) -> str:

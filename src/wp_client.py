@@ -233,6 +233,13 @@ class WordPressClient:
             return None
         return WPPost(p["id"], p["status"], p.get("link", ""))
 
+    def list_published_posts(self) -> list[dict[str, Any]]:
+        """발행된 글 전부: id, link, title(글자), date_gmt(발행), modified_gmt."""
+        items = self._get_all("/posts", {"status": "publish", "context": "edit",
+                                         "_fields": "id,link,title,date_gmt,modified_gmt"})
+        return [{"id": p["id"], "link": p["link"], "title": (p.get("title") or {}).get("raw", ""),
+                 "date_gmt": p["date_gmt"], "modified_gmt": p["modified_gmt"]} for p in items]
+
     def get_post_content(self, post_id: int) -> str:
         """글 본문 HTML(관리자 화면에서 직접 고친 내용 포함)."""
         p = self._request("GET", f"/posts/{int(post_id)}", params={"context": "edit", "_fields": "content"})
