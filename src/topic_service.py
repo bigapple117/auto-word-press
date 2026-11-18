@@ -44,7 +44,7 @@ class TopicDeps:
 
 
 def _all_jobs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [dict(r) for r in conn.execute("SELECT id, topic, status, post_id, post_url, created_at FROM jobs")]
+    return [dict(r) for r in conn.execute("SELECT id, topic, status, post_id, post_url, created_at, source_ref FROM jobs")]
 
 
 def _queue_note(jobs: list[dict[str, Any]]) -> str:
@@ -322,7 +322,9 @@ def _send(deps: TopicDeps, text: str) -> None:
 
 
 def _pending(jobs_conn: sqlite3.Connection) -> int:
-    return sum(j["status"] in PENDING for j in _all_jobs(jobs_conn))
+    # 갱신 작업(이미 있는 글 고치기)은 새 글 대기 수에서 뺀다
+    return sum(j["status"] in PENDING and not str(j.get("source_ref") or "").startswith("refresh:")
+               for j in _all_jobs(jobs_conn))
 
 
 def _auto_register(deps: TopicDeps, store: sqlite3.Connection, jobs_conn: sqlite3.Connection,

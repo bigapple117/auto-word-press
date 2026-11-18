@@ -269,7 +269,8 @@ def due_message(rows: Sequence[sqlite3.Row], today: date, more: int = 0) -> str:
         lines.append(f" {r['link']}")
     if more:
         lines.append(f"\n나머지 {more}편은 내일 이어서 알려 드립니다.")
-    lines.append("\n고칠 글이 있으면 Claude에게 \"글 OO번 갱신\"이라고 말해 주세요. "
+    lines.append("\n고칠 글이 있으면 이 대화방에 \"갱신 80\"처럼 글 번호를 보내 주세요"
+                 "(자료를 다시 찾아 고친 글로 승인 요청을 드리고, [발행]을 눌러야 바뀝니다). "
                  f"그대로 두면 {REMIND_DAYS}일 뒤 다시 알려 드립니다.")
     return "\n".join(lines)
 

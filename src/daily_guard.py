@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from src import db
+from src import db, refresh
 from src.telegram_notifier import Decision
 
 if TYPE_CHECKING:
@@ -106,7 +106,8 @@ class DailyGuard:
 
     def publish_oldest(self, rejected: list[int]) -> tuple[str, bool, int | None]:
         """(기록용 문장, 오늘 일을 끝냈는지, 결과를 지켜볼 작업 번호). 거절된 글 번호는 rejected에 더한다."""
-        waiting = [j for j in self.orch.awaiting_jobs() if j["id"] not in rejected]
+        # 갱신 작업은 사람이 직접 승인할 때만 반영(아침 자동 발행에서 뺀다)
+        waiting = [j for j in self.orch.awaiting_jobs() if j["id"] not in rejected and not refresh.is_refresh(j)]
         held = [j["id"] for j in waiting if fact_hold(j)]
         jobs = [j for j in waiting if j["id"] not in held]
         if not jobs:

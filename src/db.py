@@ -142,8 +142,12 @@ def create_job(
     target_seconds: int = 30,
     source: str = "web",
     source_ref: str | None = None,
+    checkpoint: dict[str, Any] | None = None,
 ) -> int:
-    """작업을 등록하고 번호를 돌려준다. 같은 source + source_ref가 이미 있으면 그 번호를 돌려준다."""
+    """작업을 등록하고 번호를 돌려준다. 같은 source + source_ref가 이미 있으면 그 번호를 돌려준다.
+
+    checkpoint: 처음부터 넣어 둘 체크포인트(예: 갱신 대상 글). 등록과 같은 순간에 넣어야
+    실행기가 그 사이에 작업을 가져가 일반 새 글로 처리하는 일이 없다."""
     topic = topic.strip()
     if not topic:
         raise JobError("주제가 비어 있습니다")
@@ -163,9 +167,10 @@ def create_job(
         try:
             cur = conn.execute(
                 """INSERT INTO jobs (topic, mode, target_seconds, source, source_ref,
-                                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (topic, mode, target_seconds, source, source_ref, now, now),
+                                     checkpoint, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (topic, mode, target_seconds, source, source_ref,
+                 json.dumps(checkpoint or {}, ensure_ascii=False), now, now),
             )
         except sqlite3.IntegrityError as exc:
             raise JobError(f"작업 값이 올바르지 않습니다: {exc}") from exc

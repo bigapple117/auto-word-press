@@ -63,6 +63,18 @@ class TopicAction:
 
 
 @dataclass(frozen=True)
+class RefreshCommand:
+    """사용자가 대화방에 '갱신 80'이라고 보낸 글자 명령(발행된 글 80번을 같은 주소에서 고쳐 쓰기)."""
+    post_id: int
+    message_id: int | None
+    callback_id: str = ""          # 버튼이 아니라 글자라 화면 안내(answer)는 없다
+    action: str = "refresh"
+
+
+REFRESH_TEXT = re.compile(r"^\s*(?:글\s*)?(\d+)\s*번?\s*갱신\s*$|^\s*갱신\s*(?:글\s*)?(\d+)\s*번?\s*$")
+
+
+@dataclass(frozen=True)
 class NextAction:
     """[다음 글 보기] 버튼. after_job_id 다음 번호의 승인 대기 글을 맨 아래로 다시 보낸다."""
     after_job_id: int
@@ -344,18 +356,22 @@ class TelegramNotifier:
 
     # ----- 받기 -----
     def poll_decisions(self, offset: int | None,
-                       wait_seconds: int = 25) -> tuple[list[Decision | TopicAction | NextAction], int | None]:
-        """버튼 응답을 가져온다. (결정 목록, 다음 offset). 우리 대화방·우리 서명이 아닌 것은 버린다."""
-        params: dict[str, Any] = {"timeout": wait_seconds, "allowed_updates": ["callback_query"]}
+                       wait_seconds: int = 25
+                       ) -> tuple[list[Decision | TopicAction | NextAction | RefreshCommand], int | None]:
+        """버튼 응답과 '갱신 80' 글자 명령을 가져온다. (결정 목록, 다음 offset). 우리 대화방·우리 서명이 아닌 것은 버린다."""
+        params: dict[str, Any] = {"timeout": wait_seconds, "allowed_updates": ["callback_query", "message"]}
         if offset is not None:
             params["offset"] = offset
         updates = self._call("getUpdates", timeout=wait_seconds + 15, json=params)
-        decisions: list[Decision | TopicAction | NextAction] = []
+        decisions: list[Decision | TopicAction | NextAction | RefreshCommand] = []
         next_offset = offset
         for u in updates:
             next_offset = int(u["update_id"]) + 1
             cq = u.get("callback_query")
             if not cq:
+                cmd = self.parse_refresh_message(u.get("message") or {})
+                if cmd:
+                    decisions.append(cmd)
                 continue
             msg = cq.get("message") or {}
             chat_ok = str((msg.get("chat") or {}).get("id")) == self.chat_id
@@ -378,6 +394,15 @@ class TelegramNotifier:
                 continue
             decisions.append(Decision(parsed[0], parsed[1], parsed[2], cq["id"], msg.get("message_id")))
         return decisions, next_offset
+
+    def parse_refresh_message(self, msg: dict[str, Any]) -> RefreshCommand | None:
+        """우리 대화방에서 본인이 보낸 '갱신 80'·'글 80번 갱신'만. 다른 글자는 무시."""
+        if str((msg.get("chat") or {}).get("id")) != self.chat_id or str((msg.get("from") or {}).get("id")) != self.chat_id:
+            return None
+        m = REFRESH_TEXT.match(msg.get("text") or "")
+        if not m:
+            return None
+        return RefreshCommand(int(m.group(1) or m.group(2)), msg.get("message_id"))
 
     def answer(self, callback_id: str, text: str) -> None:
         """버튼을 누른 사람 화면에 짧은 안내를 띄운다(실패해도 무시)."""

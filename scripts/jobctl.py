@@ -28,6 +28,19 @@ STATUS_KO = {"queued": "대기", "generating": "1단계:자료·글", "tts": "2�
              "published": "발행완료", "failed": "실패", "canceled": "취소"}
 
 
+def _refresh_blocked(conn, settings, job_id: int) -> bool:
+    """갱신 작업이 이미 원래 글에 반영됐거나 같은 글에 다른 갱신이 진행 중이면 막는다."""
+    from src import refresh
+    j = db.get_job(conn, job_id)
+    if not j or not refresh.is_refresh(j):
+        return False
+    from src.wp_client import WordPressClient
+    reason = refresh.rework_blocker(conn, WordPressClient.from_settings(settings), j)
+    if reason:
+        print(reason)
+    return bool(reason)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -36,6 +49,8 @@ def main() -> int:
     a.add_argument("--mode", default="blog_shorts", choices=["blog_shorts", "blog"])
     a.add_argument("--seconds", type=int, default=30)
     a.add_argument("--ref", default=None, help="중복 등록 방지용 출처 번호(예: 시트 행)")
+    rf = sub.add_parser("refresh", help="발행된 글을 같은 주소에서 고쳐 쓰기(승인 후 반영)")
+    rf.add_argument("post_id", type=int)
     lst = sub.add_parser("list")
     lst.add_argument("--status", default=None)
     for name in ("show", "retry", "cancel", "redo", "redraft"):
@@ -49,10 +64,23 @@ def main() -> int:
 
     settings = load_settings()
     conn = db.connect(settings.db_path)
+    if args.cmd in ("retry", "redo", "redraft", "cancel"):
+        from src import refresh
+        with refresh.lock(conn):   # 확인부터 상태 변경까지 갱신 요청 등록(텔레그램)과 겹치지 않게
+            return _run(args, settings, conn)
+    return _run(args, settings, conn)
 
+
+def _run(args, settings, conn) -> int:
     if args.cmd == "add":
         job_id = db.create_job(conn, args.topic, args.mode, args.seconds, source="cli", source_ref=args.ref)
         print(f"작업 {job_id}번 등록: {args.topic} ({args.mode}, {args.seconds}초)")
+    elif args.cmd == "refresh":
+        from src import refresh
+        from src.wp_client import WordPressClient
+        job_id, note = refresh.request_refresh(conn, WordPressClient.from_settings(settings), args.post_id)
+        print(note)
+        return 0 if job_id else 1
     elif args.cmd == "list":
         for j in db.list_jobs(conn, status=args.status, limit=50):
             print(f"{j['id']:>4}  {STATUS_KO.get(j['status'], j['status']):<12} {j['topic'][:30]:<30} "
@@ -67,6 +95,8 @@ def main() -> int:
             cp["content"] = {k: v for k, v in cp["content"].items() if k in ("warnings", "source_errors", "model")}
             cp["content"]["title"] = j.get("title")
         print(json.dumps({**j, "checkpoint": cp}, ensure_ascii=False, indent=2))
+    elif args.cmd in ("retry", "redo", "redraft", "cancel") and _refresh_blocked(conn, settings, args.job_id):
+        return 1
     elif args.cmd == "retry":
         db.set_status(conn, args.job_id, "queued")
         print(f"작업 {args.job_id}번을 다시 대기열에 넣었습니다")

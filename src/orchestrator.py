@@ -29,9 +29,9 @@ from src.ai_generator import ModelBusyError
 from src.content_schema import MasterContent
 from src.pipeline import (PipelineError, Services, job_dir, make_content, make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
-from src import daily_guard, freshness, topic_service
+from src import daily_guard, freshness, refresh, topic_service
 from src.daily_guard import DailyGuard
-from src.telegram_notifier import Decision, NextAction, TelegramError, TopicAction
+from src.telegram_notifier import Decision, NextAction, RefreshCommand, TelegramError, TopicAction
 from src.wp_client import WPError
 from src.youtube_kit import MAX_REPORTED_NUMBERS, build_upload_kit, numbers_missing_from_post
 
@@ -215,8 +215,12 @@ class Orchestrator:
         if not db.begin_publishing(self.conn, d.job_id, nonce=d.nonce):
             return "이미 처리 중이거나 발행할 수 없는 상태입니다"
         post_id = db.get_job(self.conn, d.job_id)["post_id"]
+        target = refresh.target_of(job)
         try:
-            post = self.svc.wp.publish(d.job_id, post_id)
+            if target:   # 갱신: 임시 글 내용을 원래 글에 덮어쓰기(주소·작성일 그대로)
+                post = self.svc.wp.apply_refresh(d.job_id, post_id, target["post_id"])
+            else:
+                post = self.svc.wp.publish(d.job_id, post_id)
         except Exception as exc:  # noqa: BLE001
             log.exception("작업 %s번 발행 요청 실패", d.job_id)
             definite = isinstance(exc, WPError) and exc.status is not None and 400 <= exc.status < 500
@@ -229,16 +233,24 @@ class Orchestrator:
                          "몇 분 안에 워드프레스 실제 상태를 확인해 정리합니다.")
             return "발행 결과 확인 중입니다"
         try:
-            db.mark_published(self.conn, d.job_id, post.id, post.link)
+            # 갱신은 장부의 글 번호를 임시 글 번호로 둔다(원래 글 번호는 처음 쓴 작업에 이미 기록돼 있음)
+            db.mark_published(self.conn, d.job_id, post_id if target else post.id, post.link)
             recorded = True
         except Exception:  # noqa: BLE001 - 발행은 됐으니 장부는 reconcile_publishing이 나중에 맞춘다
             log.exception("작업 %s번: 발행됐지만 장부 기록 실패(나중에 다시 맞춤)", d.job_id)
             recorded = False
-        tg.mark_done(d.message_id, f"[작업 {d.job_id}] 발행했습니다.\n{post.link}")
+        done = f"글 {target['post_id']}번을 갱신했습니다(주소 그대로)" if target else "발행했습니다"
+        tg.mark_done(d.message_id, f"[작업 {d.job_id}] {done}.\n{post.link}")
         if recorded:   # 기록 실패면 reconcile_publishing이 장부를 맞추면서 한 번만 보낸다(중복 방지)
             if not self.send_upload_kit(d.job_id, post.link):   # 쇼츠가 없으면 다음 글 버튼만
                 self.offer_next(d.job_id, "다음 승인 대기 글로 넘어가려면 아래 버튼을 누르세요.")
         return "발행했습니다"
+
+    def handle_refresh(self, c: RefreshCommand) -> str:
+        """'갱신 80' 글자 명령: 갱신 작업을 등록하고 결과를 대화방에 답한다."""
+        _, note = refresh.request_refresh(self.conn, self.svc.wp, c.post_id, source="web")
+        self._notify(note)
+        return note
 
     def topic_deps(self) -> topic_service.TopicDeps:
         return topic_service.TopicDeps(self.svc.settings, self.svc.search, self.svc.generator, self.svc.telegram)
@@ -250,6 +262,8 @@ class Orchestrator:
     def approval_warnings(self, cp: dict[str, Any], content: MasterContent, post_id: int) -> list[str]:
         draft = cp.get("draft") or {}
         warnings = list(cp["content"]["warnings"]) + ([draft["category_warning"]] if draft.get("category_warning") else [])
+        if cp.get("target"):
+            warnings.insert(0, refresh.approval_note(cp["target"]))
         if "video" in cp:
             mismatch = self.shorts_number_check(content, post_id)
             if mismatch:
@@ -394,9 +408,15 @@ class Orchestrator:
         fixed = []
         for job in db.stale_publishing(self.conn, older_than_seconds):
             try:
-                post = self.svc.wp.get_post(job["post_id"])
+                target = refresh.target_of(job)
+                if target:
+                    post = self.svc.wp.refresh_applied(job["id"], target["post_id"])
+                    if post:   # 이미 반영됨(승인된 작업) → 남은 임시 글만 정리
+                        post = self.svc.wp.apply_refresh(job["id"], job["post_id"], target["post_id"])
+                else:
+                    post = self.svc.wp.get_post(job["post_id"])
                 if post and post.status == "publish":
-                    db.mark_published(self.conn, job["id"], post.id, post.link)
+                    db.mark_published(self.conn, job["id"], job["post_id"] if target else post.id, post.link)
                     if not self.send_upload_kit(job["id"], post.link):
                         self.offer_next(job["id"], "다음 승인 대기 글로 넘어가려면 아래 버튼을 누르세요.")
                 else:
@@ -410,7 +430,9 @@ class Orchestrator:
         decisions, next_offset = self.svc.telegram.poll_decisions(offset, wait_seconds=wait)
         for d in decisions:
             try:
-                if isinstance(d, NextAction):
+                if isinstance(d, RefreshCommand):
+                    note = self.handle_refresh(d)
+                elif isinstance(d, NextAction):
                     note = self.handle_next(d)
                 elif isinstance(d, TopicAction):
                     note = self.handle_topic(d)

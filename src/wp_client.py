@@ -59,6 +59,9 @@ def marker_comment(job_id: int) -> str:
     return f"<!-- jalcheck-job:{job_marker(job_id)} -->"
 
 
+_MARKER_RE = re.compile(r"<!-- jalcheck-job:[A-Za-z0-9_-]+ -->")
+
+
 @contextmanager
 def job_lock(job_id: int, lock_dir: Path = LOCK_DIR) -> Iterator[None]:
     """같은 작업의 글 저장·발행은 한 번에 하나만(같은 서버 안의 동시 실행 방지)."""
@@ -239,6 +242,70 @@ class WordPressClient:
                                          "_fields": "id,link,title,date_gmt,modified_gmt"})
         return [{"id": p["id"], "link": p["link"], "title": (p.get("title") or {}).get("raw", ""),
                  "date_gmt": p["date_gmt"], "modified_gmt": p["modified_gmt"]} for p in items]
+
+    def get_post_title(self, post_id: int) -> str:
+        p = self._request("GET", f"/posts/{int(post_id)}", params={"context": "edit", "_fields": "title"})
+        return (p.get("title") or {}).get("raw", "")
+
+    def _get_or_none(self, post_id: int, fields: str) -> dict[str, Any] | None:
+        try:
+            p = self._request("GET", f"/posts/{int(post_id)}", params={"context": "edit", "_fields": fields})
+        except WPError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        return p
+
+    def refresh_applied(self, job_id: int, target_id: int) -> WPPost | None:
+        """갱신 작업 job_id의 내용이 이미 원래 글에 들어갔으면 그 글, 아니면 None."""
+        t = self._get_or_none(target_id, "id,status,link,content")
+        if t and t.get("status") == "publish" and marker_comment(job_id) in (t.get("content", {}).get("raw") or ""):
+            return WPPost(t["id"], t["status"], t.get("link", ""))
+        return None
+
+    def refresh_marked(self, job_id: int, target_id: int) -> bool:
+        """원래 글에 이 갱신 작업의 표시가 있는지(공개 여부와 무관). 재작업 차단용."""
+        t = self._get_or_none(target_id, "id,content")
+        return bool(t) and marker_comment(job_id) in (t.get("content", {}).get("raw") or "")
+
+    def apply_refresh(self, job_id: int, draft_id: int, target_id: int) -> WPPost:
+        """갱신본 임시 글(draft_id)의 내용을 발행된 원래 글(target_id)에 덮어쓰고 임시 글은 휴지통으로.
+
+        주소(slug)·작성일·상태는 보내지 않으므로 그대로다. 이미 반영됐으면 임시 글만 정리하고 돌려준다
+        (두 번 눌러도, 중간에 끊겨 다시 눌러도 안전)."""
+        with job_lock(job_id, self.lock_dir):
+            marker = marker_comment(job_id)
+            target = self._get_or_none(target_id, "id,status,link,content")
+            if not target or target.get("status") != "publish":
+                raise WPError(f"원래 글 {target_id}번이 발행 상태가 아닙니다. 갱신하지 않습니다", 409)
+            draft = self._get_or_none(draft_id, "id,status,title,content,excerpt,featured_media,tags,categories")
+            draft_live = bool(draft and draft.get("status") != "trash")
+            if marker not in (target.get("content", {}).get("raw") or ""):
+                if not draft_live or marker not in (draft.get("content", {}).get("raw") or ""):
+                    raise WPError(f"작업 {job_id}번의 갱신본 임시 글 {draft_id}번이 없습니다(삭제됐거나 휴지통)", 409)
+                if draft.get("status") != "draft":
+                    raise WPError(f"갱신본 글 {draft_id}번이 임시 글이 아닙니다({draft.get('status')}). 직접 확인이 필요합니다", 409)
+                # 원래 글을 처음 쓴 작업의 표시도 남긴다(그 작업으로 하던 대표 사진 교체 등이 계속 되게)
+                old = [m for m in dict.fromkeys(_MARKER_RE.findall(target.get("content", {}).get("raw") or ""))
+                       if m not in draft["content"]["raw"]]
+                body: dict[str, Any] = {
+                    "title": draft["title"]["raw"], "content": "\n".join([*old, draft["content"]["raw"]]),
+                    "excerpt": draft["excerpt"]["raw"], "tags": draft.get("tags") or [],
+                }
+                if draft.get("featured_media"):
+                    body["featured_media"] = draft["featured_media"]
+                if draft.get("categories"):
+                    body["categories"] = draft["categories"]
+                target = self._request("POST", f"/posts/{int(target_id)}", json=body)
+                if target.get("status") != "publish":
+                    raise WPError(f"갱신 뒤 원래 글 상태가 {target.get('status')}입니다")
+            if draft_live:
+                try:   # force 없음 = 휴지통(되살릴 수 있음). 원래 글은 이미 바뀌었으니 실패해도 갱신은 완료로 본다
+                    self._request("DELETE", f"/posts/{int(draft_id)}")
+                except WPError as exc:
+                    log.warning("작업 %s번: 갱신은 반영했지만 임시 글 %s번 휴지통 이동 실패(직접 정리): %s",
+                                job_id, draft_id, exc)
+            return WPPost(target["id"], target["status"], target.get("link", ""))
 
     def get_post_content(self, post_id: int) -> str:
         """글 본문 HTML(관리자 화면에서 직접 고친 내용 포함)."""
