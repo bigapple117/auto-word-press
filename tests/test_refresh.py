@@ -113,8 +113,10 @@ def test_request_refresh_creates_blog_job_with_target_in_same_insert(conn, refre
     observed = []
     worker = db.connect(conn.execute("PRAGMA database_list").fetchone()[2])
 
+    expected_target = {**TARGET, "checks": []}
+
     def create_and_claim(*args, **kwargs):
-        assert kwargs["checkpoint"] == {"target": TARGET}
+        assert kwargs["checkpoint"] == {"target": expected_target}
         job_id = create(*args, **kwargs)
         # create_job이 반환하자마자 다른 연결의 실행기가 가져가도 대상이 이미 있어야 한다.
         observed.append(db.claim_next(worker))
@@ -126,10 +128,10 @@ def test_request_refresh_creates_blog_job_with_target_in_same_insert(conn, refre
     finally:
         worker.close()
     job = db.get_job(conn, job_id)
-    assert observed[0]["checkpoint"] == job["checkpoint"] == {"target": TARGET}
+    assert observed[0]["checkpoint"] == job["checkpoint"] == {"target": expected_target}
     assert job["topic"] == "근로장려금 신청" and job["mode"] == "blog"
     assert job["source"] == "web" and job["source_ref"].startswith("refresh:80:")
-    assert refresh.is_refresh(job) and refresh.target_of(job) == TARGET
+    assert refresh.is_refresh(job) and refresh.target_of(job) == expected_target
     assert "등록했습니다" in note and "[발행]" in note
     assert all(call[0] == "GET" for call in http.calls)  # 승인 전 원문 변경 없음
 
@@ -152,7 +154,7 @@ def test_request_refresh_file_database_creates_lock(tmp_path, refresh_wp, frozen
     conn = db.connect(tmp_path / "jobs.db")
     try:
         job_id, _ = refresh.request_refresh(conn, refresh_wp[0], 80, now=NOW)
-        assert db.get_job(conn, job_id)["checkpoint"]["target"] == TARGET
+        assert db.get_job(conn, job_id)["checkpoint"]["target"] == {**TARGET, "checks": []}
         assert (tmp_path / "refresh.lock").is_file()
     finally:
         conn.close()
@@ -522,9 +524,48 @@ def test_handle_refresh_registers_web_job_and_reports_result(env, refresh_wp, fr
     note = orch.handle_refresh(RefreshCommand(80, 77))
     job = db.list_jobs(conn)[0]
     assert job["source"] == "web" and job["mode"] == "blog"
-    assert job["checkpoint"]["target"] == TARGET
+    assert job["checkpoint"]["target"] == {**TARGET, "checks": []}
     assert "등록했습니다" in note
     assert svc.telegram.texts == [note]
+
+
+def test_handle_refresh_saves_freshness_checks_into_target(env, refresh_wp, frozen_now):
+    import json
+    from src import freshness
+    orch, svc, conn, _ = env
+    svc.wp = refresh_wp[0]
+    fconn = freshness.connect(freshness.store_path(svc.settings.data_dir))
+    try:
+        fconn.execute(
+            "INSERT INTO posts (post_id, link, title, modified, recheck_on, items, model, planned_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (80, TARGET["link"], TARGET["title"], "2026-01-01T00:00:00", "2026-11-01",
+             json.dumps([{"what": "2026년 지급액 330만 원", "recheck_on": "2027-01-05", "why": "2027년 고시 확인"}],
+                        ensure_ascii=False),
+             "gemini", "2026-01-02T00:00:00"),
+        )
+        fconn.commit()
+    finally:
+        fconn.close()
+    orch.handle_refresh(RefreshCommand(80, 77))
+    job = db.list_jobs(conn)[0]
+    assert job["checkpoint"]["target"]["checks"] == ["2026년 지급액 330만 원 (확인 이유: 2027년 고시 확인)"]
+
+
+def test_refresh_process_passes_target_checks_to_make_content_and_generate(env, refresh_wp, frozen_now, monkeypatch):
+    orch, svc, conn, _ = env
+    checks = ["2026년 지급액 330만 원 (확인 이유: 2027년 고시 확인)"]
+    job_id, _ = refresh.request_refresh(conn, refresh_wp[0], 80, now=NOW, checks=checks)
+    seen = []
+    orig_generate = svc.generator.generate
+
+    def spy_generate(topic, sources, seconds, news=(), checks=()):
+        seen.append(list(checks))
+        return orig_generate(topic, sources, seconds, news=news, checks=checks)
+
+    monkeypatch.setattr(svc.generator, "generate", spy_generate)
+    assert orch.run_once() == job_id
+    assert seen == [checks]
 
 
 @pytest.mark.parametrize("with_new_post", [True, False])

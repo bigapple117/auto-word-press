@@ -90,8 +90,11 @@ def rework_blocker(conn, wp, job: dict[str, Any]) -> str | None:
     return None
 
 
-def request_refresh(conn, wp, post_id: int, source: str = "cli", now: datetime | None = None) -> tuple[int | None, str]:
-    """(등록한 작업 번호 또는 None, 사용자에게 보일 안내)."""
+def request_refresh(conn, wp, post_id: int, source: str = "cli", now: datetime | None = None,
+                    checks: list[str] | None = None) -> tuple[int | None, str]:
+    """(등록한 작업 번호 또는 None, 사용자에게 보일 안내).
+
+    checks: 유효기간 점검 장부가 이 글에 표시해 둔 '바뀔 수 있는 정보'(freshness.checks_for). 글쓰기에 힌트로 넘긴다."""
     now = now or datetime.now(timezone.utc)
     post = wp.get_post(post_id)
     if post is None or post.status != "publish":
@@ -104,7 +107,7 @@ def request_refresh(conn, wp, post_id: int, source: str = "cli", now: datetime |
         today = now.astimezone(KST).date().isoformat()
         if sum(is_refresh(j) and _created_kst_day(j) == today for j in db.list_jobs(conn, limit=-1)) >= MAX_REFRESH_PER_DAY:
             return None, f"오늘 갱신 요청은 {MAX_REFRESH_PER_DAY}건까지입니다. 내일 다시 보내 주세요"
-        target = {"post_id": int(post_id), "link": post.link, "title": title}
+        target = {"post_id": int(post_id), "link": post.link, "title": title, "checks": list(checks or [])}
         job_id = db.create_job(conn, topic_from_title(title), mode="blog", source=source,
                                source_ref=f"{PREFIX}{int(post_id)}:{now.isoformat(timespec='seconds')}",
                                checkpoint={"target": target})

@@ -34,7 +34,7 @@ class FakeGenerator:
 
     model = "gemini-3.8-flash"
 
-    def generate(self, topic, sources, seconds, news=()):
+    def generate(self, topic, sources, seconds, news=(), checks=()):
         self.calls += 1
         return GenerationResult(MasterContent.model_validate(good_data()), self.model, 1, ["경고 하나"])
 

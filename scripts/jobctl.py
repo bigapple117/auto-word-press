@@ -76,9 +76,10 @@ def _run(args, settings, conn) -> int:
         job_id = db.create_job(conn, args.topic, args.mode, args.seconds, source="cli", source_ref=args.ref)
         print(f"작업 {job_id}번 등록: {args.topic} ({args.mode}, {args.seconds}초)")
     elif args.cmd == "refresh":
-        from src import refresh
+        from src import freshness, refresh
         from src.wp_client import WordPressClient
-        job_id, note = refresh.request_refresh(conn, WordPressClient.from_settings(settings), args.post_id)
+        job_id, note = refresh.request_refresh(conn, WordPressClient.from_settings(settings), args.post_id,
+                                               checks=freshness.checks_for(settings.data_dir, args.post_id))
         print(note)
         return 0 if job_id else 1
     elif args.cmd == "list":

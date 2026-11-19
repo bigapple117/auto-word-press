@@ -792,7 +792,7 @@ class ContentGenerator:
 
     def generate(
         self, topic: str, sources: Sequence[Source], target_seconds: int = 30,
-        news: Sequence[tuple[str, str]] = (),
+        news: Sequence[tuple[str, str]] = (), checks: Sequence[str] = (),
     ) -> GenerationResult:
         if not sources:
             raise GenerationError("근거 자료가 없습니다. 자료 없이 글을 쓰지 않습니다.")
@@ -802,7 +802,7 @@ class ContentGenerator:
         draft: tuple[str, list[str]] | None = None
         for round_no in range(1, MAX_QUALITY_ROUNDS + 1):
             prompt = build_prompt(topic, sources, target_seconds, feedback=feedback, news=news,
-                                  previous=draft[0] if draft else None)
+                                  previous=draft[0] if draft else None, checks=checks)
             raw, model = self._call_with_retry(prompt, models=self.blog_models)
             try:
                 content = MasterContent.model_validate_json(raw)

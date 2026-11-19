@@ -847,3 +847,10 @@
 - 파일: src/refresh.py(신규), tests/test_refresh.py(신규, Codex 작성 97개), src/wp_client.py(get_post_title·refresh_applied·refresh_marked·apply_refresh), src/orchestrator.py(발행·복구·경고·텔레그램 갱신 명령), src/telegram_notifier.py(RefreshCommand·메시지 받기), src/db.py(create_job checkpoint), src/daily_guard.py, src/topic_service.py, scripts/jobctl.py(refresh 명령·차단·잠금), src/freshness.py(알림 문구에 사용법).
 - 검증: 전체 테스트 639개 중 638 통과(실패 1건은 기존 별건 test_topic_service::test_orchestrator_routes_topic_buttons). 11-19 첫 실제 갱신: 글 80번(청년도약계좌) → 작업 38번, 임시 글 216 승인·발행. 주소·작성일(11-09) 그대로, 수정일만 11-19, 제목·본문·대표 사진 교체, 옛 표시 보존, 216은 휴지통, 사이트 200 확인.
 - 남은 일: 휴지통 이동 실패 시 남는 임시 글은 수동 정리, 원래 글을 만든 옛 작업의 사진은 갱신 후 안 쓰여도 남음(용량 작음, 정리 기능 없음), (선택) 2단계 알림의 '바뀔 항목'을 갱신 글쓰기에 힌트로 전달, ④(선택) 공식 출처 변경 감시. 텔레그램 '취소' 버튼은 작업 상태만 바꾸므로 잠금 대상 아님(사진 삭제 없음).
+
+## 2026-11-19 갱신 글쓰기에 유효기간 장부의 '바뀔 항목' 전달 (지시: 사용자 / 작업: Claude, 시험 Gemini(Codex 5시간 상한) / 검토: Gemini argon(일반) APPROVE)
+- 이유: 갱신 때 주제만 넘기면 어떤 정보가 낡았는지 글쓰기 AI가 모른다. 2단계 점검이 찾아 둔 '시간이 지나면 바뀌는 정보'를 짚어 주면 고칠 곳을 빠뜨리지 않는다.
+- 동작: 갱신 등록(텔레그램 '갱신 N'·jobctl refresh) 때 freshness.checks_for가 장부(data/freshness.sqlite3 posts.items)의 항목을 'what (확인 이유: why)' 목록으로 읽어 checkpoint.target.checks에 저장 → 글쓰기 지시문에 "[다시 확인할 항목 - 예전 글 기준, 사실 근거 아님]" 블록으로 추가. 적힌 값은 예전 값이라 자료에서 최신 값을 찾고, 자료에 없으면 쓰지 않게 지시. 검토·사실 확인 단계에는 넘기지 않음(자료만 기준).
+- 새 글·checks 없는 옛 갱신 작업은 지시문이 이전과 똑같다. 장부가 없거나 읽기 실패면 빈 목록으로 진행(경고 로그).
+- 파일: templates/prompt_template.py, src/ai_generator.py, src/pipeline.py, src/orchestrator.py, src/refresh.py, src/freshness.py, scripts/jobctl.py, tests(test_refresh·test_freshness·test_content·test_orchestrator).
+- 검증: 운영 장부에서 글 80번 3개·173번 2개 항목 읽힘, 없는 글은 빈 목록. 테스트 644개 중 643 통과(기존 별건 1건).

@@ -135,8 +135,11 @@ def build_prompt(
     feedback: str | None = None,
     news: Sequence[tuple[str, str]] = (),
     previous: str | None = None,
+    checks: Sequence[str] = (),
 ) -> str:
     """사용자 지시문을 만든다. feedback은 이전 결과가 검사에 걸렸을 때 고칠 점.
+
+    checks: 발행 글 갱신 때 유효기간 점검이 찾아 둔 '시간이 지나면 바뀌는 정보'(예전 값). 확인할 곳 표시로만 쓴다.
 
     news: (날짜, 제목) 목록. 변경 신호로만 쓴다.
     previous: 검사에 걸린 이전 결과 JSON. 있으면 새로 쓰지 않고 고칠 점만 고치게 한다.
@@ -163,6 +166,14 @@ def build_prompt(
     if news:
         lines = "\n".join(f"- {d} {t}" for d, t in news)
         parts.append(f"[최근 뉴스 - 변경 신호, 사실 근거 아님]\n{lines}")
+    if checks:
+        lines = "\n".join(f"- {c}" for c in checks)
+        parts.append(
+            "[다시 확인할 항목 - 예전 글 기준, 사실 근거 아님]\n"
+            "같은 주제로 예전에 발행한 글에서 시간이 지나 바뀌었을 수 있다고 표시해 둔 정보다. 적힌 값은 예전 값이다. "
+            "[자료]에서 각 항목의 최신 값(금액·기간·대상·신청 가능 여부)을 찾아 반영하고, 자료에 없으면 예전 값을 "
+            "그대로 쓰지 않는다.\n" + lines
+        )
     if feedback:
         parts.append(f"[이전 결과에서 고칠 점]\n{feedback}")
     if previous:

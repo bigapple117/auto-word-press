@@ -72,7 +72,8 @@ class Orchestrator:
         cp = job["checkpoint"]
 
         if "content" not in cp:
-            cp["content"] = make_content(self.svc, job["topic"], seconds)
+            checks = (refresh.target_of(job) or {}).get("checks") or ()   # 갱신이면 점검 장부의 '바뀔 항목'
+            cp["content"] = make_content(self.svc, job["topic"], seconds, checks=checks)
             db.save_checkpoint(self.conn, job_id, "content", cp["content"])
             db.update_fields(self.conn, job_id, title=cp["content"]["content"]["title"])
             if cp["content"].get("fallback_model"):
@@ -248,7 +249,8 @@ class Orchestrator:
 
     def handle_refresh(self, c: RefreshCommand) -> str:
         """'갱신 80' 글자 명령: 갱신 작업을 등록하고 결과를 대화방에 답한다."""
-        _, note = refresh.request_refresh(self.conn, self.svc.wp, c.post_id, source="web")
+        _, note = refresh.request_refresh(self.conn, self.svc.wp, c.post_id, source="web",
+                                          checks=freshness.checks_for(self.svc.settings.data_dir, c.post_id))
         self._notify(note)
         return note
 

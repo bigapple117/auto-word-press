@@ -496,3 +496,43 @@ def test_file_lock_is_released_after_exception(env, monkeypatch):
 ])
 def test_slug_without_year(slug, expected):
     assert slug_without_year(slug) == expected
+
+
+def test_checks_for_returns_empty_when_store_missing_post_missing_or_broken_json(tmp_path):
+    assert freshness.checks_for(tmp_path, 80) == []
+    assert not freshness.store_path(tmp_path).exists()
+
+    conn = freshness.connect(freshness.store_path(tmp_path))
+    try:
+        assert freshness.checks_for(tmp_path, 80) == []
+        conn.execute(
+            "INSERT INTO posts (post_id, link, title, modified, recheck_on, items, model, planned_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (80, "https://jalcheck.com/?p=80", "제목", "2026-01-01", "2026-12-01", "{broken", "m", "2026-01-02"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert freshness.checks_for(tmp_path, 80) == []
+
+
+def test_checks_for_formats_items_from_store(tmp_path):
+    conn = freshness.connect(freshness.store_path(tmp_path))
+    try:
+        conn.execute(
+            "INSERT INTO posts (post_id, link, title, modified, recheck_on, items, model, planned_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (80, "https://jalcheck.com/?p=80", "제목", "2026-01-01", "2026-12-01",
+             json.dumps([
+                 {"what": "2026년 지급액 월 10만 원", "recheck_on": "2027-01-05", "why": "2027년 고시 확인"},
+                 {"what": "신청 마감 6월 30일", "recheck_on": "2026-07-01", "why": "마감 경과"},
+             ], ensure_ascii=False),
+             "m", "2026-01-02"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert freshness.checks_for(tmp_path, 80) == [
+        "2026년 지급액 월 10만 원 (확인 이유: 2027년 고시 확인)",
+        "신청 마감 6월 30일 (확인 이유: 마감 경과)",
+    ]

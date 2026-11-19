@@ -688,6 +688,13 @@ def test_news_signals_included_as_non_evidence():
     assert "[최근 뉴스" not in build_prompt("청년도약계좌", SOURCES, 45)
 
 
+def test_refresh_checks_included_only_when_present():
+    p = build_prompt("근로장려금", SOURCES, 45, checks=["2026년 지급액 (확인 이유: 고시 확인)"])
+    assert "[다시 확인할 항목 - 예전 글 기준, 사실 근거 아님]" in p
+    assert "- 2026년 지급액 (확인 이유: 고시 확인)" in p
+    assert "[다시 확인할 항목" not in build_prompt("근로장려금", SOURCES, 45)
+
+
 def test_image_markup_has_size_and_wp_class():
     html = render_blog_html(model(good_data()), SOURCES,
                             images={1: SectionImage("https://jalcheck.com/a.jpg", "alt", width=1200, height=675,

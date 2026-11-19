@@ -86,7 +86,7 @@ def sources_from(data: Sequence[dict]) -> list[Source]:
 
 # ---------- 1. 자료 + 글 ----------
 
-def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
+def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequence[str] = ()) -> dict:
     # 사이트 첫 화면(예: hometax.go.kr/)은 메뉴뿐이라 근거 자료에서 뺀다.
     # 바로가기 링크로는 다른 자료 본문에 그 도메인이 적혀 있을 때만 남는다(link_check)
     urls = [u for u in svc.find_urls(svc.search, topic) if not is_home(u)]
@@ -103,7 +103,7 @@ def make_content(svc: Services, topic: str, target_seconds: int) -> dict:
         laws, law_errors = svc.find_laws(svc.laws, svc.generator.choose_law_articles, topic, len(sources) + 1)
         sources, errors = list(sources) + laws, list(errors) + law_errors
     result = svc.generator.generate(topic, sources, target_seconds,
-                                    news=[(n.published[5:16], n.title) for n in news])
+                                    news=[(n.published[5:16], n.title) for n in news], checks=checks)
     # 발행 전 자동 검토: 자료와 다시 대조해 고치고, 사람에게는 끝내 판단 못 한 것만 넘긴다
     result = svc.generator.review(topic, sources, target_seconds, result)
     # 사실 확인: 문장마다 자료와 대조, 끝내 근거를 못 찾은 글은 아침 자동 발행에서 뺀다

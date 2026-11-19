@@ -370,6 +370,23 @@ def run_if_due(deps: Deps, now: datetime | None = None) -> str | None:
             conn.close()
 
 
+def checks_for(data_dir: Path, post_id: int) -> list[str]:
+    """갱신 글쓰기 힌트: 장부에 적힌 이 글의 '다시 확인할 정보'(예전 값)와 이유. 장부·기록이 없으면 빈 목록."""
+    path = store_path(data_dir)
+    if not path.exists():
+        return []
+    try:
+        conn = connect(path)
+        try:
+            row = conn.execute("SELECT items FROM posts WHERE post_id=?", (int(post_id),)).fetchone()
+        finally:
+            conn.close()
+        return [f"{i['what']} (확인 이유: {i['why']})" for i in json.loads(row["items"])] if row else []
+    except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:   # 힌트일 뿐이라 실패해도 갱신은 진행
+        log.warning("유효기간 장부에서 글 %s번 항목을 못 읽음: %s", post_id, exc)
+        return []
+
+
 def schedule_rows(data_dir: Path) -> list[sqlite3.Row]:
     conn = connect(store_path(data_dir))
     try:
