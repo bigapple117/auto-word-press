@@ -845,5 +845,5 @@
   6. 중단 복구: reconcile_publishing이 원래 글의 작업 표시로 반영 여부 판단, 반영됐으면 임시 글 정리 후 완료 처리.
   7. 안전장치: jobctl retry/redo/redraft/cancel은 원래 글에 이 작업 표시가 있으면(공개 여부 무관, refresh_marked) 거절(redo가 원래 글이 쓰는 사진을 지우지 않게), 같은 글에 다른 갱신 진행 중이면 거절. 등록과 재작업은 같은 파일 잠금(data DB 옆 refresh.lock)으로 겹치지 않음.
 - 파일: src/refresh.py(신규), tests/test_refresh.py(신규, Codex 작성 97개), src/wp_client.py(get_post_title·refresh_applied·refresh_marked·apply_refresh), src/orchestrator.py(발행·복구·경고·텔레그램 갱신 명령), src/telegram_notifier.py(RefreshCommand·메시지 받기), src/db.py(create_job checkpoint), src/daily_guard.py, src/topic_service.py, scripts/jobctl.py(refresh 명령·차단·잠금), src/freshness.py(알림 문구에 사용법).
-- 검증: 전체 테스트 639개 중 638 통과(실패 1건은 기존 별건 test_topic_service::test_orchestrator_routes_topic_buttons). 운영 글 실제 갱신은 아직 안 함(첫 시험 후보: 글 80번 청년도약계좌, 다시 볼 날짜 11-28).
+- 검증: 전체 테스트 639개 중 638 통과(실패 1건은 기존 별건 test_topic_service::test_orchestrator_routes_topic_buttons). 11-19 첫 실제 갱신: 글 80번(청년도약계좌) → 작업 38번, 임시 글 216 승인·발행. 주소·작성일(11-09) 그대로, 수정일만 11-19, 제목·본문·대표 사진 교체, 옛 표시 보존, 216은 휴지통, 사이트 200 확인.
 - 남은 일: 휴지통 이동 실패 시 남는 임시 글은 수동 정리, 원래 글을 만든 옛 작업의 사진은 갱신 후 안 쓰여도 남음(용량 작음, 정리 기능 없음), (선택) 2단계 알림의 '바뀔 항목'을 갱신 글쓰기에 힌트로 전달, ④(선택) 공식 출처 변경 감시. 텔레그램 '취소' 버튼은 작업 상태만 바꾸므로 잠금 대상 아님(사진 삭제 없음).
