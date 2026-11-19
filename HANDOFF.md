@@ -854,3 +854,7 @@
 - 새 글·checks 없는 옛 갱신 작업은 지시문이 이전과 똑같다. 장부가 없거나 읽기 실패면 빈 목록으로 진행(경고 로그).
 - 파일: templates/prompt_template.py, src/ai_generator.py, src/pipeline.py, src/orchestrator.py, src/refresh.py, src/freshness.py, scripts/jobctl.py, tests(test_refresh·test_freshness·test_content·test_orchestrator).
 - 검증: 운영 장부에서 글 80번 3개·173번 2개 항목 읽힘, 없는 글은 빈 목록. 테스트 644개 중 643 통과(기존 별건 1건).
+
+## 2026-11-19 오래 실패하던 시험 test_orchestrator_routes_topic_buttons 정리 (지시: 사용자 / 작업: Claude / 검토: 없음 — 시험 파일 한 줄)
+- 원인: 시험이 주제 후보를 고정 날짜(2026-11-09)로 만들고, 버튼 처리(Orchestrator.handle_topic)는 실제 현재 시각으로 7일 기한을 판단 → 11-16 이후 '기한 지남'으로 실패. 프로그램 문제 아님.
+- 수정: tests/test_topic_service.py 해당 시험만 후보를 현재 시각으로 생성. 전체 시험 644개 모두 통과.

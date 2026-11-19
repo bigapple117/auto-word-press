@@ -219,7 +219,7 @@ def test_mark_topic_registered_changes_only_that_button():
 
 def test_orchestrator_routes_topic_buttons(env):
     from src.orchestrator import Orchestrator
-    run_batch(env.deps, "weekly", now=NOW)
+    run_batch(env.deps, "weekly", now=datetime.now(timezone.utc))   # 버튼 처리는 실제 시각으로 7일 기한을 보므로 지금 만든 후보로
     cid = env.tg.sent[0][1][0].cand_id
     answers = []
 
