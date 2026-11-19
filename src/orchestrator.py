@@ -29,7 +29,7 @@ from src.ai_generator import ModelBusyError
 from src.content_schema import MasterContent
 from src.pipeline import (PipelineError, Services, job_dir, make_content, make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
-from src import daily_guard, freshness, refresh, topic_service
+from src import daily_guard, freshness, refresh, source_watch, topic_service
 from src.daily_guard import DailyGuard
 from src.telegram_notifier import Decision, NextAction, RefreshCommand, TelegramError, TopicAction
 from src.wp_client import WPError
@@ -250,7 +250,8 @@ class Orchestrator:
     def handle_refresh(self, c: RefreshCommand) -> str:
         """'갱신 80' 글자 명령: 갱신 작업을 등록하고 결과를 대화방에 답한다."""
         _, note = refresh.request_refresh(self.conn, self.svc.wp, c.post_id, source="web",
-                                          checks=freshness.checks_for(self.svc.settings.data_dir, c.post_id))
+                                          checks=freshness.checks_for(self.svc.settings.data_dir, c.post_id)
+                                          + source_watch.checks_for(self.svc.settings.data_dir, c.post_id))
         self._notify(note)
         return note
 
@@ -556,6 +557,20 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
                     log.exception("글 점검 오류")
 
         threading.Thread(target=freshness_check, name="freshness", daemon=True).start()
+
+        def source_check() -> None:
+            """하루 한 번(오후 2시 이후) 발행 글의 근거 공식 페이지를 다시 읽어 글에 영향 있는 변화를 알린다."""
+            deps = source_watch.Deps(services.wp, services.generator, services.telegram, settings.data_dir,
+                                     lambda: db.connect(settings.db_path))
+            while not stop.wait(source_watch.CHECK_SECONDS):
+                try:
+                    note = source_watch.run_if_due(deps)
+                    if note:
+                        log.info("근거 페이지 감시: %s", note)
+                except Exception:  # noqa: BLE001
+                    log.exception("근거 페이지 감시 오류")
+
+        threading.Thread(target=source_check, name="source-watch", daemon=True).start()
         worker = Orchestrator(main_conn, services)
         log.info("실행기 시작")
         try:
