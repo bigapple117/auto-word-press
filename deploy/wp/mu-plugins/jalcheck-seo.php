@@ -99,6 +99,17 @@ add_action('wp_head', function () {
         return;
     }
 
+    // 첫 화면·분류 페이지: 워드프레스는 대표 주소(canonical)를 글에만 넣으므로 여기서 넣는다.
+    // 2쪽 이상은 그 쪽 자기 주소(1쪽으로 몰면 뒤쪽 글 목록이 수집에서 빠질 수 있음). 주소 뒤 ?utm 같은 꼬리는 뺀다.
+    $page = max(1, (int) get_query_var('paged'));
+    $suffix = $page > 1 ? 'page/' . $page . '/' : '';
+    if (is_front_page() || is_category()) {
+        $base = is_category() ? get_term_link(get_queried_object()) : $home;
+        if (is_string($base)) {
+            printf("<link rel=\"canonical\" href=\"%s\" />\n", esc_url(trailingslashit($base) . $suffix));
+        }
+    }
+
     if (is_front_page() && !is_paged()) {
         $desc = jalcheck_seo_clean(get_bloginfo('description'));
         jalcheck_seo_meta('name', 'description', $desc);
@@ -108,6 +119,8 @@ add_action('wp_head', function () {
         jalcheck_seo_meta('property', 'og:title', $site_name);
         jalcheck_seo_meta('property', 'og:description', $desc);
         jalcheck_seo_meta('property', 'og:url', $home);
+        jalcheck_seo_meta('property', 'og:image', $icon);   // 카톡 등 공유 미리보기 사진(사이트 아이콘 512px)
+        jalcheck_seo_meta('name', 'twitter:card', 'summary');
         jalcheck_seo_json_ld([
             '@context' => 'https://schema.org',
             '@type' => 'WebSite',
@@ -122,7 +135,20 @@ add_action('wp_head', function () {
     }
 
     if (is_category()) {
-        jalcheck_seo_meta('name', 'description', jalcheck_seo_clean(category_description()));
+        $desc = jalcheck_seo_clean(category_description());
+        $term = get_queried_object();
+        $link = get_term_link($term);
+        jalcheck_seo_meta('name', 'description', $desc);
+        if (!is_paged() && is_string($link)) {
+            jalcheck_seo_meta('property', 'og:type', 'website');
+            jalcheck_seo_meta('property', 'og:site_name', $site_name);
+            jalcheck_seo_meta('property', 'og:locale', 'ko_KR');
+            jalcheck_seo_meta('property', 'og:title', wp_strip_all_tags($term->name) . ' - ' . $site_name);
+            jalcheck_seo_meta('property', 'og:description', $desc);
+            jalcheck_seo_meta('property', 'og:url', $link);
+            jalcheck_seo_meta('property', 'og:image', $icon);
+            jalcheck_seo_meta('name', 'twitter:card', 'summary');
+        }
     }
 }, 5);
 
