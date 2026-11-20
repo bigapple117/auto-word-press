@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Collection, Sequence
+from typing import Any, Callable, Collection, Sequence
 from urllib.parse import urlparse
 
 import requests
@@ -28,12 +28,17 @@ from src.config import Settings
 
 log = logging.getLogger(__name__)
 
+# (글 제목, 검색어, 미리보기 파일들) → 고른 순번, 적합한 사진이 없으면 None, 판정 실패는 예외(src/image_judge.py)
+ImageJudge = Callable[[str, str, Sequence[Path]], "int | None"]
+
 API_VIDEOS = "https://pixabay.com/api/videos/"
 API_IMAGES = "https://pixabay.com/api/"
 ALLOWED_DOWNLOAD_HOSTS = frozenset({"cdn.pixabay.com", "pixabay.com"})
 CACHE_SECONDS = 24 * 3600
 MAX_VIDEO_BYTES = 60_000_000
 MAX_IMAGE_BYTES = 20_000_000
+MAX_PREVIEW_BYTES = 2_000_000   # 대표 사진 판정용 작은 미리보기(Pixabay webformat, 가로 640px)
+JUDGE_CANDIDATES = 4            # 대표 사진 판정에 보여 줄 후보 수
 DOWNLOAD_TIMEOUT = 120          # 파일 하나 전체 시간(초)
 MIN_VIDEO_SECONDS = 4
 MIN_PORTRAIT_HEIGHT = 1280      # 세로 영상 최소 높이
@@ -452,15 +457,63 @@ class StockMediaPicker:
         prune_cache(self.media_dir, keep={p.path for p in picks if p})
         return picks
 
-    def pick_blog_images(self, queries: Sequence[str | None],
-                         avoid: Collection[int] = ()) -> list[MediaPick | None]:
+    def pick_blog_images(self, queries: Sequence[str | None], avoid: Collection[int] = (),
+                         judge: ImageJudge | None = None, topic: str = "") -> list[MediaPick | None]:
         """블로그 소제목별 가로 사진(겹치지 않게). 검색어가 비어 있는 소제목은 None.
         avoid: 다른 글에서 이미 쓴 사진 번호. 목록 화면에서 대표 사진이 겹쳐 보이지 않게 먼저 피한다.
+        judge: 있으면 대표 사진(첫 사진)만 후보 몇 장을 AI가 보고 고른다. 판정 실패·적합한 후보 없음이면
+        예전 방식(검색 순서 첫 후보)으로 고른다. topic은 판정에 쓰는 글 제목.
         끝나면 보관함 상한을 맞춘다(이번에 쓴 사진은 보호)."""
         used: set[int] = set()
-        picks = [self.pick_blog_image(q, used, avoid) if q and q.strip() else None for q in queries]
+        picks: list[MediaPick | None] = []
+        for q in queries:
+            if not (q and q.strip()):
+                picks.append(None)
+                continue
+            pick = None
+            if judge is not None and not any(picks):     # 대표 사진이 될 첫 사진만 AI가 보고 고른다
+                pick = self._judged_image(q, used, avoid, judge, topic)
+            picks.append(pick or self.pick_blog_image(q, used, avoid))
         prune_cache(self.media_dir, keep={p.path for p in picks if p})
         return picks
+
+    def _judged_image(self, query: str, used: set[int], avoid: Collection[int], judge: ImageJudge,
+                      topic: str) -> MediaPick | None:
+        """다른 글에서 안 쓴 후보를 JUDGE_CANDIDATES장까지 모아 작은 미리보기로 판정하고, 고른 사진만 크게 받는다.
+        후보가 1장 이하이거나 판정이 실패·전부 부적합이면 None(부르는 쪽이 예전 방식으로 고른다)."""
+        skip = used | set(avoid)
+        hits: list[dict[str, Any]] = []
+        try:
+            for q in filter(None, (query, _simpler(query))):
+                if len(hits) >= JUDGE_CANDIDATES:
+                    break
+                for h in by_relevance(self.client.search_images(q, "horizontal"), q):
+                    if len(hits) >= JUDGE_CANDIDATES:
+                        break
+                    taken = skip | {x["id"] for x in hits}
+                    if (h.get("webformatURL") and choose_image([h], taken, min_height=900, series=taken)):
+                        hits.append(h)
+            if len(hits) < 2:
+                return None
+            previews = []
+            for h in hits:
+                ext = Path(urlparse(h["webformatURL"]).path).suffix.lower() or ".jpg"
+                previews.append(self.client.download(h["webformatURL"], self.media_dir / f"w{h['id']}{ext}",
+                                                     MAX_PREVIEW_BYTES))
+            best = judge(topic, query, previews)
+            if best is None or not 0 <= best < len(hits):
+                return None
+            hit = hits[best]
+            ext = Path(urlparse(hit["largeImageURL"]).path).suffix.lower() or ".jpg"
+            path = self.client.download(hit["largeImageURL"], self.media_dir / f"i{hit['id']}{ext}",
+                                        MAX_IMAGE_BYTES)
+        except Exception as exc:  # noqa: BLE001 - 판정 쪽 어떤 실패든 예전 방식으로 돌아간다
+            log.warning("대표 사진 AI 판정을 건너뜀(%s): %s", query, exc)
+            return None
+        if not self._usable(path, "image"):
+            return None
+        used.add(hit["id"])
+        return MediaPick(path, "image", "pixabay", hit["id"], hit.get("pageURL", ""), hit.get("user", ""), query)
 
     def pick_blog_image(self, query: str, used: set[int] | None = None,
                         avoid: Collection[int] = ()) -> MediaPick | None:

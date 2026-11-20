@@ -333,3 +333,64 @@ def test_choose_image_series():
     hits = [image_hit(1044172), image_hit(2000000)]
     assert choose_image(hits, set(), series={1044173})["id"] == 2000000
     assert choose_image(hits, set())["id"] == 1044172
+
+
+def _judge_client(downloads):
+    class Client:
+        def search_images(self, q, orientation):
+            return [dict(image_hit(i), webformatURL=f"https://pixabay.com/get/w{i}.jpg") for i in (100, 200, 300, 400, 500)]
+
+        def download(self, url, dest, max_bytes):
+            downloads.append(dest.name)
+            dest.write_bytes(b"x")
+            return dest
+    return Client()
+
+
+def test_judge_picks_featured_photo_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    seen, downloads = {}, []
+
+    def judge(topic, query, previews):
+        seen.update(topic=topic, query=query, names=[p.name for p in previews])
+        return 2
+
+    picks = StockMediaPicker(_judge_client(downloads), tmp_path).pick_blog_images(
+        [None, "office desk", "family home"], avoid={100}, judge=judge, topic="종부세 안내")
+    assert seen == {"topic": "종부세 안내", "query": "office desk",
+                    "names": ["w200.jpg", "w300.jpg", "w400.jpg", "w500.jpg"]}   # 다른 글의 100번은 후보에서 뺌
+    assert [p and p.media_id for p in picks] == [None, 400, 200]   # 둘째 소제목은 예전 방식(겹치지 않게)
+    assert "i400.jpg" in downloads and "i300.jpg" not in downloads   # 큰 사진은 고른 것만 받음
+
+
+def test_judge_failure_or_reject_falls_back(tmp_path, monkeypatch):
+    from src.image_judge import JudgeError
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+
+    def broken(topic, query, previews):
+        raise JudgeError("한도")
+
+    for judge in (broken, lambda t, q, p: None):
+        picks = StockMediaPicker(_judge_client([]), tmp_path).pick_blog_images(
+            ["office desk"], judge=judge, topic="t")
+        assert picks[0].media_id == 100            # 예전 방식: 검색 순서 첫 후보
+
+
+def test_judge_skipped_when_single_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    called = []
+    picks = StockMediaPicker(_judge_client([]), tmp_path).pick_blog_images(
+        ["office desk"], avoid={100, 200, 300, 400}, judge=lambda *a: called.append(a), topic="t")
+    assert picks[0].media_id == 500 and not called
+
+
+def test_judge_out_of_range_falls_back_and_no_extra_search(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    client = _judge_client([])
+    searched = []
+    orig = client.search_images
+    client.search_images = lambda q, o: searched.append(q) or orig(q, o)
+    picks = StockMediaPicker(client, tmp_path).pick_blog_images(
+        ["office desk family home"], judge=lambda t, q, p: -1, topic="t")
+    assert picks[0].media_id == 100
+    assert searched[0] == "office desk family home" and searched.count("office desk") <= 1

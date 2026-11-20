@@ -22,6 +22,7 @@ from src.config import ROOT, Settings
 from src.law_source import LawClient, find_law_sources
 from src.link_check import is_home
 from src.content_schema import MasterContent, slug_without_year
+from src.image_judge import GeminiImageJudge
 from src.remote_reader import GeminiPageReader
 from src.source_fetcher import Source, fetch_sources
 from src.source_finder import NaverSearch, find_official_urls
@@ -58,6 +59,7 @@ class Services:
     screenshot: Callable | None = None
     laws: Any = None                 # 국가법령정보 API(LAW_OC가 없으면 법령 조회를 건너뜀)
     find_laws: Callable = find_law_sources
+    judge: Callable | None = None    # 대표 사진을 AI가 보고 고름(없거나 실패하면 검색 순서 첫 후보)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "Services":
@@ -71,6 +73,7 @@ class Services:
             telegram=TelegramNotifier.from_settings(settings),
             screenshot=take_screenshot,
             laws=LawClient(settings.law_oc) if settings.law_oc else None,
+            judge=GeminiImageJudge.from_settings(settings),
         )
 
 
@@ -154,7 +157,11 @@ def _pick_json(p) -> dict | None:
 def pick_media(svc: Services, content: MasterContent, with_shorts: bool,
                avoid: Collection[int] = ()) -> dict:
     """avoid: 다른 글에서 이미 쓴 블로그 사진 번호(가능하면 피함)."""
-    blog = svc.picker.pick_blog_images([s.image_query for s in content.sections], avoid=avoid)
+    queries = [s.image_query for s in content.sections]
+    if svc.judge is not None:
+        blog = svc.picker.pick_blog_images(queries, avoid=avoid, judge=svc.judge, topic=content.title)
+    else:
+        blog = svc.picker.pick_blog_images(queries, avoid=avoid)
     if not any(blog):
         # 사진 검색어가 하나도 없거나 못 찾으면 쇼츠 첫 장면 검색어로 대표 사진 하나는 마련한다
         first = content.shorts.scenes[0].video_query if content.shorts.scenes else ""
