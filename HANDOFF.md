@@ -942,3 +942,4 @@
 - 범위 밖: 화면 캡처 실패 경고(글 내용과 무관), jobctl redraft의 검토 노트 유실(기존 동작).
 - 파일: src/auto_refresh.py(새), src/refresh.py, src/pipeline.py, src/orchestrator.py, src/daily_guard.py, src/source_watch.py, tests/test_auto_refresh.py(44개).
 - 검증: 전체 테스트 730개 통과. 실제 알림·반영은 아직 안 일어남(다음 근거 변경 알림 때 확인).
+- 첫 실제 사례(11-21): 글 173(월세 세액공제) 변화 16번으로 작업 43 자동 등록 → 자동 반영 안 함(경고 1건: '자료에서 못 찾은 숫자 170만 원' — 한도 1,000만×17% 계산값이라 자료 원문에 없음). 계산으로 나온 숫자 경고가 자주 막으면 2주 관찰 때 조정 후보.
