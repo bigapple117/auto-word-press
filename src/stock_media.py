@@ -39,6 +39,7 @@ MAX_VIDEO_BYTES = 60_000_000
 MAX_IMAGE_BYTES = 20_000_000
 MAX_PREVIEW_BYTES = 2_000_000   # 대표 사진 판정용 작은 미리보기(Pixabay webformat, 가로 640px)
 JUDGE_CANDIDATES = 4            # 대표 사진 판정에 보여 줄 후보 수
+JUDGE_QUERY_TRIES = 3           # 대표 사진: 후보가 전부 부적합이면 글의 다른 검색어로 다시 판정(AI 판정 최대 횟수)
 DOWNLOAD_TIMEOUT = 120          # 파일 하나 전체 시간(초)
 MIN_VIDEO_SECONDS = 4
 MIN_PORTRAIT_HEIGHT = 1280      # 세로 영상 최소 높이
@@ -458,31 +459,64 @@ class StockMediaPicker:
         return picks
 
     def pick_blog_images(self, queries: Sequence[str | None], avoid: Collection[int] = (),
-                         judge: ImageJudge | None = None, topic: str = "") -> list[MediaPick | None]:
+                         judge: ImageJudge | None = None, topic: str = "",
+                         extra_queries: Sequence[str | None] = ()) -> list[MediaPick | None]:
         """블로그 소제목별 가로 사진(겹치지 않게). 검색어가 비어 있는 소제목은 None.
         avoid: 다른 글에서 이미 쓴 사진 번호. 목록 화면에서 대표 사진이 겹쳐 보이지 않게 먼저 피한다.
         judge: 있으면 대표 사진(첫 사진)만 후보 몇 장을 AI가 보고 고른다. 판정 실패·적합한 후보 없음이면
         예전 방식(검색 순서 첫 후보)으로 고른다. topic은 판정에 쓰는 글 제목.
+        첫 검색어 후보가 전부 부적합이면 뒤 소제목 검색어·extra_queries(쇼츠 장면 검색어)로 다시 판정한다.
         끝나면 보관함 상한을 맞춘다(이번에 쓴 사진은 보호)."""
         used: set[int] = set()
         picks: list[MediaPick | None] = []
-        for q in queries:
+        judged = False
+        for i, q in enumerate(queries):
             if not (q and q.strip()):
                 picks.append(None)
                 continue
             pick = None
-            if judge is not None and not any(picks):     # 대표 사진이 될 첫 사진만 AI가 보고 고른다
-                pick = self._judged_image(q, used, avoid, judge, topic)
+            if judge is not None and not judged:         # 대표 사진이 될 첫 사진만 AI가 보고 고른다(글마다 한 번)
+                judged = True
+                pick = self.judged_featured([q, *queries[i + 1:], *extra_queries], used, avoid, judge, topic)
             picks.append(pick or self.pick_blog_image(q, used, avoid))
         prune_cache(self.media_dir, keep={p.path for p in picks if p})
         return picks
 
+    def judged_featured(self, queries: Sequence[str | None], used: set[int], avoid: Collection[int],
+                        judge: ImageJudge, topic: str) -> MediaPick | None:
+        """검색어를 차례로(같은 검색어는 한 번, AI 판정은 최대 JUDGE_QUERY_TRIES번) 판정해 처음 고른 대표 사진. 없으면 None.
+        후보가 1장 이하라 판정하지 않은 검색어는 횟수에 넣지 않는다.
+        다음 검색어로 넘어가는 것은 후보가 모자라거나 AI가 전부 부적합이라 한 경우뿐이다. 판정 오류(한도·통신)는
+        다른 검색어로 해도 같을 가능성이 커서 바로 멈춘다(부르는 쪽이 예전 방식으로 고른다)."""
+        tried: set[str] = set()
+        calls = 0
+
+        def counted(*args):
+            nonlocal calls
+            calls += 1
+            return judge(*args)
+
+        for q in queries:
+            q = (q or "").strip()
+            if not q or q.lower() in tried:
+                continue
+            if calls >= JUDGE_QUERY_TRIES:
+                break
+            tried.add(q.lower())
+            failed: list[Exception] = []
+            pick = self._judged_image(q, used, avoid, counted, topic, errors=failed)
+            if pick or failed:
+                return pick
+        return None
+
     def _judged_image(self, query: str, used: set[int], avoid: Collection[int], judge: ImageJudge,
-                      topic: str, incumbent: Path | None = None) -> MediaPick | None:
+                      topic: str, incumbent: Path | None = None,
+                      errors: list[Exception] | None = None) -> MediaPick | None:
         """다른 글에서 안 쓴 후보를 JUDGE_CANDIDATES장까지 모아 작은 미리보기로 판정하고, 고른 사진만 크게 받는다.
         후보가 1장 이하이거나 판정이 실패·전부 부적합이면 None(부르는 쪽이 예전 방식으로 고른다).
         incumbent: 이미 쓰고 있는 대표 사진(작은 파일). 주면 0번 후보로 함께 보여 주고, AI가 그 사진을 고르거나
-        판정이 실패하면 None(지금 사진을 그대로 둠). 이미 올린 글의 대표 사진을 다시 고를 때 쓴다."""
+        판정이 실패하면 None(지금 사진을 그대로 둠). 이미 올린 글의 대표 사진을 다시 고를 때 쓴다.
+        errors: 주면 오류(판정·검색·내려받기 실패)를 여기에 담는다(전부 부적합과 오류를 구별할 때)."""
         skip = used | set(avoid)
         hits: list[dict[str, Any]] = []
         limit = JUDGE_CANDIDATES - (1 if incumbent else 0)
@@ -516,6 +550,8 @@ class StockMediaPicker:
                                         MAX_IMAGE_BYTES)
         except Exception as exc:  # noqa: BLE001 - 판정 쪽 어떤 실패든 예전 방식으로 돌아간다
             log.warning("대표 사진 AI 판정을 건너뜀(%s): %s", query, exc)
+            if errors is not None:
+                errors.append(exc)
             return None
         if not self._usable(path, "image"):
             return None

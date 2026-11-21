@@ -413,3 +413,89 @@ def test_judge_with_incumbent(tmp_path, monkeypatch):
     assert seen["names"] == ["old.jpg", "w200.jpg", "w300.jpg", "w400.jpg"]   # 지금 사진 + 새 후보 3장
     assert picker._judged_image("office desk", set(), {100}, judge(None), "t", incumbent=old) is None
     assert picker._judged_image("office desk", set(), {100}, judge(2), "t", incumbent=old).media_id == 300
+
+
+def _query_client(bad):
+    """검색어마다 다른 후보: bad 검색어는 늘 같은 10만번대, 나머지는 검색할 때마다 새 번호."""
+    class Client:
+        def __init__(self):
+            self.searched = []
+
+        def search_images(self, q, orientation):
+            self.searched.append(q)
+            base = 100_000 if q in bad else 1_000_000 * len(self.searched)
+            ids = [base + 1000 * k for k in range(4)]                 # 연작으로 묶이지 않게 번호를 띄움
+            return [dict(image_hit(i, tags=q), webformatURL=f"https://pixabay.com/get/w{i}.jpg") for i in ids]
+
+        def download(self, url, dest, max_bytes):
+            dest.write_bytes(b"x")
+            return dest
+    return Client()
+
+
+def test_featured_retries_other_queries_when_all_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    asked = []
+
+    def judge(topic, query, previews):
+        asked.append(query)
+        return None if query == "tax paper" else 1     # 첫 검색어 후보는 전부 부적합
+
+    picks = StockMediaPicker(_query_client({"tax paper"}), tmp_path).pick_blog_images(
+        ["tax paper", None, "family home"], judge=judge, topic="t", extra_queries=["Tax Paper", "city street"])
+    assert asked == ["tax paper", "family home"]          # 같은 검색어(대소문자만 다름)는 다시 안 봄
+    assert picks[0].query == "family home" and picks[0].media_id >= 1_000_000
+    assert picks[2] is not None and picks[2].media_id != picks[0].media_id   # 본문 사진은 겹치지 않게
+
+
+def test_featured_tries_at_most_three_queries(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    asked = []
+    picks = StockMediaPicker(_query_client(set()), tmp_path).pick_blog_images(
+        ["a b", "c d"], judge=lambda t, q, p: asked.append(q), topic="t", extra_queries=["e f", "g h"])
+    assert asked == ["a b", "c d", "e f"]
+    assert picks[0].query == "a b"                          # 모두 부적합이면 예전 방식(첫 검색어 첫 후보)
+
+
+def test_featured_stops_on_judge_error(tmp_path, monkeypatch):
+    from src.image_judge import JudgeError
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    asked = []
+
+    def broken(topic, query, previews):
+        asked.append(query)
+        raise JudgeError("한도")
+
+    picks = StockMediaPicker(_query_client(set()), tmp_path).pick_blog_images(
+        ["a b"], judge=broken, topic="t", extra_queries=["e f"])
+    assert asked == ["a b"] and picks[0].query == "a b"     # 한도·오류면 다른 검색어로 또 부르지 않음
+
+
+def test_pick_media_without_image_queries_judges_scene_queries(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from src.content_schema import MasterContent
+    from src.pipeline import pick_media
+    from tests.test_content import good_data
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    content = MasterContent.model_validate(good_data())
+    for s in content.sections:
+        s.image_query = None
+    asked = []
+    picker = StockMediaPicker(_query_client(set()), tmp_path)
+    svc = SimpleNamespace(picker=picker, judge=lambda t, q, p: asked.append(q) or 0)
+    media = pick_media(svc, content, with_shorts=False)
+    first_scene = next(s.video_query for s in content.shorts.scenes if s.video_query)
+    assert asked == [first_scene]                           # 사진 검색어가 없어도 대표 사진은 AI가 봄
+    assert media["blog"][0] and all(b is None for b in media["blog"][1:])
+
+
+def test_featured_queries_without_candidates_do_not_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    client = _query_client(set())
+    orig = client.search_images
+    client.search_images = lambda q, o: [] if q.startswith("empty") else orig(q, o)
+    asked = []
+    StockMediaPicker(client, tmp_path).pick_blog_images(
+        ["empty one", "empty two", "a b"], judge=lambda t, q, p: asked.append(q), topic="t",
+        extra_queries=["c d", "e f", "g h"])
+    assert asked == ["a b", "c d", "e f"]                   # 후보가 없어 판정 안 한 검색어는 3번에 안 넣음

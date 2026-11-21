@@ -158,14 +158,20 @@ def pick_media(svc: Services, content: MasterContent, with_shorts: bool,
                avoid: Collection[int] = ()) -> dict:
     """avoid: 다른 글에서 이미 쓴 블로그 사진 번호(가능하면 피함)."""
     queries = [s.image_query for s in content.sections]
+    scene_queries = [s.video_query for s in content.shorts.scenes]
     if svc.judge is not None:
-        blog = svc.picker.pick_blog_images(queries, avoid=avoid, judge=svc.judge, topic=content.title)
+        blog = svc.picker.pick_blog_images(queries, avoid=avoid, judge=svc.judge, topic=content.title,
+                                           extra_queries=scene_queries)
     else:
         blog = svc.picker.pick_blog_images(queries, avoid=avoid)
     if not any(blog):
-        # 사진 검색어가 하나도 없거나 못 찾으면 쇼츠 첫 장면 검색어로 대표 사진 하나는 마련한다
-        first = content.shorts.scenes[0].video_query if content.shorts.scenes else ""
-        extra = svc.picker.pick_blog_image(first, avoid=avoid) if first else None
+        # 사진 검색어가 하나도 없거나 못 찾으면 쇼츠 장면 검색어로 대표 사진 하나는 마련한다(AI 판정 → 예전 방식).
+        # 사진 검색어가 있었다면 장면 검색어 판정도 pick_blog_images에서 이미 했으므로 다시 판정하지 않는다.
+        first = next((q for q in scene_queries if q and q.strip()), "")
+        had_queries = any(q and q.strip() for q in queries)
+        extra = svc.picker.judged_featured(scene_queries, set(), avoid, svc.judge, content.title) \
+            if svc.judge is not None and not had_queries else None
+        extra = extra or (svc.picker.pick_blog_image(first, avoid=avoid) if first else None)
         blog = [extra] + [None] * (len(content.sections) - 1) if extra else blog
     scenes = svc.picker.pick_scene_backgrounds([s.video_query for s in content.shorts.scenes]) if with_shorts else []
     return {"blog": [_pick_json(p) for p in blog], "scenes": [_pick_json(p) for p in scenes]}
