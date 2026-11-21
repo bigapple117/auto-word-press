@@ -23,8 +23,8 @@ from src.link_check import check_action_links, home_links_overpromising
 from src.content_schema import (MasterContent, Shorts, paragraph_text, section_paragraphs,
                                 section_texts)
 from src.source_fetcher import Source
-from templates.prompt_template import (FACT_SYSTEM_INSTRUCTION, REVIEW_SYSTEM_INSTRUCTION, SHORTS_SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION,
-                                      build_fact_prompt, build_prompt, build_review_prompt, build_shorts_repair_prompt,
+from templates.prompt_template import (CHANGE_SYSTEM_INSTRUCTION, FACT_SYSTEM_INSTRUCTION, REVIEW_SYSTEM_INSTRUCTION, SHORTS_SYSTEM_INSTRUCTION, SYSTEM_INSTRUCTION,
+                                      build_change_prompt, build_fact_prompt, build_prompt, build_review_prompt, build_shorts_repair_prompt,
                                       narration_budget, BODY_TARGET_CHARS)
 
 log = logging.getLogger(__name__)
@@ -673,6 +673,17 @@ def count_body_chars(c: MasterContent) -> int:
         sum(len(paragraph_text(p)) for p in c.intro)
 
 
+class ChangeItem(BaseModel):
+    source_id: str = Field(description="기사 id(N1 등)")
+    status: str = Field(description="confirmed 또는 pending")
+    change: str = Field(description="무엇이 어떻게 바뀌는지 적힌 기사 문장 그대로 복사")
+    proof: str = Field(default="", description="confirmed이면 확정(통과·의결·공포·시행)이 적힌 기사 문장 그대로 복사")
+
+
+class ChangeMemo(BaseModel):
+    items: list[ChangeItem] = Field(default_factory=list)
+
+
 class LawChoice(BaseModel):
     keys: list[str] = Field(description="[후보 조문]에서 고른 번호(key)를 그대로. 맞는 조문이 없으면 빈 목록")
 
@@ -968,6 +979,15 @@ class ContentGenerator:
             raise GenerationError(f"조문 고르기 응답 형식 오류: {exc.errors()[:1]}") from exc
         valid = {a.key for a in candidates}
         return [k for k in dict.fromkeys(k.strip() for k in keys) if k in valid][:limit]
+
+    def read_changes(self, topic: str, articles: Sequence[Source], dates: dict) -> list[ChangeItem]:
+        """기사에서 주제 제도의 최근 변경을 확정/논의 중으로 나눈다(프로그램이 recent_change에서 다시 확인)."""
+        raw, _model = self._call_with_retry(build_change_prompt(topic, articles, dates),
+                                            schema=ChangeMemo, system=CHANGE_SYSTEM_INSTRUCTION)
+        try:
+            return ChangeMemo.model_validate_json(raw).items[:6]
+        except ValidationError as exc:
+            raise GenerationError(f"최근 변경 응답 형식 오류: {exc.errors()[:1]}") from exc
 
     def structured(self, prompt: str, schema: type, system: str) -> tuple[str, str]:
         """정해진 형식(JSON)으로 답을 받는 짧은 질문. (응답 글자, 실제 쓴 모델)."""

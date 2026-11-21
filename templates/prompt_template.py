@@ -122,8 +122,17 @@ LAW_NOTE = ("종류=\"현행 법령\"인 [자료]는 국가법령정보센터의
             "세부 기준을 넘긴 부분은 법률 조문만으로 숫자를 짐작하지 말고, 시행령이나 안내 자료에 적힌 숫자를 쓴다.")
 
 
+CHANGE_NOTE = ("종류=\"최근 확정 변경\"인 [자료]는 언론 기사에서 법 개정이 확정된(국회 통과·공포·시행) 변경 문장만 "
+               "그대로 옮긴 것이다. '내년·올해·다음 달' 같은 말은 오늘이 아니라 그 자료의 기사 날짜를 기준으로 연도를 정한다. "
+               "시행일이 오늘 이후인 변경은 현행 값을 쓰고 '○년 ○월부터 ○○로 바뀝니다'처럼 시행일과 함께 따로 안내한다. "
+               "시행일이 이미 지난 변경은 새 값을 현행으로 쓰되 '○년 ○월 시행된 개정 기준'이라고 밝히고, 이 내용은 "
+               "unverified에 적지 않는다. 다만 현행 법령 자료나 그보다 나중 날짜의 공식 안내가 이 변경과 다르면 그쪽을 따르고 "
+               "이 변경은 쓰지 않는다. 이 자료에 적힌 것 밖의 개편 내용(정부안·국회 심의 중)은 쓰지 않는다. "
+               "시행일이 자료에 없으면 그 변경은 쓰지 않는다.")
+
+
 def source_block(s: Source) -> str:
-    kind = ' 종류="현행 법령"' if s.via == "law" else ""
+    kind = {"law": ' 종류="현행 법령"', "news": ' 종류="최근 확정 변경"'}.get(s.via, "")
     return f"<자료 id=\"{s.id}\"{kind} 제목=\"{s.title}\" 주소=\"{s.url}\">\n{s.text}\n</자료>"
 
 
@@ -160,6 +169,7 @@ def build_prompt(
         f" (권장: 소제목마다 문단·주의·요약 합계 약 {SECTION_TARGET_CHARS[0]}~{SECTION_TARGET_CHARS[1]}자).",
         "아래 [자료]만 근거로 마스터 콘텐츠 JSON을 만든다. 자료 밖 지식으로 숫자나 기준을 채우지 않는다.",
         *([LAW_NOTE] if any(s.via == "law" for s in sources) else []),
+        *([CHANGE_NOTE] if any(s.via == "news" for s in sources) else []),
         "[자료]",
         "\n\n".join(blocks),
     ]
@@ -261,6 +271,7 @@ def build_review_prompt(topic: str, sources: Sequence[Source], content_json: str
         f"오늘 날짜: {today.isoformat()}",
         f"주제: {topic}",
         *([LAW_NOTE] if any(s.via == "law" for s in sources) else []),
+        *([CHANGE_NOTE] if any(s.via == "news" for s in sources) else []),
         "[자료]", blocks,
         "[자동 검사 경고 - 프로그램이 찾은 것. 숫자 경고는 표기 차이로 잘못 걸린 것일 수 있으니 자료와 대조해 판단한다]",
         found,
@@ -303,7 +314,41 @@ def build_fact_prompt(topic: str, sources: Sequence[Source], article: Sequence[s
         f"오늘 날짜: {today.isoformat()}",
         f"주제: {topic}",
         *([LAW_NOTE] if any(s.via == "law" for s in sources) else []),
+        *([CHANGE_NOTE] if any(s.via == "news" for s in sources) else []),
         "[자료]", blocks,
         "[확인할 글 - 문단·표 줄 단위]", lines,
         "사실 문장마다 판정을 JSON(claims)으로 돌려준다.",
+    ])
+
+
+CHANGE_SYSTEM_INSTRUCTION = """\
+너는 한국 생활 제도의 '최근 변경' 조사 담당이다. [기사]에서 주제 제도의 대상·금액·비율·한도·기간·신청 방법이
+바뀌었거나 바뀔 예정이라는 내용만 찾는다. 주제와 다른 제도, 단순 홍보·신청 독려, 바뀌지 않는 내용은 고르지 않는다.
+이 결과는 사람이 보지 않고 글에 반영될 수 있으므로, 논의 중인 것을 확정으로 잘못 고르지 않는 것이 가장 중요하다.
+
+[status]
+- confirmed: 법·시행령 개정이 국회 본회의 통과·국무회의 의결·공포로 끝났거나, 이미 시행 중이라고 기사에 적혀 있다.
+- pending: 정부안·개편안·개정안 발표, 입법예고, 국회 심의 중, 추진·검토·계획 단계. '국회를 통과하면', '~할 예정'도
+  pending이다. 애매하면 pending.
+
+[적는 법]
+- source_id: 기사 id.
+- change: 무엇이 어떻게 바뀌는지 적힌 기사 문장을 한 글자도 바꾸지 않고 그대로 복사한다(150자 이내).
+  바뀌는 값과 시행 시기가 함께 적힌 문장을 고른다. 요약하거나 말을 바꾸면 버려진다.
+- proof: confirmed이면 확정됐다는 사실(통과·의결·공포·시행)이 적힌 기사 문장을 그대로 복사한다. pending이면 빈 칸.
+- 최대 6개, 중요한 것(금액·대상·시행일)부터. 해당하는 것이 없으면 빈 목록.
+"""
+
+
+def build_change_prompt(topic: str, articles: Sequence[Source], dates: dict,
+                        today: date | None = None) -> str:
+    """최근 변경 조사 지시문. articles의 id는 N1.., dates는 {id: 기사 날짜}."""
+    today = today or date.today()
+    blocks = "\n\n".join(
+        f"<기사 id=\"{a.id}\" 날짜=\"{dates.get(a.id, '')}\" 제목=\"{a.title}\">\n{a.text}\n</기사>" for a in articles)
+    return "\n\n".join([
+        f"오늘 날짜: {today.isoformat()}",
+        f"주제: {topic}",
+        "[기사]", blocks,
+        "주제 제도의 최근 변경을 JSON(items)으로 돌려준다.",
     ])

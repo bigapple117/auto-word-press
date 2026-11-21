@@ -20,6 +20,7 @@ from src.ai_generator import ContentGenerator
 from src.blog_html import SectionImage, render_blog_html
 from src.config import ROOT, Settings
 from src.law_source import LawClient, find_law_sources
+from src.recent_change import find_recent_changes
 from src.link_check import is_home
 from src.content_schema import MasterContent, slug_without_year
 from src.image_judge import GeminiImageJudge
@@ -59,6 +60,7 @@ class Services:
     screenshot: Callable | None = None
     laws: Any = None                 # 국가법령정보 API(LAW_OC가 없으면 법령 조회를 건너뜀)
     find_laws: Callable = find_law_sources
+    find_changes: Callable | None = find_recent_changes   # 최근 변경(확정된 개정) 기사 찾기. None이면 건너뜀
     judge: Callable | None = None    # 대표 사진을 AI가 보고 고름(없거나 실패하면 검색 순서 첫 후보)
 
     @classmethod
@@ -108,6 +110,17 @@ def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequenc
     if svc.laws is not None:
         laws, law_errors = svc.find_laws(svc.laws, svc.generator.choose_law_articles, topic, len(sources) + 1)
         sources, errors = list(sources) + laws, list(errors) + law_errors
+    # 최근 변경: 안내 페이지가 늦게 고쳐지는 경우를 대비해 확정된 개정만 기사 인용 그대로 자료에 더한다
+    changes = None
+    read_changes = getattr(svc.generator, "read_changes", None)
+    if svc.find_changes is not None and read_changes is not None:
+        try:
+            changes = svc.find_changes(svc.search, svc.fetch, read_changes, topic,
+                                       len(sources) + 1, skip_urls=[s.url for s in sources])
+            sources, errors = list(sources) + changes.sources, list(errors) + changes.errors
+        except Exception as exc:  # noqa: BLE001 - 덧붙이는 조사라 실패해도 글은 계속 쓴다
+            log.warning("최근 변경 찾기 실패: %r", exc)
+            errors = list(errors) + [f"최근 변경 찾기 실패: {exc.__class__.__name__}"]
     result = svc.generator.generate(topic, sources, target_seconds,
                                     news=[(n.published[5:16], n.title) for n in news], checks=checks)
     # 발행 전 자동 검토: 자료와 다시 대조해 고치고, 사람에게는 끝내 판단 못 한 것만 넘긴다
@@ -121,8 +134,9 @@ def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequenc
     return {
         "content": json.loads(result.content.model_dump_json()),
         "warnings": warnings,
-        "fixes": list(result.fixes),
+        "fixes": (changes.notes if changes else []) + list(result.fixes),   # 알림은 앞 8줄만 보이므로 먼저
         "fact_check": fact.as_dict(),
+        "recent_changes": changes.as_dict() if changes else {},
         "fallback_model": fallback,
         "source_errors": errors,
         "model": result.model,
