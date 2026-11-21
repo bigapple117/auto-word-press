@@ -29,11 +29,13 @@ class FakeEvalGenerator:
         self,
         outcome: dict | None = None,
         *,
+        warning_outcome: dict | None = None,
         model: str = "fake-eval-model",
         models: list[str] | tuple[str, ...] | None = None,
         exc: Exception | None = None,
     ):
         self.outcome = outcome if outcome is not None else {"differences": []}
+        self.warning_outcome = warning_outcome if warning_outcome is not None else {"checks": []}
         self.model = model
         if models is not None:
             self.models = list(models)
@@ -44,7 +46,8 @@ class FakeEvalGenerator:
         self.calls.append((prompt, schema, system))
         if self.exc is not None:
             raise self.exc
-        return json.dumps(self.outcome, ensure_ascii=False), self.model
+        payload = self.warning_outcome if schema is auto_refresh.WarningOutcome else self.outcome
+        return json.dumps(payload, ensure_ascii=False), self.model
 
 
 class FakeEvalWP:
@@ -202,19 +205,45 @@ def test_static_reasons_fallback_model():
     assert "예비 모델" in reasons[0]
 
 
+def test_figure_list_splits_deduplicates_and_ignores_other_warnings():
+    cp, _ = _valid_cp(
+        warnings=[
+            "자료에서 못 찾은 숫자(확인 필요): 170만 원, 30%",
+            "자료에서 못 찾은 숫자: 30%, 500만 원, ",
+            "",
+            "예비 모델(gemini-3.6-flash)로 작성",
+            "AI가 옮겨 적은 자료(원문 대조 권장)",
+        ],
+        category_warning="분류 확인 필요",
+    )
+    assert auto_refresh.figure_list(cp) == ["170만 원", "30%", "500만 원"]
+
+    cp_none, _ = _valid_cp(warnings=["AI가 옮겨 적은 자료(원문 대조 권장)"], category_warning="분류 확인 필요")
+    assert auto_refresh.figure_list(cp_none) == []
+
+
+def test_static_reasons_allows_figure_and_fallback_prefix_warnings_only():
+    cp, auto = _valid_cp(
+        warnings=[
+            "자료에서 못 찾은 숫자(확인 필요): 170만 원, 30%",
+            "",
+            "예비 모델(gemini-3.6-flash)로 작성",
+        ]
+    )
+    assert auto_refresh.static_reasons(cp, auto) == []
+
+
 @pytest.mark.parametrize(
-    ("warnings", "category_warning", "expected_count"),
+    ("warnings", "category_warning", "expected_reason"),
     [
-        (["숫자 확인 필요"], None, 1),
-        ([], "분류 확인 필요", 1),
-        (["경고 A", "", "경고 B"], "분류 확인 필요", 3),
+        ([], "분류 확인 필요", "확인할 것이 1건 있습니다: 분류 확인 필요"),
+        (["AI가 옮겨 적은 자료(원문 대조 권장)"], None, "확인할 것이 1건 있습니다: AI가 옮겨 적은 자료(원문 대조 권장)"),
+        (["자동 검토 실패", "자료에서 못 찾은 숫자: 170만 원", "경고 B"], "분류 확인 필요", "확인할 것이 3건 있습니다: 자동 검토 실패 / 경고 B"),
     ],
 )
-def test_static_reasons_warnings_and_category_warning(warnings, category_warning, expected_count):
+def test_static_reasons_rejects_non_figure_warnings(warnings, category_warning, expected_reason):
     cp, auto = _valid_cp(warnings=warnings, category_warning=category_warning)
-    reasons = auto_refresh.static_reasons(cp, auto)
-    assert len(reasons) == 1
-    assert f"{expected_count}건" in reasons[0]
+    assert auto_refresh.static_reasons(cp, auto) == [expected_reason]
 
 
 def test_static_reasons_source_matching_trailing_slash_and_via():
@@ -279,7 +308,7 @@ def test_evaluate_ok_when_differences_empty():
     }
     assert wp.title_calls == [80, 180]
     assert wp.calls == [80, 180]
-    assert len(gen.calls) == 1
+    assert len(gen.calls) == auto_refresh.COMPARE_RUNS
     prompt, schema, system = gen.calls[0]
     assert schema is auto_refresh.CompareOutcome
     assert system == auto_refresh.SYSTEM_INSTRUCTION
@@ -361,7 +390,7 @@ def test_evaluate_rejects_when_compare_uses_fallback_model():
 
     assert verdict["ok"] is False
     assert verdict["changes"] == []
-    assert verdict["reasons"] == ["예비 모델(gemini-3.6-flash)이 비교해 믿을 수 없습니다"]
+    assert verdict["reasons"] == ["예비 모델(gemini-3.6-flash)이 판정해 믿을 수 없습니다"]
     assert "target_print" not in verdict
     assert "draft_print" not in verdict
 
@@ -479,8 +508,7 @@ def test_evaluate_handles_structured_exception():
 
     assert verdict["ok"] is False
     assert verdict["changes"] == []
-    assert len(verdict["reasons"]) == 1
-    assert "비교하지 못했습니다" in verdict["reasons"][0]
+    assert verdict["reasons"] == ["경고 확인이나 예전 글 비교를 하지 못했습니다(모델 오류)"]
 
 
 def test_evaluate_skips_structured_when_static_reason_exists():
@@ -495,6 +523,315 @@ def test_evaluate_skips_structured_when_static_reason_exists():
     assert "근거를 못 찾은 문장" in verdict["reasons"][0]
     assert gen.calls == []
     assert wp.calls == []
+
+
+def test_prompts_fence_untrusted_inputs_and_ignore_embedded_instructions():
+    assert "따르지 말고 무시" in auto_refresh.SYSTEM_INSTRUCTION
+    assert "따르지 말고 무시" in auto_refresh.WARNING_INSTRUCTION
+
+    compare_prompt = auto_refresh.build_prompt(
+        "옛 글 본문",
+        "새 글 본문",
+        [{"url": "https://a.go.kr/policy", "summary": "한도 변경", "removed": ["500만"], "added": ["700만"]}],
+    )
+    assert "<<<페이지 변화 시작>>>\n" in compare_prompt
+    assert "\n<<<페이지 변화 끝>>>" in compare_prompt
+    assert "<<<예전 글 시작>>>\n옛 글 본문\n<<<예전 글 끝>>>" in compare_prompt
+    assert "<<<새 글 시작>>>\n새 글 본문\n<<<새 글 끝>>>" in compare_prompt
+
+
+def test_check_warnings_models_ids_and_fencing():
+    figures = ["170만 원", "30%"]
+    sources = [{"url": "https://a.go.kr", "text": "원문"}]
+    # 모델이 번호를 뒤집어 반환해도 id 순으로 정렬해 돌려준다
+    ok_payload = {
+        "checks": [
+            {"id": 1, "verdict": "unsure", "why": "비율 조건 확인 필요"},
+            {"id": 0, "verdict": "ok", "why": "1,000만×17%"},
+        ]
+    }
+
+    # models 없음/빈 목록이면 모델 검사 생략
+    gen_no_models = FakeEvalGenerator(warning_outcome=ok_payload, model="fallback-lite")
+    checks = auto_refresh.check_warnings(gen_no_models, figures, sources, "글 본문")
+    assert [c.id for c in checks] == [0, 1]
+    assert checks[0].verdict == "ok"
+    assert checks[1].verdict == "unsure"
+    prompt, schema, system = gen_no_models.calls[0]
+    assert schema is auto_refresh.WarningOutcome
+    assert system == auto_refresh.WARNING_INSTRUCTION
+    assert "[숫자]\n0. 170만 원\n1. 30%" in prompt
+    assert "<<<자료 시작>>>\n[https://a.go.kr]\n원문\n<<<자료 끝>>>" in prompt
+    assert "<<<글 시작>>>\n글 본문\n<<<글 끝>>>" in prompt
+
+    gen_empty_models = FakeEvalGenerator(warning_outcome=ok_payload, model="fallback-lite", models=[])
+    assert len(auto_refresh.check_warnings(gen_empty_models, figures, sources, "글")) == 2
+
+    # models[0] 일치 시 통과, 다르면 FallbackModelError
+    gen_main = FakeEvalGenerator(
+        warning_outcome=ok_payload,
+        model="gemini-3.8-flash",
+        models=["gemini-3.8-flash", "gemini-3.6-flash"],
+    )
+    assert len(auto_refresh.check_warnings(gen_main, figures, sources, "글")) == 2
+
+    gen_fallback = FakeEvalGenerator(
+        warning_outcome=ok_payload,
+        model="gemini-3.6-flash",
+        models=["gemini-3.8-flash", "gemini-3.6-flash"],
+    )
+    with pytest.raises(auto_refresh.FallbackModelError, match="gemini-3\\.6-flash"):
+        auto_refresh.check_warnings(gen_fallback, figures, sources, "글")
+
+
+@pytest.mark.parametrize(
+    ("checks_payload", "expected_exc"),
+    [
+        # 판정 누락(1건만)
+        ([{"id": 0, "verdict": "ok", "why": "일치"}], ValueError),
+        # 판정 초과
+        (
+            [
+                {"id": 0, "verdict": "ok", "why": "일치"},
+                {"id": 1, "verdict": "ok", "why": "일치"},
+                {"id": 2, "verdict": "ok", "why": "일치"},
+            ],
+            ValueError,
+        ),
+        # 판정 id 중복
+        (
+            [
+                {"id": 0, "verdict": "ok", "why": "일치"},
+                {"id": 0, "verdict": "ok", "why": "중복"},
+            ],
+            ValueError,
+        ),
+        # 판정 id 누락/범위 밖
+        (
+            [
+                {"id": 0, "verdict": "ok", "why": "일치"},
+                {"id": 2, "verdict": "ok", "why": "번호 오류"},
+            ],
+            ValueError,
+        ),
+        # 이상한 verdict 값
+        (
+            [
+                {"id": 0, "verdict": "maybe", "why": "애매"},
+                {"id": 1, "verdict": "ok", "why": "일치"},
+            ],
+            ValidationError,
+        ),
+        # 빈 why 문자열
+        (
+            [
+                {"id": 0, "verdict": "ok", "why": ""},
+                {"id": 1, "verdict": "ok", "why": "일치"},
+            ],
+            ValidationError,
+        ),
+    ],
+)
+def test_check_warnings_rejects_invalid_ids_verdicts_and_why(checks_payload, expected_exc):
+    gen = FakeEvalGenerator(warning_outcome={"checks": checks_payload})
+    with pytest.raises(expected_exc):
+        auto_refresh.check_warnings(
+            gen,
+            ["170만 원", "30%"],
+            [{"url": "https://a.go.kr", "text": "원문"}],
+            "글",
+        )
+
+
+def test_check_warnings_rejects_empty_or_oversized_sources_without_calling_model():
+    gen_empty = FakeEvalGenerator(warning_outcome={"checks": [{"id": 0, "verdict": "ok", "why": "일치"}]})
+    with pytest.raises(ValueError, match="자료가 없거나 너무 길어"):
+        auto_refresh.check_warnings(gen_empty, ["170만 원"], [], "글")
+    assert gen_empty.calls == []
+
+    gen_too_long = FakeEvalGenerator(warning_outcome={"checks": [{"id": 0, "verdict": "ok", "why": "일치"}]})
+    oversized = [
+        {"url": "https://a.go.kr/1", "text": "가" * (auto_refresh.MAX_SOURCE_CHARS // 2)},
+        {"url": "https://a.go.kr/2", "text": "나" * (auto_refresh.MAX_SOURCE_CHARS // 2 + 100)},
+    ]
+    with pytest.raises(ValueError, match="자료가 없거나 너무 길어"):
+        auto_refresh.check_warnings(gen_too_long, ["170만 원"], oversized, "글")
+    assert gen_too_long.calls == []
+
+
+def test_evaluate_checks_figures_before_compare_and_proceeds_when_all_ok():
+    cp, _ = _valid_cp(
+        warnings=["예비 모델(gemini-3.6-flash)로 작성", "자료에서 못 찾은 숫자(확인 필요): 170만 원, 30%"],
+        sources=[{"url": "https://a.go.kr/policy", "via": "direct", "text": "한도 1,000만 원 공제율 17%, 지원 30%"}],
+    )
+    gen = FakeEvalGenerator(
+        outcome={"differences": [{"item": "공제 한도", "old": "500만", "new": "700만", "explained": True}]},
+        warning_outcome={
+            "checks": [
+                {"id": 0, "verdict": "ok", "why": "1,000만×17%"},
+                {"id": 1, "verdict": "ok", "why": "원문 30% 일치"},
+            ]
+        },
+    )
+    wp = FakeEvalWP({80: "<p>기존 글</p>", 180: "<p>새 글 본문</p>"})
+
+    verdict = auto_refresh.evaluate(gen, wp, cp, now=NOW)
+
+    assert verdict["ok"] is True
+    assert verdict["reasons"] == []
+    assert verdict["changes"] == ["공제 한도: 500만 → 700만"]
+    assert verdict["warning_checks"] == [
+        "170만 원 → ok: 1,000만×17%",
+        "30% → ok: 원문 30% 일치",
+    ]
+    assert "target_print" in verdict and "draft_print" in verdict
+    assert [c[1] for c in gen.calls] == [auto_refresh.WarningOutcome] + [auto_refresh.CompareOutcome] * auto_refresh.COMPARE_RUNS
+    warn_prompt = gen.calls[0][0]
+    assert "0. 170만 원\n1. 30%" in warn_prompt
+    assert "<<<자료 시작>>>" in warn_prompt
+    assert "한도 1,000만 원 공제율 17%, 지원 30%" in warn_prompt
+    assert "<<<글 시작>>>" in warn_prompt
+    assert "새 글 본문" in warn_prompt
+    assert "예비 모델(" not in warn_prompt
+
+
+@pytest.mark.parametrize(
+    ("warnings", "category_warning", "expected_fragment"),
+    [
+        ([], "분류 확인 필요", "확인할 것이 1건 있습니다: 분류 확인 필요"),
+        (["자료에서 못 찾은 숫자: 170만 원"], "분류 확인 필요", "확인할 것이 1건 있습니다: 분류 확인 필요"),
+        (["AI가 옮겨 적은 자료(원문 대조 권장)"], None, "확인할 것이 1건 있습니다: AI가 옮겨 적은 자료(원문 대조 권장)"),
+    ],
+)
+def test_evaluate_rejects_category_and_non_figure_warnings_without_calling_ai(
+    warnings, category_warning, expected_fragment
+):
+    cp, _ = _valid_cp(
+        warnings=warnings,
+        category_warning=category_warning,
+        sources=[{"url": "https://a.go.kr/policy", "via": "direct", "text": "원문"}],
+    )
+    gen = FakeEvalGenerator(
+        outcome={"differences": []},
+        warning_outcome={"checks": [{"id": 0, "verdict": "ok", "why": "일치"}]},
+    )
+    wp = FakeEvalWP({80: "<p>기존 글</p>", 180: "<p>새 글</p>"})
+
+    verdict = auto_refresh.evaluate(gen, wp, cp, now=NOW)
+
+    assert verdict["ok"] is False
+    assert verdict["reasons"] == [expected_fragment]
+    assert gen.calls == []
+    assert wp.calls == []
+    assert "target_print" not in verdict
+    assert "draft_print" not in verdict
+
+
+@pytest.mark.parametrize(
+    ("figures_csv", "checks", "expected_reasons"),
+    [
+        (
+            "300만 원, 12월 31일",
+            [
+                {"id": 0, "verdict": "ok", "why": "원문 일치"},
+                {"id": 1, "verdict": "wrong", "why": "자료는 11월 30일"},
+            ],
+            ["AI 판단: 틀림 — 12월 31일 (자료는 11월 30일)"],
+        ),
+        (
+            "170만 원, 30%, 500만 원",
+            [
+                {"id": 0, "verdict": "ok", "why": "1,000만×17%"},
+                {"id": 1, "verdict": "unsure", "why": "적용 조건 확인 필요"},
+                {"id": 2, "verdict": "ok", "why": "원문 일치"},
+            ],
+            ["AI 판단: 확인 불가 — 30% (적용 조건 확인 필요)"],
+        ),
+        (
+            "10만 원, 20%, 30일, 40세, 50건",
+            [
+                {"id": 0, "verdict": "wrong", "why": "오류1"},
+                {"id": 1, "verdict": "unsure", "why": "모름2"},
+                {"id": 2, "verdict": "wrong", "why": "오류3"},
+                {"id": 3, "verdict": "unsure", "why": "모름4"},
+                {"id": 4, "verdict": "wrong", "why": "오류5"},
+            ],
+            [
+                "AI 판단: 틀림 — 10만 원 (오류1)",
+                "AI 판단: 확인 불가 — 20% (모름2)",
+                "AI 판단: 틀림 — 30일 (오류3)",
+                "AI 판단: 확인 불가 — 40세 (모름4)",
+            ],
+        ),
+    ],
+)
+def test_evaluate_rejects_bad_warning_checks_without_calling_compare(figures_csv, checks, expected_reasons):
+    cp, _ = _valid_cp(
+        warnings=[f"자료에서 못 찾은 숫자(확인 필요): {figures_csv}"],
+        sources=[{"url": "https://a.go.kr/policy", "via": "direct", "text": "원문"}],
+    )
+    gen = FakeEvalGenerator(
+        outcome={"differences": []},
+        warning_outcome={"checks": checks},
+    )
+    wp = FakeEvalWP({80: "<p>기존 글</p>", 180: "<p>새 글</p>"})
+
+    verdict = auto_refresh.evaluate(gen, wp, cp, now=NOW)
+
+    assert verdict["ok"] is False
+    assert verdict["reasons"] == expected_reasons
+    assert len(verdict["warning_checks"]) == len(checks)
+    assert verdict["changes"] == []
+    assert "target_print" not in verdict
+    assert "draft_print" not in verdict
+    assert [c[1] for c in gen.calls] == [auto_refresh.WarningOutcome]
+
+
+def test_evaluate_rejects_warning_check_fallback_or_error_without_compare():
+    cp, _ = _valid_cp(
+        warnings=["자료에서 못 찾은 숫자: 170만 원, 30%"],
+        sources=[{"url": "https://a.go.kr/policy", "via": "direct", "text": "원문"}],
+    )
+    wp = FakeEvalWP({80: "<p>기존 글</p>", 180: "<p>새 글</p>"})
+
+    gen_fallback = FakeEvalGenerator(
+        warning_outcome={
+            "checks": [
+                {"id": 0, "verdict": "ok", "why": "일치"},
+                {"id": 1, "verdict": "ok", "why": "일치"},
+            ]
+        },
+        model="gemini-3.6-flash",
+        models=["gemini-3.8-flash", "gemini-3.6-flash"],
+    )
+    verdict_fb = auto_refresh.evaluate(gen_fallback, wp, cp, now=NOW)
+    assert verdict_fb["ok"] is False
+    assert verdict_fb["reasons"] == ["예비 모델(gemini-3.6-flash)이 판정해 믿을 수 없습니다"]
+    assert [c[1] for c in gen_fallback.calls] == [auto_refresh.WarningOutcome]
+
+    # id 중복/누락(ValueError)도 모델 오류로 거부하고 compare 미호출
+    for bad_checks in (
+        [],
+        [{"id": 0, "verdict": "ok", "why": "일치"}, {"id": 0, "verdict": "ok", "why": "중복"}],
+        [{"id": 0, "verdict": "ok", "why": "일치"}, {"id": 2, "verdict": "ok", "why": "누락"}],
+        [{"id": 0, "verdict": "invalid", "why": "형식 오류"}, {"id": 1, "verdict": "ok", "why": "일치"}],
+    ):
+        gen_bad = FakeEvalGenerator(warning_outcome={"checks": bad_checks})
+        verdict_err = auto_refresh.evaluate(gen_bad, wp, cp, now=NOW)
+        assert verdict_err["ok"] is False
+        assert verdict_err["reasons"] == ["경고 확인이나 예전 글 비교를 하지 못했습니다(모델 오류)"]
+        assert [c[1] for c in gen_bad.calls] == [auto_refresh.WarningOutcome]
+
+    # 자료 텍스트 합계가 MAX_SOURCE_CHARS 를 넘으면 모델 호출 없이 거부
+    cp_long, _ = _valid_cp(
+        warnings=["자료에서 못 찾은 숫자: 170만 원"],
+        sources=[{"url": "https://a.go.kr/policy", "via": "direct", "text": "가" * (auto_refresh.MAX_SOURCE_CHARS + 1)}],
+    )
+    gen_long = FakeEvalGenerator(warning_outcome={"checks": [{"id": 0, "verdict": "ok", "why": "일치"}]})
+    verdict_long = auto_refresh.evaluate(gen_long, wp, cp_long, now=NOW)
+    assert verdict_long["ok"] is False
+    assert verdict_long["reasons"] == ["경고 확인이나 예전 글 비교를 하지 못했습니다(모델 오류)"]
+    assert gen_long.calls == []
 
 
 def test_still_same_detects_content_title_changes_and_errors():
@@ -605,6 +942,17 @@ def test_approval_line_formats_ok_and_rejected():
     ok_line = auto_refresh.approval_line({"ok": True, "changes": ["지원금: 50만 → 60만"]})
     assert ok_line.startswith("[자동 반영 예정]")
     assert "지원금: 50만 → 60만" in ok_line
+    assert "경고는 AI가 자료와 대조해 확인함" not in ok_line
+
+    ok_with_warnings = auto_refresh.approval_line(
+        {
+            "ok": True,
+            "changes": ["지원금: 50만 → 60만"],
+            "warning_checks": ["숫자 확인 → ok: 원문 일치", "분류 확인 → ok: 적합"],
+        }
+    )
+    assert ok_with_warnings.startswith("[자동 반영 예정]")
+    assert "경고는 AI가 자료와 대조해 확인함: 숫자 확인 → ok: 원문 일치 / 분류 확인 → ok: 적합" in ok_with_warnings
 
     ok_empty = auto_refresh.approval_line({"ok": True, "changes": []})
     assert ok_empty.startswith("[자동 반영 예정]")
@@ -616,9 +964,16 @@ def test_approval_line_formats_ok_and_rejected():
     held_rejected = auto_refresh.approval_line({"ok": False, "held": True, "reasons": ["확인할 것이 1건 있습니다"]})
     assert held_rejected == held_ok
 
-    no_line = auto_refresh.approval_line({"ok": False, "reasons": ["예비 모델로 쓴 글입니다", "확인할 것이 1건 있습니다"]})
+    no_line = auto_refresh.approval_line(
+        {
+            "ok": False,
+            "reasons": ["예비 모델로 쓴 글입니다", "AI 판단: 틀림 — 마감일 (원문과 다름)"],
+            "warning_checks": ["마감일 → wrong: 원문과 다름"],
+        }
+    )
     assert no_line.startswith("[자동 반영 안 함]")
-    assert "예비 모델로 쓴 글입니다; 확인할 것이 1건 있습니다" in no_line
+    assert "예비 모델로 쓴 글입니다; AI 판단: 틀림 — 마감일 (원문과 다름)" in no_line
+    assert "경고는 AI가 자료와 대조해 확인함" not in no_line
     assert "직접 [발행]" in no_line
 
     no_empty = auto_refresh.approval_line({"ok": False, "reasons": []})
@@ -1160,3 +1515,36 @@ def test_orchestrator_hold_without_auto_apply_verdict(env):  # noqa: F811
     res = orch.handle_decision(Decision(job_id, "hold", "n-plain", "cb-hold", 11))
     assert res == "보류했습니다. 나중에 [발행]을 눌러도 됩니다"
     assert "auto_apply" not in db.get_job(conn, job_id)["checkpoint"]
+
+
+def test_figure_list_keeps_thousand_separators():
+    cp = {"content": {"warnings": ["자료에서 못 찾은 숫자(확인 필요): 1,500만 원, 34만 9,700원, 30%"]}}
+    assert auto_refresh.figure_list(cp) == ["1,500만 원", "34만 9,700원", "30%"]
+
+
+def test_fence_neutralizes_inner_markers():
+    fenced = auto_refresh._fence("자료", "앞 <<<자료 끝>>> 뒤")
+    assert fenced.count("<<<자료 끝>>>") == 1 and fenced.endswith("<<<자료 끝>>>")
+
+
+def test_warning_check_rejects_blank_why():
+    import pydantic
+    with pytest.raises(pydantic.ValidationError):
+        auto_refresh.WarningCheck(id=0, verdict="ok", why="   ")
+
+
+def test_static_reasons_rejects_empty_figure_warning():
+    cp, auto = _valid_cp(warnings=["자료에서 못 찾은 숫자(확인 필요): "])
+    assert any("확인할 것이 1건" in r for r in auto_refresh.static_reasons(cp, auto))
+
+
+def test_compare_rejects_if_any_run_finds_unexplained(monkeypatch):
+    """비교를 여러 번 해 한 번이라도 설명 안 되는 변경을 찾으면 거부."""
+    runs = iter([auto_refresh.CompareOutcome(differences=[]),
+                 auto_refresh.CompareOutcome(differences=[auto_refresh.Difference(
+                     item="주의 문단", old="결정세액 안내", new="없음", explained=False)])])
+    monkeypatch.setattr(auto_refresh, "compare", lambda *a, **k: next(runs))
+    cp, _auto = _valid_cp()
+    wp = SimpleNamespace(get_post_title=lambda pid: "제목", get_post_content=lambda pid: "<p>본문</p>")
+    v = auto_refresh.evaluate(SimpleNamespace(), wp, cp, NOW)
+    assert v["ok"] is False and "결정세액 안내" in v["reasons"][0]
