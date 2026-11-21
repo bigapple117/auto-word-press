@@ -478,29 +478,36 @@ class StockMediaPicker:
         return picks
 
     def _judged_image(self, query: str, used: set[int], avoid: Collection[int], judge: ImageJudge,
-                      topic: str) -> MediaPick | None:
+                      topic: str, incumbent: Path | None = None) -> MediaPick | None:
         """다른 글에서 안 쓴 후보를 JUDGE_CANDIDATES장까지 모아 작은 미리보기로 판정하고, 고른 사진만 크게 받는다.
-        후보가 1장 이하이거나 판정이 실패·전부 부적합이면 None(부르는 쪽이 예전 방식으로 고른다)."""
+        후보가 1장 이하이거나 판정이 실패·전부 부적합이면 None(부르는 쪽이 예전 방식으로 고른다).
+        incumbent: 이미 쓰고 있는 대표 사진(작은 파일). 주면 0번 후보로 함께 보여 주고, AI가 그 사진을 고르거나
+        판정이 실패하면 None(지금 사진을 그대로 둠). 이미 올린 글의 대표 사진을 다시 고를 때 쓴다."""
         skip = used | set(avoid)
         hits: list[dict[str, Any]] = []
+        limit = JUDGE_CANDIDATES - (1 if incumbent else 0)
         try:
             for q in filter(None, (query, _simpler(query))):
-                if len(hits) >= JUDGE_CANDIDATES:
+                if len(hits) >= limit:
                     break
                 for h in by_relevance(self.client.search_images(q, "horizontal"), q):
-                    if len(hits) >= JUDGE_CANDIDATES:
+                    if len(hits) >= limit:
                         break
                     taken = skip | {x["id"] for x in hits}
                     if (h.get("webformatURL") and choose_image([h], taken, min_height=900, series=taken)):
                         hits.append(h)
-            if len(hits) < 2:
+            if len(hits) < (1 if incumbent else 2):
                 return None
-            previews = []
+            previews = [incumbent] if incumbent else []
             for h in hits:
                 ext = Path(urlparse(h["webformatURL"]).path).suffix.lower() or ".jpg"
                 previews.append(self.client.download(h["webformatURL"], self.media_dir / f"w{h['id']}{ext}",
                                                      MAX_PREVIEW_BYTES))
             best = judge(topic, query, previews)
+            if incumbent:
+                if best == 0:
+                    return None                                   # 지금 사진이 가장 낫다
+                best = best - 1 if best is not None else None
             if best is None or not 0 <= best < len(hits):
                 return None
             hit = hits[best]

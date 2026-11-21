@@ -72,7 +72,7 @@ class GeminiImageJudge:
             resp = self.client.models.generate_content(
                 model=self.model, contents=parts,
                 config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json",
-                                                   response_schema=RESPONSE_SCHEMA, max_output_tokens=1024),
+                                                   response_schema=RESPONSE_SCHEMA, max_output_tokens=4096),
             )
             data = json.loads(getattr(resp, "text", "") or "")
             best = int(data["best"])

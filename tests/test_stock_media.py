@@ -394,3 +394,22 @@ def test_judge_out_of_range_falls_back_and_no_extra_search(tmp_path, monkeypatch
         ["office desk family home"], judge=lambda t, q, p: -1, topic="t")
     assert picks[0].media_id == 100
     assert searched[0] == "office desk family home" and searched.count("office desk") <= 1
+
+
+def test_judge_with_incumbent(tmp_path, monkeypatch):
+    monkeypatch.setattr(sm, "prune_cache", lambda d, keep=None: 0)
+    old = tmp_path / "old.jpg"
+    old.write_bytes(b"x")
+    picker = StockMediaPicker(_judge_client([]), tmp_path)
+    seen = {}
+
+    def judge(answer):
+        def f(topic, query, previews):
+            seen["names"] = [p.name for p in previews]
+            return answer
+        return f
+
+    assert picker._judged_image("office desk", set(), {100}, judge(0), "t", incumbent=old) is None
+    assert seen["names"] == ["old.jpg", "w200.jpg", "w300.jpg", "w400.jpg"]   # 지금 사진 + 새 후보 3장
+    assert picker._judged_image("office desk", set(), {100}, judge(None), "t", incumbent=old) is None
+    assert picker._judged_image("office desk", set(), {100}, judge(2), "t", incumbent=old).media_id == 300
