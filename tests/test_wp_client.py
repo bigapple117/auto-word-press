@@ -370,3 +370,64 @@ def test_list_categories_includes_empty_and_draft_sends_categories(wp):
     assert fake.posts[post.id]["categories"] == [49]
     other = client.save_draft(5, "t", "<p>x</p>")
     assert "categories" not in fake.posts[other.id]
+
+
+def _body_setup(tmp_path):
+    client, fake, old = _featured_setup(tmp_path)
+    fig = (f'<figure class="wp-block-image size-large"><img src="{old.url}" alt="옛" width="1200" height="675" '
+           f'class="wp-image-{old.id}" loading="lazy" decoding="async"><figcaption>사진: 옛</figcaption></figure>')
+    fake.posts[57]["content"] = marker_comment(3) + "\n<h2>소제목</h2>\n" + fig + "\n<p>본문</p>"
+    return client, fake, old
+
+
+def test_replace_featured_with_body_swaps_figure_and_deletes(tmp_path):
+    client, fake, old = _body_setup(tmp_path)
+    new, deleted = client.replace_featured(3, 57, 1, _img(tmp_path), old.id,
+                                           body_figure=lambda m: f'<figure id="n{m.id}"><img src="{m.url}" class="wp-image-{m.id}"></figure>')
+    body = fake.posts[57]["content"]
+    assert deleted and old.id not in fake.media and fake.posts[57]["featured_media"] == new.id
+    assert f'<figure id="n{new.id}"><img src="{new.url}" class="wp-image-{new.id}"></figure>' in body and "옛" not in body
+    assert body.startswith(marker_comment(3) + "\n<h2>소제목</h2>\n") and body.endswith("\n<p>본문</p>")
+
+
+def test_replace_featured_without_body_keeps_old_in_body(tmp_path):
+    client, fake, old = _body_setup(tmp_path)                       # 본문을 안 바꾸면 옛 사진은 지우지 않음
+    new, deleted = client.replace_featured(3, 57, 1, _img(tmp_path), old.id)
+    assert not deleted and old.id in fake.media and old.url in fake.posts[57]["content"]
+
+
+def test_replace_featured_with_body_stops_when_figure_unclear(tmp_path):
+    client, fake, old = _body_setup(tmp_path)
+    fake.posts[57]["content"] += f'<p><img src="{old.url}"></p>'     # 사람이 같은 사진을 한 번 더 넣음
+    before_media, before_post = dict(fake.media), dict(fake.posts[57])
+    with pytest.raises(WPError, match="한 곳이 아닙니다"):
+        client.replace_featured(3, 57, 1, _img(tmp_path), old.id, body_figure=lambda m: "<figure></figure>")
+    assert fake.media == before_media and fake.posts[57] == before_post
+    (tmp_path / "b").mkdir()
+    client, fake, old = _body_setup(tmp_path / "b")
+    fake.posts[57]["content"] = fake.posts[57]["content"].replace(f"wp-image-{old.id}", "wp-image-999")
+    with pytest.raises(WPError, match="찾지 못했습니다"):
+        client.replace_featured(3, 57, 1, _img(tmp_path), old.id, body_figure=lambda m: "<figure></figure>")
+
+
+def test_replace_featured_with_body_refuses_empty_figure(tmp_path):
+    client, fake, old = _body_setup(tmp_path)
+    before = dict(fake.posts[57])
+    with pytest.raises(WPError, match="비었거나"):
+        client.replace_featured(3, 57, 1, _img(tmp_path), old.id, body_figure=lambda m: "")
+    assert fake.posts[57] == before and old.id in fake.media      # 본문·대표 사진·옛 사진 모두 그대로
+
+
+def test_replace_featured_old_delete_failure_is_warning(tmp_path):
+    client, fake, old = _body_setup(tmp_path)
+    real = fake.request
+
+    def fail_delete(method, url, **kw):
+        if method == "DELETE":
+            return FakeResp(500, {"code": "x", "message": "삭제 실패"})
+        return real(method, url, **kw)
+    fake.request = fail_delete
+    new, deleted = client.replace_featured(
+        3, 57, 1, _img(tmp_path), old.id,
+        body_figure=lambda m: f'<figure><img src="{m.url}" class="wp-image-{m.id}"></figure>')
+    assert not deleted and fake.posts[57]["featured_media"] == new.id

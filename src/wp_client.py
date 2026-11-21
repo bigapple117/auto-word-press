@@ -356,22 +356,31 @@ class WordPressClient:
                 return found
             return self._upload(path, stem, alt, caption)
 
-    def _media_in_use(self, media_id: int, stem: str, except_post: int) -> bool:
-        """이 첨부를 다른 글의 대표 사진으로 쓰거나, 어느 글·페이지 본문에든 이 파일 이름이 있으면 True."""
+    def _media_in_use(self, media_id: int, stem: str, except_post: int, skip_own_body: bool = False) -> bool:
+        """이 첨부를 다른 글의 대표 사진으로 쓰거나, 어느 글·페이지 본문에든 이 파일 이름이 있으면 True.
+        skip_own_body: except_post 글의 본문은 보지 않는다(그 본문의 사진도 함께 바꿀 때)."""
         for kind in ("posts", "pages"):
             items = self._get_all(f"/{kind}", {"status": "any", "context": "edit",
                                                "_fields": "id,featured_media,content"})
             for it in items:
-                if it.get("id") != except_post and int(it.get("featured_media") or 0) == int(media_id):
+                own = kind == "posts" and it.get("id") == except_post
+                if not own and int(it.get("featured_media") or 0) == int(media_id):
                     return True
+                if own and skip_own_body:
+                    continue
                 if stem in ((it.get("content") or {}).get("raw") or ""):
                     return True
         return False
 
     def replace_featured(self, job_id: int, post_id: int, index: int, path: Path, old_media_id: int,
                          alt: str = "", caption: str = "",
-                         on_switched: Callable[[WPMedia], None] | None = None) -> tuple[WPMedia, bool]:
-        """글의 대표 사진만 새 사진으로 바꾼다(본문·상태는 건드리지 않음). (새 사진, 옛 사진 삭제 여부)
+                         on_switched: Callable[[WPMedia], None] | None = None,
+                         body_figure: Callable[[WPMedia], str] | None = None) -> tuple[WPMedia, bool]:
+        """글의 대표 사진을 새 사진으로 바꾼다(상태는 건드리지 않음). (새 사진, 옛 사진 삭제 여부)
+
+        body_figure가 없으면 대표 사진만 바꾼다(본문은 그대로). 있으면 대표 사진이 본문에도 들어 있는 글(11-17 이후)로
+        보고, 본문의 옛 사진 묶음(<figure>) 딱 하나를 body_figure(새 사진)로 바꿔 대표 사진과 같은 요청으로 저장한다.
+        본문에서 옛 사진을 정확히 한 곳에서 찾지 못하면 아무것도 바꾸지 않는다.
 
         새 사진을 같은 이름(jcjob-<번호>-<순서>)으로 올려 대표 사진으로 걸고 → on_switched(장부 기록) →
         옛 사진을 지운다. 화면에 대표 사진이 빈 순간이 없고, 나중에 화면만 다시 만들어도 이름으로 새 사진을 찾는다.
@@ -392,20 +401,44 @@ class WordPressClient:
             if [m["id"] for m in same_name] != [int(old_media_id)]:
                 raise WPError(f"'{stem}' 이름의 첨부가 {[m['id'] for m in same_name]}입니다(옛 대표 사진 하나여야 함). "
                               "예전 교체가 중간에 멈춘 흔적일 수 있어 바꾸지 않습니다. 직접 확인이 필요합니다")
-            in_use = self._media_in_use(old_media_id, stem, except_post=int(post_id))
+            raw = (post.get("content") or {}).get("raw", "")
+            fig = _old_figure(raw, stem, int(old_media_id)) if body_figure else None
+            in_use = self._media_in_use(old_media_id, stem, except_post=int(post_id),
+                                        skip_own_body=body_figure is not None)
             new = self._upload(path, stem, alt, caption)
-            self._request("POST", f"/posts/{int(post_id)}", json={"featured_media": new.id})
-            check = self._request("GET", f"/posts/{int(post_id)}", params={"context": "edit",
-                                                                           "_fields": "featured_media"})
-            if int(check.get("featured_media") or 0) != new.id:
-                raise WPError(f"글 {post_id}번 대표 사진을 {new.id}로 바꾸지 못했습니다(지금 {check.get('featured_media')}). "
-                              f"새로 올린 첨부 {new.id}는 남아 있어 직접 정리가 필요합니다")
+            left = f"새로 올린 첨부 {new.id}는 남아 있고 옛 사진 {old_media_id}도 그대로입니다. 직접 확인이 필요합니다"
+            update: dict[str, Any] = {"featured_media": new.id}
+            if fig:
+                figure = body_figure(new)
+                if not new.url or new.url not in figure or f"wp-image-{new.id}" not in figure:
+                    raise WPError(f"글 {post_id}번: 새 본문 사진 묶음이 비었거나 새 사진 주소가 없습니다. {left}")
+                update["content"] = raw[:fig.start()] + figure + raw[fig.end():]
+            try:
+                self._request("POST", f"/posts/{int(post_id)}", json=update)
+                check = self._request("GET", f"/posts/{int(post_id)}", params={"context": "edit",
+                                                                               "_fields": "featured_media,content"})
+            except WPError as exc:
+                raise WPError(f"글 {post_id}번 저장 중 오류({exc}). {left}") from exc
+            after = (check.get("content") or {}).get("raw", "")
+            if int(check.get("featured_media") or 0) != new.id or (fig and (
+                    new.url not in after or fig.group(0) in after
+                    or re.search(rf"wp-image-{int(old_media_id)}(?!\d)", after))):
+                raise WPError(f"글 {post_id}번 사진을 {new.id}로 바꾸지 못했습니다(대표 {check.get('featured_media')}). {left}")
             if on_switched:
-                on_switched(new)
+                try:
+                    on_switched(new)
+                except Exception as exc:
+                    raise WPError(f"글 {post_id}번은 새 사진 {new.id}로 바뀌었지만 장부 기록 실패({exc}). "
+                                  f"옛 사진 {old_media_id}는 지우지 않았습니다. 장부를 직접 맞춰야 합니다") from exc
             if in_use:
                 log.warning("옛 대표 사진 %s는 다른 곳에서 쓰여 지우지 않았습니다", old_media_id)
                 return new, False
-            self._request("DELETE", f"/media/{int(old_media_id)}", params={"force": "true"})
+            try:   # 이미 바뀌고 장부도 맞췄으니 삭제 실패는 경고만(같은 이름이 남아 다음 교체는 멈춤)
+                self._request("DELETE", f"/media/{int(old_media_id)}", params={"force": "true"})
+            except WPError as exc:
+                log.warning("글 %s번은 새 사진 %s로 바꿨지만 옛 사진 %s 삭제 실패(직접 지워야 함): %s",
+                            post_id, new.id, old_media_id, exc)
+                return new, False
         return new, True
 
     def _upload(self, path: Path, stem: str, alt: str, caption: str) -> WPMedia:
@@ -421,3 +454,17 @@ class WordPressClient:
         if alt or caption:
             self._request("POST", f"/media/{media.id}", json={"alt_text": alt, "caption": caption})
         return media
+
+
+def _old_figure(raw: str, stem: str, media_id: int) -> "re.Match[str]":
+    """본문에서 이 이름(jcjob-<번호>-<순서>) 사진이 든 <figure> 하나를 찾는다. 정확히 한 곳이 아니면 WPError."""
+    name = re.escape(stem) + r"(?:-\d+)?\.[A-Za-z]+"
+    if len(re.findall(re.escape(stem) + r"(?![\d])", raw)) != 1:
+        raise WPError(f"본문에 '{stem}' 사진이 한 곳이 아닙니다. 사람이 고쳤을 수 있어 건드리지 않습니다")
+    figs = list(re.finditer(rf'<figure\b[^>]*>\s*<img\b[^>]*\bsrc="[^"]*/{name}"[^>]*>.*?</figure>',
+                            raw, flags=re.S))
+    if len(figs) != 1 or not re.search(rf"wp-image-{int(media_id)}(?!\d)", figs[0].group(0)) \
+            or figs[0].group(0).count("<figure") != 1 or "<!-- wp:" in figs[0].group(0) \
+            or re.search(rf'wp:image\s*\{{[^}}]*"id":\s*{int(media_id)}(?!\d)', raw):
+        raise WPError(f"본문에서 '{stem}' 사진 묶음(대표 사진 {media_id}번)을 찾지 못했습니다. 건드리지 않습니다")
+    return figs[0]
