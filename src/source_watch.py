@@ -11,7 +11,7 @@
 2. 가장 오래 안 본 페이지부터 하루 MAX_PER_RUN곳(알림 실패로 다시 시도해도 합쳐서)을 다시 읽어 기준과 줄 단위로 비교한다.
    조회수·수정일 같은 사소한 줄과, 길이 제한으로 잘린 끝부분 차이는 버린다.
 3. 바뀐 줄이 있을 때만 Gemini에게 '이 변화가 글 내용(금액·기간·대상·방법)에 영향을 주는가'를 묻는다.
-4. 영향 있음만 하루 한 번 텔레그램으로 모아 알린다. 비교한 변화는 모두 기록(changes 표, 기준 조정용)하고
+4. 영향 있음만 하루 한 번 텔레그램으로 모아 알리고, 그 글마다 갱신 작업을 자동 등록한다(auto_refresh가 자동 반영 여부 판정). 비교한 변화는 모두 기록(changes 표, 기준 조정용)하고
    기준을 새 내용으로 바꿔 같은 변화를 다시 알리지 않는다.
 5. 연속 MAX_FAILS번 못 읽은 페이지는 알림에 한 번 적는다(우리 쪽 중계 장애는 세지 않는다).
 
@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, ValidationError
 
-from src import db, refresh
+from src import db, freshness, refresh
 from src.freshness import html_to_text
 from src.source_fetcher import DEFAULT_MAX_CHARS, RelayUnavailableError, SourceError, fetch_source
 
@@ -89,6 +89,7 @@ class Deps:
     jobs_conn_factory: Callable[[], sqlite3.Connection]
     fetch: Callable[[str, str], Any] = fetch_source
     pause: float = PAUSE_SECONDS
+    auto_refresh: bool = True    # 영향 있는 글의 갱신 작업 자동 등록(시험에서 끔)
 
 
 # ---------- 장부 ----------
@@ -310,10 +311,11 @@ def unreachable(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                         (MAX_FAILS,)).fetchall()
 
 
-FOOTER = "\n고칠 글이 있으면 \"갱신 80\"처럼 글 번호를 보내 주세요(바뀐 내용을 반영해 고친 글로 승인 요청을 드립니다)."
+FOOTER = ("\n바뀐 내용을 반영해 고친 글을 자동으로 만들어 승인 요청을 드립니다. 확실한 정보만 바뀐 글은 다음 날 아침 8시에 "
+          "원래 글에 자동 반영하고, 아니면 직접 [발행]을 눌러야 합니다. 자동 등록을 못 한 글은 \"갱신 80\"처럼 글 번호를 보내 주세요.")
 
 
-def message(changes: Sequence[sqlite3.Row], dead: Sequence[sqlite3.Row]
+def message(changes: Sequence[sqlite3.Row], dead: Sequence[sqlite3.Row], status: dict[int, str] | None = None
             ) -> tuple[str, list[int], list[tuple[str, int]]]:
     """(보낼 글, 실린 변화 번호, 실린 불통 페이지). 길이 제한에 안 들어간 항목은 싣지 않고 다음 알림으로 미룬다."""
     budget = MAX_MESSAGE - len(FOOTER) - 120
@@ -324,6 +326,8 @@ def message(changes: Sequence[sqlite3.Row], dead: Sequence[sqlite3.Row]
         block = []
         if c["post_id"] != last:
             block.append(f"\n글 {c['post_id']}번 {(c['title'] or '')[:50]}\n {c['link'] or ''}")
+            if (status or {}).get(c["post_id"]):
+                block.append(f" → {status[c['post_id']][:200]}")
         block.append(f" - {c['summary'][:150]}\n   페이지: {c['url']}")
         size = sum(len(b) + 1 for b in block)
         if sum(len(l) + 1 for l in lines) + size > budget:
@@ -352,9 +356,57 @@ def message(changes: Sequence[sqlite3.Row], dead: Sequence[sqlite3.Row]
     return "\n".join(out).strip(), sent_c, sent_d
 
 
+def _auto_entry(rows: Sequence[sqlite3.Row]) -> dict[str, Any]:
+    """갱신 작업 target["auto"]: 바뀐 페이지 주소와 바뀐 줄(자동 반영 판정·꼭 읽을 자료)."""
+    return {"urls": list(dict.fromkeys(r["url"] for r in rows)), "change_ids": [int(r["id"]) for r in rows],
+            "changes": [{"url": r["url"], "summary": r["summary"],
+                         "removed": json.loads(r["removed"] or "[]"), "added": json.loads(r["added"] or "[]")}
+                        for r in rows]}
+
+
+def register_refreshes(deps: Deps, changes: Sequence[sqlite3.Row]) -> dict[int, str]:
+    """영향 있는 변화가 있는 글마다 갱신 작업을 자동 등록한다(2026-11-21 사용자 결정). {글 번호: 알림에 붙일 한 줄}.
+    하루 상한·같은 글 진행 중이면 refresh.request_refresh가 거절하고 그 이유를 적는다. 실패해도 알림은 보낸다."""
+    by_post: dict[int, list[sqlite3.Row]] = {}
+    for c in changes:
+        by_post.setdefault(int(c["post_id"]), []).append(c)
+    if not by_post:
+        return {}
+    out: dict[int, str] = {}
+    try:
+        jobs_conn = deps.jobs_conn_factory()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("갱신 자동 등록: 작업 장부를 열지 못함: %s", exc)
+        return {pid: "자동 등록 못 함(작업 장부 오류)" for pid in by_post}
+    try:
+        # 이미 자동 등록에 쓴 변화(그 작업을 취소했어도)는 다시 등록하지 않는다(알림 재시도·취소 뒤 중복 방지)
+        used = {int(i) for j in db.list_jobs(jobs_conn, limit=-1)
+                for i in ((refresh.target_of(j) or {}).get("auto") or {}).get("change_ids") or []}
+        for pid, rows in by_post.items():
+            rows = [r for r in rows if int(r["id"]) not in used]
+            if not rows:
+                out[pid] = "이미 자동 등록한 변화입니다(다시 고치려면 '갱신 번호')"
+                continue
+            try:
+                checks = freshness.checks_for(deps.data_dir, pid) + checks_for(deps.data_dir, pid)
+                job_id, note = refresh.request_refresh(jobs_conn, deps.wp, pid, source="cli", checks=checks,
+                                                       auto=_auto_entry(rows))
+            except Exception as exc:  # noqa: BLE001 - 한 글 실패가 다른 글·알림을 막지 않게
+                log.warning("갱신 자동 등록 실패(글 %s): %s", pid, exc)
+                out[pid] = "자동 등록 못 함(오류)"
+                continue
+            out[pid] = f"고치는 작업 {job_id}번 자동 등록" if job_id else f"자동 등록 못 함: {note}"
+    finally:
+        jobs_conn.close()
+    return out
+
+
 def notify(deps: Deps, conn: sqlite3.Connection, today: str) -> int:
-    """알릴 것이 있으면 한 통으로 보내고, 실린 항목만 '알림' 표시. 보내기 실패면 표시하지 않는다(예외 전파)."""
-    text, sent_c, sent_d = message(pending(conn), unreachable(conn))
+    """알릴 것이 있으면 한 통으로 보내고, 실린 항목만 '알림' 표시. 보내기 실패면 표시하지 않는다(예외 전파).
+    보내기 전에 영향 있는 글마다 갱신 작업을 자동 등록하고 결과를 글별로 적는다."""
+    changes = pending(conn)
+    status = register_refreshes(deps, changes) if deps.auto_refresh else {}
+    text, sent_c, sent_d = message(changes, unreachable(conn), status)
     if not text:
         return 0
     deps.telegram.send_text(text)

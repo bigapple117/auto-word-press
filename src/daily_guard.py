@@ -5,6 +5,8 @@
   (승인 요청 메시지가 '발행했습니다 + 주소'로 바뀌고, 유튜브 업로드 안내 또는 다음 글 버튼).
 - 사실 확인에서 근거를 못 찾은 문장이 남은 글(fact_check.hold)은 건너뛴다(사람이 [발행]을 누르면 올라감).
 - 승인 대기 글이 없으면 알림만 한다(사람이 한 번도 안 본 글을 새로 만들어 올리지 않음).
+- 따로(apply_refreshes): 근거 페이지 변경으로 자동 등록된 갱신 중 '확실한 정보만 바뀜' 판정을 통과한 글은
+  승인 요청 다음 날 8시 이후 원래 글에 반영한다(2026-11-21 사용자 결정, auto_refresh 참고).
 - 실행기 안에서 1분마다 확인. 실행기가 8시에 꺼져 있었으면 그날 켜지는 즉시 발행한다.
   하루 상태는 data/daily_guard.json에 남겨 같은 날 두 번 자동 발행하지 않게 한다.
 - 발행 결과가 불확실하면(응답 끊김) 그 작업 번호를 기억해 두고, 실행기가 실제 상태를 맞춘 뒤
@@ -19,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from src import db, refresh
+from src import auto_refresh, db, refresh
 from src.telegram_notifier import Decision
 
 if TYPE_CHECKING:
@@ -98,6 +100,44 @@ class DailyGuard:
             state["trying"] = watch
         _save(self.state_path, state)
         return note
+
+    def apply_refreshes(self, now: datetime | None = None) -> str | None:
+        """근거 변경으로 자동 등록된 갱신 중 '확실한 정보만 바뀜' 판정을 통과한 글을 오전 8시 이후 원래 글에 반영한다
+        (auto_refresh.due: 승인 요청이 어제 이전이고 [보류]를 안 누른 글). 새 글 1편 자동 발행과는 별개.
+        같은 날 같은 작업은 한 번만 시도한다(실패하면 버튼 [발행]으로)."""
+        now = now or datetime.now(timezone.utc)
+        local = now.astimezone(KST)
+        if local.time() < PUBLISH_AT:
+            return None
+        today = local.date().isoformat()
+        state = _load(self.state_path)
+        if state.get("date") != today:
+            state = {"date": today}
+        tried = state.setdefault("refreshed", [])
+        notes = []
+        for listed in self.orch.awaiting_jobs():
+            if listed["id"] in tried or not refresh.is_refresh(listed):
+                continue
+            job = db.get_job(self.orch.conn, listed["id"])
+            if not job or not auto_refresh.due(job, now):
+                continue
+            approval = job["checkpoint"].get("approval") or {}
+            if not approval.get("nonce"):
+                continue
+            tried.append(job["id"])
+            _save(self.state_path, state)                 # 결과와 상관없이 오늘은 다시 시도하지 않음
+            # 장부에도 '시도함'을 남겨 실패·건너뜀 뒤 다음 날 다시 자동 반영하지 않게 한다(그 뒤엔 버튼 [발행]으로만)
+            db.save_checkpoint(self.orch.conn, job["id"], "auto_apply",
+                               {**job["checkpoint"]["auto_apply"], "attempted": today})
+            if not auto_refresh.still_same(self.orch.svc.wp, job):   # 판정 뒤 사람이 원래 글·임시 글을 고침
+                self.orch._notify(f"[작업 {job['id']}] 확인한 뒤 원래 글이나 고친 글이 바뀌어 자동 반영하지 않았습니다. "
+                                  "내용을 보고 직접 [발행]을 눌러 주세요.")
+                notes.append(f"작업 {job['id']}번: 글이 바뀌어 건너뜀")
+                continue
+            note = self.orch.handle_decision(Decision(job["id"], "publish", approval["nonce"],
+                                                      AUTO_CALLBACK, approval.get("message_id")))
+            notes.append(f"작업 {job['id']}번: {note}")
+        return "갱신 자동 반영 — " + ", ".join(notes) if notes else None
 
     def _only_held(self, held: list[int]) -> tuple[str, bool, None]:
         self.orch._notify("[아침 자동 발행] 승인 대기 글이 모두 사실 확인에서 근거를 못 찾은 문장이 있는 글이라 "

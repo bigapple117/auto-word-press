@@ -5,7 +5,8 @@
 → [발행]을 누르면 그 임시 글의 제목·본문·요약·사진·분류·태그를 원래 글에 덮어쓰고 임시 글은 휴지통으로.
 
 - 원래 글의 주소(slug)·작성일은 보내지 않으므로 그대로다. 승인 전에는 원래 글을 전혀 건드리지 않는다.
-- 아침 자동 발행·주제 자동 등록 대기 수에는 섞이지 않는다(사람이 직접 승인한 갱신만 반영).
+- 아침 자동 발행(새 글 1편)·주제 자동 등록 대기 수에는 섞이지 않는다. 근거 페이지 변경으로 자동 등록된 갱신 중
+  '확실한 정보만 바뀐 것'(auto_refresh.evaluate 통과)만 다음 날 아침 8시에 따로 자동 반영한다.
 - 하루 MAX_REFRESH_PER_DAY건까지만 등록(새 글 발행 상한과 별도).
 """
 from __future__ import annotations
@@ -91,10 +92,11 @@ def rework_blocker(conn, wp, job: dict[str, Any]) -> str | None:
 
 
 def request_refresh(conn, wp, post_id: int, source: str = "cli", now: datetime | None = None,
-                    checks: list[str] | None = None) -> tuple[int | None, str]:
+                    checks: list[str] | None = None, auto: dict[str, Any] | None = None) -> tuple[int | None, str]:
     """(등록한 작업 번호 또는 None, 사용자에게 보일 안내).
 
-    checks: 유효기간 점검 장부가 이 글에 표시해 둔 '바뀔 수 있는 정보'(freshness.checks_for). 글쓰기에 힌트로 넘긴다."""
+    checks: 유효기간 점검 장부가 이 글에 표시해 둔 '바뀔 수 있는 정보'(freshness.checks_for). 글쓰기에 힌트로 넘긴다.
+    auto: 근거 페이지 변경으로 자동 등록할 때 {urls, changes}(auto_refresh). 자동 반영 판정·자료 읽기에 쓴다."""
     now = now or datetime.now(timezone.utc)
     post = wp.get_post(post_id)
     if post is None or post.status != "publish":
@@ -108,6 +110,8 @@ def request_refresh(conn, wp, post_id: int, source: str = "cli", now: datetime |
         if sum(is_refresh(j) and _created_kst_day(j) == today for j in db.list_jobs(conn, limit=-1)) >= MAX_REFRESH_PER_DAY:
             return None, f"오늘 갱신 요청은 {MAX_REFRESH_PER_DAY}건까지입니다. 내일 다시 보내 주세요"
         target = {"post_id": int(post_id), "link": post.link, "title": title, "checks": list(checks or [])}
+        if auto:
+            target["auto"] = auto
         job_id = db.create_job(conn, topic_from_title(title), mode="blog", source=source,
                                source_ref=f"{PREFIX}{int(post_id)}:{now.isoformat(timespec='seconds')}",
                                checkpoint={"target": target})

@@ -31,7 +31,7 @@ from src.ai_generator import ModelBusyError
 from src.content_schema import MasterContent
 from src.pipeline import (PipelineError, Services, job_dir, make_content, make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
-from src import daily_guard, freshness, refresh, source_watch, topic_service
+from src import auto_refresh, daily_guard, freshness, refresh, source_watch, topic_service
 from src.daily_guard import DailyGuard
 from src.telegram_notifier import Decision, NextAction, RefreshCommand, TelegramError, TopicAction
 from src.wp_client import WPError
@@ -80,7 +80,8 @@ class Orchestrator:
 
         if "content" not in cp:
             checks = (refresh.target_of(job) or {}).get("checks") or ()   # 갱신이면 점검 장부의 '바뀔 항목'
-            cp["content"] = make_content(self.svc, job["topic"], seconds, checks=checks)
+            must_read = (auto_refresh.auto_info(job) or {}).get("urls") or ()   # 근거 변경 자동 갱신: 바뀐 페이지
+            cp["content"] = make_content(self.svc, job["topic"], seconds, checks=checks, must_read=must_read)
             db.save_checkpoint(self.conn, job_id, "content", cp["content"])
             db.update_fields(self.conn, job_id, title=cp["content"]["content"]["title"])
             if cp["content"].get("fallback_model"):
@@ -116,6 +117,11 @@ class Orchestrator:
             db.save_checkpoint(self.conn, job_id, "draft", cp["draft"])
         post_id = cp["draft"]["post_id"]
         db.record_post(self.conn, job_id, post_id, cp["draft"]["link"])
+
+        if auto_refresh.auto_info(cp):   # 근거 변경 자동 갱신: 확실한 정보만 바뀌었는지(다음 날 아침 자동 반영 여부)
+            held = (cp.get("auto_apply") or {}).get("held")   # 한 번 [보류]한 갱신은 다시 써도 자동 반영하지 않음
+            cp["auto_apply"] = {**auto_refresh.evaluate(self.svc.generator, self.svc.wp, cp), **({"held": True} if held else {})}
+            db.save_checkpoint(self.conn, job_id, "auto_apply", cp["auto_apply"])
 
         # 승인 요청은 매번 새로 보낸다(재시작 후 다시 보내도 새 요청 번호만 유효)
         draft = cp["draft"]
@@ -210,6 +216,12 @@ class Orchestrator:
         if job["status"] == "published":
             return "이미 발행된 글입니다"
         if d.action == "hold":
+            verdict = job["checkpoint"].get("auto_apply")
+            if verdict and not verdict.get("held"):   # 보류한 갱신은 아침에·다시 써도 자동 반영하지 않음
+                db.save_checkpoint(self.conn, d.job_id, "auto_apply", {**verdict, "held": True})
+                self.offer_next(d.job_id, f"[작업 {d.job_id}] 보류했습니다. 내일 아침 자동 반영도 하지 않습니다. "
+                                          "나중에 위 메시지의 [발행]을 눌러도 됩니다.")
+                return "보류했습니다(자동 반영 안 함)"
             self.offer_next(d.job_id, f"[작업 {d.job_id}] 보류했습니다. 나중에 위 메시지의 [발행]을 눌러도 됩니다.")
             return "보류했습니다. 나중에 [발행]을 눌러도 됩니다"
         if d.action == "cancel":
@@ -316,6 +328,8 @@ class Orchestrator:
         warnings = list(cp["content"]["warnings"]) + ([draft["category_warning"]] if draft.get("category_warning") else [])
         if cp.get("target"):
             warnings.insert(0, refresh.approval_note(cp["target"]))
+            if cp.get("auto_apply"):
+                warnings.insert(1, auto_refresh.approval_line(cp["auto_apply"]))
         if "video" in cp:
             mismatch = self.shorts_number_check(content, post_id)
             if mismatch:
@@ -614,8 +628,11 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
                 try:
                     with _BOTTOM_LOCK:            # 자동 발행 알림을 잇달아 보내는 중 버튼이 끼지 않게
                         note = guard.run_if_due()
+                        refreshed = guard.apply_refreshes()
                     if note:
                         log.info("오늘의 발행: %s", note)
+                    if refreshed:
+                        log.info("%s", refreshed)
                 except Exception:  # noqa: BLE001
                     log.exception("오늘의 발행 확인 오류")
                 stop.wait(daily_guard.CHECK_SECONDS)

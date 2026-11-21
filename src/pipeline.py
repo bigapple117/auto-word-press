@@ -89,10 +89,13 @@ def sources_from(data: Sequence[dict]) -> list[Source]:
 
 # ---------- 1. 자료 + 글 ----------
 
-def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequence[str] = ()) -> dict:
+def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequence[str] = (),
+                 must_read: Sequence[str] = ()) -> dict:
+    """must_read: 꼭 읽을 주소(근거 페이지가 바뀌어 자동 등록된 갱신이면 그 페이지). 검색 결과보다 앞에 둔다."""
     # 사이트 첫 화면(예: hometax.go.kr/)은 메뉴뿐이라 근거 자료에서 뺀다.
     # 바로가기 링크로는 다른 자료 본문에 그 도메인이 적혀 있을 때만 남는다(link_check)
-    urls = [u for u in svc.find_urls(svc.search, topic) if not is_home(u)]
+    first = [u for u in dict.fromkeys(must_read) if u and not is_home(u)]
+    urls = first + [u for u in svc.find_urls(svc.search, topic) if not is_home(u) and u not in first]
     try:
         news = svc.search.news(topic, display=5)
     except Exception as exc:  # noqa: BLE001 - 뉴스는 참고용이라 실패해도 진행

@@ -930,3 +930,15 @@
 - 바꾼 것: `TelegramNotifier`가 send* 때 맨 아래 메시지에 n: 버튼이 있는지 기억(`_bottom`, 재시작하면 잊음). `sending()` 묶음(승인 요청 캡처·영상·본문) 중엔 끼우지 않음. `Orchestrator.keep_next_at_bottom` — 전용 스레드 `bottom-next`가 5초마다, 맨 아래에 버튼이 없고(마지막 전송 3초 뒤) 대기 글이 있으면 "다음 승인 대기 글로 가려면…" + 버튼(가장 오래된 글부터) 전송. 버튼 처리·아침 자동 발행·발행 확인 정리 중엔 `_BOTTOM_LOCK`으로 건너뜀. [다음 글] 이동 안내와 순서 확인 메시지에도 다음 글 버튼을 직접 붙임.
 - 알려진 점: 알림 하나 뒤에 버튼 메시지가 하나 더 붙음(대기 글이 있을 때만). 예전 버튼은 남아 있어도 정상 동작.
 - 검증: 테스트 686개 통과(새 4개).
+
+## 2026-11-21 근거 변경 → 고친 글 자동 등록 + 확실한 것만 다음 날 아침 자동 반영
+- 지시: 사용자("최대한 자동화", "2. 대신 확실한 정보만 바꿀 수 있도록", "ㅇ"). 작업: Claude. 테스트: Gemini hydrogen-high. 검토: Codex gpt-6-astra 1차 6건 → 반영, Gemini neon-high 2차 P1 3건 → 반영 후 APPROVE.
+- 왜: [근거 변경] 알림이 와도 사용자가 "갱신 N"을 직접 입력해야 했음.
+- 흐름: source_watch.notify가 알림 때 글마다 `refresh.request_refresh(source="cli", auto={urls, change_ids, changes})`로 고치는 작업 자동 등록(하루 3건 제한·같은 글 진행 중 막기 그대로). 이미 등록에 쓴 변화(change_ids, 그 작업을 취소했어도)는 다시 등록 안 함. 새 글은 바뀐 공식 페이지를 먼저 읽음(pipeline.make_content must_read).
+- 자동 반영 기준(src/auto_refresh.py evaluate, 모두 통과해야): ① 사실 확인 문장 모두 근거 있음(hold·failed 아님) ② 바뀐 공식 페이지를 직접 읽음(via=direct) ③ 예비 모델 작성 아님·경고 0건 ④ 예전 글과 AI 비교(제목·본문·글 속 링크 주소, 1순위 모델만 인정)에서 공식 페이지 변화로 설명 안 되는 삭제·변경·추가 0건. 글이 3만 자를 넘거나 비교 오류면 거부.
+- 통과하면 승인 요청에 "[자동 반영 예정]"과 바뀐 내용, 다음 날 오전 8시 DailyGuard.apply_refreshes가 [발행]과 같은 처리로 원래 글에 덮어씀. 그 전에 판정 때 지문(제목+본문 sha256)과 원래 글·임시 글이 같은지 확인, 다르면 반영 안 하고 알림. 시도는 한 번뿐(장부 auto_apply.attempted), 실패하면 버튼으로만.
+- [보류]를 누르면 held — 다시 써도(redraft) 유지, 자동 반영 안 함. [취소]도 막힘. 통과 못 하면 "[자동 반영 안 함] 이유"를 보여 주고 사람이 [발행].
+- 관찰: 기준이 엄격해 처음엔 수동으로 넘어가는 경우가 많을 수 있음. 2주(~12-05) 지켜보고 자주 막히는 사유를 보고 조정.
+- 범위 밖: 화면 캡처 실패 경고(글 내용과 무관), jobctl redraft의 검토 노트 유실(기존 동작).
+- 파일: src/auto_refresh.py(새), src/refresh.py, src/pipeline.py, src/orchestrator.py, src/daily_guard.py, src/source_watch.py, tests/test_auto_refresh.py(44개).
+- 검증: 전체 테스트 730개 통과. 실제 알림·반영은 아직 안 일어남(다음 근거 변경 알림 때 확인).
