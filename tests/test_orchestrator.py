@@ -167,6 +167,9 @@ class FakeTG:
     def next_markup(self, after_job_id, remaining):
         return {"next": after_job_id, "remaining": remaining}
 
+    def order_markup(self, older_id, older_nonce, job_id, nonce):
+        return {"older": (older_id, older_nonce), "force": (job_id, nonce)}
+
     def clear_buttons(self, message_id):
         self.cleared = getattr(self, "cleared", []) + [message_id]
 
@@ -766,7 +769,7 @@ def test_next_replies_to_original_approval_message_instantly(env):
     assert f"남은 승인 대기 3개: {a}, {b}, {c}" in svc.telegram.texts[-1]   # 어디까지 했는지 보이게
     assert len(svc.telegram.requests) == sent_before                      # 새로 보내지 않음
     assert db.get_job(conn, b)["checkpoint"]["approval"]["nonce"] == b_req.nonce   # 원래 버튼 그대로 유효
-    assert orch.handle_decision(decision(b, "publish", b_req.nonce)) == "발행했습니다"
+    assert orch.handle_decision(decision(b, "force", b_req.nonce)) == "발행했습니다"
 
 
 def test_next_falls_back_to_resend_when_original_message_gone(env):
@@ -889,3 +892,65 @@ def test_first_photo_is_featured_and_also_in_body(env, tmp_path):
     out = make_draft(svc, job_id, content, [], media, None)
     assert out["featured"] == 100
     assert f"jcjob-{job_id}-0.jpg" in svc.wp.drafts[job_id][1]
+
+
+# ---------- 순서 확인(더 오래된 대기 글이 있으면 한 번 더 묻기, 2026-11-21) ----------
+def _req(svc, i):
+    return svc.telegram.requests[i][1]
+
+
+def test_newer_publish_asks_order_first(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    a_req, b_req = _req(svc, 0), _req(svc, 1)
+    note = orch.handle_decision(decision(b, "publish", b_req.nonce, msg=b_req.message_id))
+    assert note == f"{a}번이 먼저 대기 중입니다. 아래 메시지를 확인하세요"
+    assert db.get_job(conn, b)["status"] == "awaiting_approval" and not svc.wp.published
+    assert svc.telegram.replies[-1] == a_req.message_id and f"작업 {a}번" in svc.telegram.texts[-1]
+    assert svc.telegram.markups[-1] == {"older": (a, a_req.nonce), "force": (b, b_req.nonce)}
+
+
+def test_force_publishes_and_marks_original_message(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    b_req = _req(svc, 1)
+    assert orch.handle_decision(decision(b, "force", b_req.nonce, msg=77)) == "발행했습니다"
+    assert db.get_job(conn, b)["status"] == "published" and db.get_job(conn, a)["status"] == "awaiting_approval"
+    assert svc.telegram.done[-1][0] == b_req.message_id      # 결과는 원래 승인 요청 메시지에
+    assert svc.telegram.cleared[-1] == 77                     # 순서 확인 메시지 버튼은 지움
+
+
+def test_older_first_button_publishes_older(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    a_req = _req(svc, 0)
+    assert orch.handle_decision(decision(a, "publish", a_req.nonce, msg=77)) == "발행했습니다"
+    assert svc.telegram.done[-1][0] == a_req.message_id
+
+
+def test_order_check_skips_fact_hold_and_auto(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    job_a = db.get_job(conn, a)
+    cp = job_a["checkpoint"]
+    cp["content"]["fact_check"] = {"hold": True}
+    db.save_checkpoint(conn, a, "content", cp["content"])
+    b_req = _req(svc, 1)
+    assert orch.handle_decision(decision(b, "publish", b_req.nonce)) == "발행했습니다"   # 보류 글은 순서에서 뺌
+
+
+def test_auto_publish_does_not_ask_order(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    b_req = _req(svc, 1)
+    d = Decision(b, "publish", b_req.nonce, "auto", b_req.message_id)
+    assert orch.handle_decision(d) == "발행했습니다"
+
+
+def test_order_message_without_quote_when_older_message_gone(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    a_req, b_req = _req(svc, 0), _req(svc, 1)
+    svc.telegram.deleted = {a_req.message_id}
+    orch.handle_decision(decision(b, "publish", b_req.nonce))
+    assert svc.telegram.replies[-1] is None and "인용" not in svc.telegram.texts[-1]

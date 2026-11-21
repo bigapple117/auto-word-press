@@ -31,6 +31,7 @@ KST = ZoneInfo("Asia/Seoul")
 PUBLISH_AT = time(8, 0)          # 매일 이 시각 자동 발행
 CHECK_SECONDS = 60               # 실행기가 1분마다 확인(8시 전에는 시각만 보고 끝)
 MAX_TRIES = 3                    # 한 번 확인할 때 워드프레스가 분명히 거절하면 다음 대기 글로(최대 이만큼)
+AUTO_CALLBACK = "auto"           # 아침 자동 발행이 handle_decision에 넘기는 버튼 번호(순서 확인을 건너뜀)
 MAX_ATTEMPTS = 3                 # 하루 자동 발행 시도 횟수 상한(장애 때 알림 반복 방지)
 
 
@@ -134,7 +135,7 @@ class DailyGuard:
                 continue
             tried = True
             note = self.orch.handle_decision(Decision(job["id"], "publish", approval["nonce"],
-                                                      "auto", approval.get("message_id")))
+                                                      AUTO_CALLBACK, approval.get("message_id")))
             if note == "발행했습니다":                    # 알림은 handle_decision이 버튼과 똑같이 보냄
                 return f"자동 발행: 작업 {job['id']}번", True, None
             if note != "발행에 실패했습니다":           # 결과 불확실·같은 순간 직접 발행 → 이 글의 결과를 지켜봄

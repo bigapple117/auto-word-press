@@ -28,8 +28,9 @@ from src.config import Settings
 log = logging.getLogger(__name__)
 
 API = "https://api.telegram.org"
-ACTIONS = {"p": "publish", "h": "hold", "c": "cancel"}
-_CALLBACK = re.compile(r"^([phc]):(\d{1,12}):([0-9a-f]{8}):([0-9a-f]{16})$")
+# f=순서 확인 뒤 [그래도 발행](더 오래된 대기 글이 있어도 이 글을 발행)
+ACTIONS = {"p": "publish", "h": "hold", "c": "cancel", "f": "force"}
+_CALLBACK = re.compile(r"^([phcf]):(\d{1,12}):([0-9a-f]{8}):([0-9a-f]{16})$")
 # 주제 후보 버튼: t=등록(후보 번호), m=새 후보 더 받기(회차 번호)
 _TOPIC_CALLBACK = re.compile(r"^([tm]):(\d{1,12}):([0-9a-f]{16})$")
 TOPIC_ACTIONS = {"t": "register", "m": "more"}
@@ -47,7 +48,7 @@ class TelegramError(RuntimeError):
 @dataclass(frozen=True)
 class Decision:
     job_id: int
-    action: str            # publish / hold / cancel
+    action: str            # publish / hold / cancel / force(순서 확인 뒤 그래도 발행)
     nonce: str             # 승인 요청 번호(장부의 현재 요청 번호와 비교)
     callback_id: str
     message_id: int | None
@@ -164,6 +165,14 @@ class TelegramNotifier:
         if not m or not hmac.compare_digest(m.group(2), self._sign(f"n:{m.group(1)}")):
             return None
         return int(m.group(1))
+
+    def order_markup(self, older_id: int, older_nonce: str | None, job_id: int, nonce: str) -> dict:
+        """더 오래된 승인 대기 글이 있을 때: [older번 먼저 발행] [그래도 job번 발행]."""
+        rows = []
+        if older_nonce:
+            rows.append([{"text": f"{int(older_id)}번 먼저 발행", "callback_data": self.callback_data(older_id, "p", older_nonce)}])
+        rows.append([{"text": f"그래도 {int(job_id)}번 발행", "callback_data": self.callback_data(job_id, "f", nonce)}])
+        return {"inline_keyboard": rows}
 
     def next_markup(self, after_job_id: int, remaining: int) -> dict:
         """[다음 승인 대기 글 보기(남은 n개)] 버튼 하나."""

@@ -462,7 +462,7 @@ def test_orchestrator_refresh_approval_and_publish_preserve_temporary_post_id(en
     result = db.get_job(conn, job["id"])
     assert result["status"] == "published" and result["post_id"] == job["post_id"] != 80
     assert result["post_url"] == TARGET["link"] and result["checkpoint"]["target"] == TARGET
-    assert svc.telegram.done[-1] == (99, f"[작업 {job['id']}] 글 80번을 갱신했습니다(주소 그대로).\n{TARGET['link']}")
+    assert svc.telegram.done[-1] == (job["checkpoint"]["approval"]["message_id"], f"[작업 {job['id']}] 글 80번을 갱신했습니다(주소 그대로).\n{TARGET['link']}")
     assert orch.handle_decision(d) == "이미 발행된 글입니다"
     assert apply.call_count == 1
 

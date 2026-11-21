@@ -9,6 +9,8 @@
 안전장치:
 - 실행기는 서버에서 하나만(파일 잠금). 시작할 때 멈춰 있던 작업을 recover_interrupted로 되돌림.
 - 버튼은 장부에 저장한 '현재 승인 요청 번호(nonce)'와 같을 때만 처리(예전 메시지 버튼 무시).
+- 더 오래된 승인 대기 글이 있는데 새 글의 [발행]을 누르면 바로 올리지 않고 한 번 더 묻는다
+  ([옛 글 먼저 발행] / [그래도 발행]). 사실 확인 보류 글·갱신 작업은 순서 계산에서 뺀다(2026-11-21 사용자 결정).
 - 발행은 begin_publishing으로 먼저 선점한 한 번만, 워드프레스 발행도 두 번 눌러도 안전.
 - 텔레그램 offset은 결정을 처리한 뒤에 파일로 저장.
 """
@@ -41,7 +43,7 @@ IDLE_SECONDS = 15
 BUSY_WAIT_SECONDS = 15 * 60               # 글 쓰는 모델이 바쁠 때 대기열 전체를 쉬는 시간(풀리면 빨리 잡도록 짧게 고정)
 BUSY_GIVE_UP_SECONDS = 12 * 60 * 60        # 한 작업이 처음 바빠진 뒤 이만큼 지나도 계속 바쁘면 실패로 알림
 POLL_WAIT_SECONDS = 25
-NAMES = {"publish": "발행", "hold": "보류", "cancel": "취소", "register": "주제 등록", "more": "새 후보",
+NAMES = {"publish": "발행", "force": "발행", "hold": "보류", "cancel": "취소", "register": "주제 등록", "more": "새 후보",
          "next": "다음 글"}
 
 
@@ -212,6 +214,10 @@ class Orchestrator:
             tg.mark_done(d.message_id, f"[작업 {d.job_id}] 취소했습니다. 워드프레스 임시 글은 그대로 남겨 두었습니다.")
             self.offer_next(d.job_id, "다음 승인 대기 글로 넘어가려면 아래 버튼을 누르세요.")
             return "취소했습니다"
+        if d.action == "publish" and d.callback_id != daily_guard.AUTO_CALLBACK and job["status"] == "awaiting_approval":
+            older = self.older_waiting(job)
+            if older:
+                return self.ask_order(job, older, d.nonce)
         # 발행: 요청 번호 확인과 선점을 장부에서 한 번에
         if not db.begin_publishing(self.conn, d.job_id, nonce=d.nonce):
             return "이미 처리 중이거나 발행할 수 없는 상태입니다"
@@ -240,12 +246,50 @@ class Orchestrator:
         except Exception:  # noqa: BLE001 - 발행은 됐으니 장부는 reconcile_publishing이 나중에 맞춘다
             log.exception("작업 %s번: 발행됐지만 장부 기록 실패(나중에 다시 맞춤)", d.job_id)
             recorded = False
+        log.info("작업 %s번 발행(%s)", d.job_id, "아침 자동" if d.callback_id == daily_guard.AUTO_CALLBACK else "버튼")
         done = f"글 {target['post_id']}번을 갱신했습니다(주소 그대로)" if target else "발행했습니다"
-        tg.mark_done(d.message_id, f"[작업 {d.job_id}] {done}.\n{post.link}")
+        # 결과는 원래 승인 요청 메시지에 단다. 순서 확인 메시지에서 눌렀으면 그 메시지 버튼만 지운다.
+        approval_msg = approval.get("message_id") or d.message_id
+        tg.mark_done(approval_msg, f"[작업 {d.job_id}] {done}.\n{post.link}")
+        if d.message_id and d.message_id != approval_msg:
+            tg.clear_buttons(d.message_id)
         if recorded:   # 기록 실패면 reconcile_publishing이 장부를 맞추면서 한 번만 보낸다(중복 방지)
             if not self.send_upload_kit(d.job_id, post.link):   # 쇼츠가 없으면 다음 글 버튼만
                 self.offer_next(d.job_id, "다음 승인 대기 글로 넘어가려면 아래 버튼을 누르세요.")
         return "발행했습니다"
+
+    def older_waiting(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        """이 글보다 먼저 들어온 승인 대기 글 중 가장 오래된 것(사실 확인 보류 글·갱신 작업 제외). 없으면 None.
+        갱신 작업 자체는 순서와 상관없는 일이라 확인하지 않는다."""
+        if refresh.is_refresh(job):
+            return None
+        for other in self.awaiting_jobs():
+            if other["id"] >= job["id"]:
+                return None
+            if not refresh.is_refresh(other) and not daily_guard.fact_hold(other):
+                return other
+        return None
+
+    def ask_order(self, job: dict[str, Any], older: dict[str, Any], nonce: str) -> str:
+        """더 오래된 대기 글이 있다고 알리고 [older번 먼저 발행] [그래도 job번 발행] 버튼을 보낸다.
+        가능하면 older의 승인 요청 메시지에 답장으로 보내 인용을 눌러 그 글을 바로 볼 수 있게 한다."""
+        tg = self.svc.telegram
+        oa = older["checkpoint"].get("approval") or {}
+        markup = tg.order_markup(older["id"], oa.get("nonce"), job["id"], nonce)
+        head = (f"[작업 {job['id']}] 더 오래된 승인 대기 글이 있어 바로 발행하지 않았습니다.\n"
+                f"먼저 대기 중: 작업 {older['id']}번 {older.get('title') or ''}\n")
+        tail = f"순서대로 올리려면 [{older['id']}번 먼저 발행], 이 글이 급하면 [그래도 {job['id']}번 발행]을 누르세요."
+        sent = False
+        if oa.get("message_id"):
+            try:
+                tg.send_text(head + "↑ 위 인용을 누르면 그 글의 승인 요청으로 이동합니다.\n" + tail,
+                             reply_markup=markup, reply_to=oa["message_id"])
+                sent = True
+            except TelegramError as exc:
+                log.warning("작업 %s번 승인 요청에 답장 실패(그냥 보냄): %s", older["id"], exc)
+        if not sent:
+            tg.send_text(head + tail, reply_markup=markup)
+        return f"{older['id']}번이 먼저 대기 중입니다. 아래 메시지를 확인하세요"
 
     def handle_refresh(self, c: RefreshCommand) -> str:
         """'갱신 80' 글자 명령: 갱신 작업을 등록하고 결과를 대화방에 답한다."""
