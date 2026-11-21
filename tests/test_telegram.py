@@ -232,3 +232,34 @@ def test_send_text_reply_to_original_message():
     tg, fake = make()
     tg.send_text("이동", reply_to=77)
     assert fake.calls[-1][1]["reply_parameters"] == {"message_id": 77, "allow_sending_without_reply": False}
+
+
+# ---------- 맨 아래 다음 글 버튼(2026-11-21) ----------
+def test_bottom_tracks_whether_last_message_has_next_button():
+    tg, _ = make()
+    assert tg.bottom_lacks_next(0) is False                       # 아직 보낸 것 없음
+    tg.send_text("알림")
+    assert tg.bottom_lacks_next(0) is True
+    assert tg.bottom_lacks_next(60) is False                      # 잇달아 보내는 중일 수 있어 잠시 기다림
+    tg.send_text("다음", reply_markup=tg.next_markup(3, 2))
+    assert tg.bottom_lacks_next(0) is False
+    tg.answer("cb", "안내")                                        # 화면 안내는 새 메시지가 아님
+    tg.clear_buttons(5)
+    assert tg.bottom_lacks_next(0) is False
+
+
+def test_order_markup_has_signed_next_row():
+    tg, _ = make()
+    rows = tg.order_markup(37, "0000abcd", 40, "1111abcd")["inline_keyboard"]
+    assert tg.parse_callback(rows[0][0]["callback_data"]) == (37, "publish", "0000abcd")
+    assert tg.parse_callback(rows[1][0]["callback_data"]) == (40, "force", "1111abcd")
+    assert tg.parse_next_callback(rows[2][0]["callback_data"]) == 40
+
+
+def test_no_next_button_inserted_while_sending_a_bundle():
+    tg, _ = make()
+    tg.send_text("캡처")
+    with tg.sending():
+        assert tg.bottom_lacks_next(0) is False                  # 영상 업로드 중에는 끼우지 않음
+    assert tg.bottom_lacks_next(60) is False                      # 묶음이 끝난 때부터 다시 기다림
+    assert tg.bottom_lacks_next(0) is True

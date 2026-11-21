@@ -167,6 +167,9 @@ class FakeTG:
     def next_markup(self, after_job_id, remaining):
         return {"next": after_job_id, "remaining": remaining}
 
+    def bottom_lacks_next(self, settle_seconds=3):
+        return getattr(self, "lacks_next", False)
+
     def order_markup(self, older_id, older_nonce, job_id, nonce):
         return {"older": (older_id, older_nonce), "force": (job_id, nonce)}
 
@@ -766,6 +769,7 @@ def test_next_replies_to_original_approval_message_instantly(env):
     note = orch.handle_next(NextAction(a, "cb", 9))
     assert note == f"작업 {b}번으로 가는 메시지를 보냈습니다"
     assert svc.telegram.replies[-1] == b_req.message_id and f"[작업 {b}]" in svc.telegram.texts[-1]
+    assert svc.telegram.markups[-1] == {"next": b, "remaining": 3}     # 이동 안내에도 다음 글 버튼(맨 아래 유지)
     assert f"남은 승인 대기 3개: {a}, {b}, {c}" in svc.telegram.texts[-1]   # 어디까지 했는지 보이게
     assert len(svc.telegram.requests) == sent_before                      # 새로 보내지 않음
     assert db.get_job(conn, b)["checkpoint"]["approval"]["nonce"] == b_req.nonce   # 원래 버튼 그대로 유효
@@ -954,3 +958,29 @@ def test_order_message_without_quote_when_older_message_gone(env):
     svc.telegram.deleted = {a_req.message_id}
     orch.handle_decision(decision(b, "publish", b_req.nonce))
     assert svc.telegram.replies[-1] is None and "인용" not in svc.telegram.texts[-1]
+
+
+# ---------- 맨 아래 다음 글 버튼 유지(2026-11-21) ----------
+def test_keep_next_at_bottom_sends_button_when_bottom_lacks_it(env):
+    orch, svc, conn, _ = env
+    a, b = _awaiting(orch, svc, conn, 2)
+    svc.telegram.lacks_next = False
+    assert orch.keep_next_at_bottom() is False
+    svc.telegram.lacks_next = True
+    assert orch.keep_next_at_bottom() is True
+    assert svc.telegram.markups[-1] == {"next": 0, "remaining": 2}     # 가장 오래된 글부터
+    assert f"남은 승인 대기 2개: {a}, {b}" in svc.telegram.texts[-1]
+
+
+def test_keep_next_at_bottom_skips_when_nothing_waits_or_busy(env, monkeypatch):
+    import threading
+    from src import orchestrator as o
+    orch, svc, conn, _ = env
+    svc.telegram.lacks_next = True
+    assert orch.keep_next_at_bottom() is False                           # 대기 글 없음
+    _awaiting(orch, svc, conn, 1)
+    sent = len(svc.telegram.texts)
+    busy = threading.Lock()
+    busy.acquire()                                                       # 다른 스레드가 버튼 처리 중
+    monkeypatch.setattr(o, "_BOTTOM_LOCK", busy)
+    assert orch.keep_next_at_bottom() is False and len(svc.telegram.texts) == sent

@@ -43,8 +43,13 @@ IDLE_SECONDS = 15
 BUSY_WAIT_SECONDS = 15 * 60               # 글 쓰는 모델이 바쁠 때 대기열 전체를 쉬는 시간(풀리면 빨리 잡도록 짧게 고정)
 BUSY_GIVE_UP_SECONDS = 12 * 60 * 60        # 한 작업이 처음 바빠진 뒤 이만큼 지나도 계속 바쁘면 실패로 알림
 POLL_WAIT_SECONDS = 25
+BOTTOM_CHECK_SECONDS = 5                   # 맨 아래 다음 글 버튼 확인 주기
 NAMES = {"publish": "발행", "force": "발행", "hold": "보류", "cancel": "취소", "register": "주제 등록", "more": "새 후보",
          "next": "다음 글"}
+
+
+# 버튼 처리(발행 결과·업로드 안내처럼 메시지를 잇달아 보냄) 중에는 맨 아래 버튼을 끼워 넣지 않는다
+_BOTTOM_LOCK = threading.RLock()
 
 
 class Orchestrator:
@@ -343,6 +348,28 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001
             log.warning("다음 글 버튼 전송 실패: %s", exc)
 
+    def keep_next_at_bottom(self) -> bool:
+        """대화방 맨 아래 메시지에 다음 글 버튼이 없고 승인 대기 글이 있으면 맨 아래에 버튼을 새로 붙인다.
+        (새 승인 요청·알림 뒤로 버튼이 밀려 위로 찾아 올라가지 않게, 2026-11-21 사용자 요청) 보냈으면 True.
+        여러 스레드가 부르므로 잠금으로 한 번만 보내고, 다른 스레드가 버튼 처리 중이면 이번엔 건너뛴다."""
+        tg = self.svc.telegram
+        if not _BOTTOM_LOCK.acquire(blocking=False):
+            return False
+        try:
+            if not tg.bottom_lacks_next():
+                return False
+            jobs = self.awaiting_jobs()
+            if not jobs:
+                return False
+            tg.send_text(f"다음 승인 대기 글로 가려면 아래 버튼을 누르세요.\n{self.waiting_line(jobs)}",
+                         reply_markup=tg.next_markup(0, len(jobs)))   # 0: 가장 오래된 글부터
+            return True
+        except Exception as exc:  # noqa: BLE001 - 보조 기능이라 실패해도 흐름을 막지 않는다
+            log.warning("맨 아래 다음 글 버튼 전송 실패: %s", exc)
+            return False
+        finally:
+            _BOTTOM_LOCK.release()
+
     def handle_next(self, a: NextAction) -> str:
         """after_job_id 다음 번호의 승인 대기 글(끝이면 처음으로)로 바로 이동할 수 있게,
         그 글의 원래 승인 요청 메시지에 답장하는 짧은 메시지를 보낸다(인용을 누르면 그 메시지로 올라감).
@@ -359,7 +386,8 @@ class Orchestrator:
             if message_id:
                 try:
                     tg.send_text(f"[작업 {job['id']}] {title}\n↑ 위 인용을 누르면 이 글의 승인 요청으로 이동합니다.\n"
-                                 f"{self.waiting_line(jobs)}", reply_to=message_id)
+                                 f"{self.waiting_line(jobs)}", reply_to=message_id,
+                                 reply_markup=tg.next_markup(job["id"], len(jobs)))   # 이 글을 건너뛸 때 바로 누르게
                     return f"작업 {job['id']}번으로 가는 메시지를 보냈습니다"
                 except TelegramError as exc:
                     log.warning("작업 %s번 승인 요청에 답장 실패(새로 보냄): %s", job["id"], exc)
@@ -476,6 +504,7 @@ class Orchestrator:
     def poll_once(self, offset: int | None, wait: int = POLL_WAIT_SECONDS) -> int | None:
         decisions, next_offset = self.svc.telegram.poll_decisions(offset, wait_seconds=wait)
         for d in decisions:
+            _BOTTOM_LOCK.acquire()
             try:
                 if isinstance(d, RefreshCommand):
                     note = self.handle_refresh(d)
@@ -488,6 +517,8 @@ class Orchestrator:
             except Exception as exc:  # noqa: BLE001 - 버튼 하나의 실패가 수신을 멈추지 않게
                 log.exception("버튼 처리 실패")
                 note = f"처리 중 오류: {exc.__class__.__name__}"
+            finally:
+                _BOTTOM_LOCK.release()
             try:   # 화면 안내 실패가 이미 처리한 결정의 offset 저장을 막지 않게
                 self.svc.telegram.answer(d.callback_id, f"[{NAMES.get(d.action, d.action)}] {note}")
             except Exception as exc:  # noqa: BLE001
@@ -540,7 +571,8 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
             offset = _load_offset(offset_file)
             while not stop.is_set():
                 try:
-                    orch.reconcile_publishing()
+                    with _BOTTOM_LOCK:                # 발행 확인 뒤 업로드 안내를 잇달아 보내는 중 버튼이 끼지 않게
+                        orch.reconcile_publishing()
                     new = orch.poll_once(offset)
                     if new != offset:
                         _save_offset(offset_file, new)    # 결정을 처리한 뒤에 저장
@@ -580,7 +612,8 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
                                settings.data_dir / "daily_guard.json")
             while not stop.is_set():          # 켜지자마자 한 번 확인(자정 직전 재시작에도 놓치지 않게)
                 try:
-                    note = guard.run_if_due()
+                    with _BOTTOM_LOCK:            # 자동 발행 알림을 잇달아 보내는 중 버튼이 끼지 않게
+                        note = guard.run_if_due()
                     if note:
                         log.info("오늘의 발행: %s", note)
                 except Exception:  # noqa: BLE001
@@ -588,6 +621,14 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
                 stop.wait(daily_guard.CHECK_SECONDS)
 
         threading.Thread(target=daily_publish, name="daily-publish", daemon=True).start()
+
+        def bottom_keeper() -> None:
+            """대화방 맨 아래에 다음 글 버튼이 없으면 붙인다(새 승인 요청·알림 뒤로 밀리지 않게, 5초마다 확인)."""
+            orch = Orchestrator(db.connect(settings.db_path), services)
+            while not stop.wait(BOTTOM_CHECK_SECONDS):
+                orch.keep_next_at_bottom()            # 실패는 안에서 기록만
+
+        threading.Thread(target=bottom_keeper, name="bottom-next", daemon=True).start()
 
         def freshness_check() -> None:
             """하루 한 번(오전 10시 이후) 발행된 글의 '다시 볼 날짜'를 정하고 지난 글을 알린다. 글은 고치지 않는다."""

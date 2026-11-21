@@ -17,9 +17,12 @@ import html
 import logging
 import re
 import secrets
+import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 import requests
 
@@ -39,6 +42,12 @@ _NEXT_CALLBACK = re.compile(r"^n:(\d{1,12}):([0-9a-f]{16})$")
 TITLE_MAX, SUMMARY_MAX, WARNING_MAX, WARNINGS_MAX = 200, 500, 300, 8
 TOPIC_MESSAGE_MAX = 3900           # 텔레그램 한 메시지 4096자 한도보다 여유 있게
 MAX_VIDEO_BYTES = 49_000_000        # 봇 API 업로드 한도 50MB
+
+
+def _has_next_button(markup: Any) -> bool:
+    """버튼 배치에 [다음 승인 대기 글 보기](n:…) 버튼이 있는지."""
+    rows = (markup or {}).get("inline_keyboard") if isinstance(markup, dict) else None
+    return any(str(b.get("callback_data", "")).startswith("n:") for row in rows or () for b in row)
 
 
 class TelegramError(RuntimeError):
@@ -119,6 +128,10 @@ class TelegramNotifier:
         self.timeout = timeout
         # 버튼 서명용 열쇠: 토큰에서 만든다(토큰을 아는 우리만 만들 수 있음)
         self._key = hashlib.sha256(b"jalcheck-callback:" + token.encode()).digest()
+        # 대화방 맨 아래(마지막으로 보낸) 메시지: (보낸 시각, 다음 글 버튼이 있는지). 실행기 재시작 전까지만 기억
+        self._bottom: tuple[float, bool] | None = None
+        self._busy = 0                          # 여러 메시지를 잇달아 보내는 중인 묶음 수(그동안 버튼을 끼우지 않음)
+        self._busy_lock = threading.Lock()
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "TelegramNotifier":
@@ -138,7 +151,30 @@ class TelegramNotifier:
             raise TelegramError(f"텔레그램 응답 오류 {resp.status_code}") from None
         if not data.get("ok"):
             raise TelegramError(f"텔레그램 오류 {resp.status_code}: {str(data.get('description', ''))[:200]}")
+        if method.startswith("send"):        # 새 메시지가 맨 아래에 붙음
+            self._bottom = (time.monotonic(), _has_next_button((kwargs.get("json") or {}).get("reply_markup")))
         return data.get("result")
+
+    @contextmanager
+    def sending(self) -> Iterator[None]:
+        """메시지 여러 개를 한 묶음으로 보내는 동안 맨 아래 버튼 끼워 넣기를 멈춘다(영상 업로드가 길어도)."""
+        with self._busy_lock:
+            self._busy += 1
+        try:
+            yield
+        finally:
+            with self._busy_lock:
+                self._busy -= 1
+            if self._bottom:                     # 묶음이 끝난 때부터 다시 잠깐 기다림
+                self._bottom = (time.monotonic(), self._bottom[1])
+
+    def bottom_lacks_next(self, settle_seconds: float = 3) -> bool:
+        """맨 아래 메시지에 다음 글 버튼이 없으면 True. 여러 메시지를 잇달아 보내는 중일 수 있어
+        마지막으로 보낸 지 settle_seconds가 지나야 True. 아직 아무것도 안 보냈으면 False."""
+        if self._bottom is None or self._busy:
+            return False
+        sent_at, has_next = self._bottom
+        return not has_next and time.monotonic() - sent_at >= settle_seconds
 
     def _sign(self, payload: str) -> str:
         return hmac.new(self._key, payload.encode(), hashlib.sha256).hexdigest()[:16]
@@ -172,6 +208,8 @@ class TelegramNotifier:
         if older_nonce:
             rows.append([{"text": f"{int(older_id)}번 먼저 발행", "callback_data": self.callback_data(older_id, "p", older_nonce)}])
         rows.append([{"text": f"그래도 {int(job_id)}번 발행", "callback_data": self.callback_data(job_id, "f", nonce)}])
+        payload = f"n:{int(job_id)}"           # 이 질문이 맨 아래에 있어도 다음 글로 갈 수 있게
+        rows.append([{"text": "다음 승인 대기 글 보기", "callback_data": f"{payload}:{self._sign(payload)}"}])
         return {"inline_keyboard": rows}
 
     def next_markup(self, after_job_id: int, remaining: int) -> dict:
@@ -191,7 +229,12 @@ class TelegramNotifier:
         return int(job), ACTIONS[code], nonce
 
     # ----- 보내기 -----
-    def send_approval_request(
+    def send_approval_request(self, *args: Any, **kwargs: Any) -> ApprovalRequest:
+        """화면 캡처·영상·본문을 한 묶음으로 보낸다(중간에 다음 글 버튼이 끼지 않게). 자세한 건 _send_approval_request."""
+        with self.sending():
+            return self._send_approval_request(*args, **kwargs)
+
+    def _send_approval_request(
         self, job_id: int, title: str, summary: str, edit_url: str,
         warnings: Sequence[str] = (), video_path: Path | None = None,
         screenshots: Sequence[Path] = (), category: str = "", file_ids: dict | None = None,
