@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Sequence
 
 from src.ai_generator import ContentGenerator
+from src.auto_refresh import FIGURE_WARNING, check_warnings, split_figures
 from src.blog_html import SectionImage, render_blog_html
 from src.config import ROOT, Settings
 from src.law_source import LawClient, find_law_sources
@@ -91,6 +92,40 @@ def sources_from(data: Sequence[dict]) -> list[Source]:
 
 # ---------- 1. 자료 + 글 ----------
 
+VERDICT_WORDS = {"wrong": "틀림", "unsure": "확인 불가"}
+
+
+def _short(text: str, n: int = 60) -> str:
+    """승인 알림이 길어지지 않게 AI 근거를 한 줄로 줄인다."""
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[:n] + "…"
+
+
+def verify_figures(generator: Any, warnings: Sequence[str], sources: Sequence[Source],
+                   article: str) -> tuple[list[str], list[str]]:
+    """'자료에서 못 찾은 숫자' 경고를 1순위 모델이 자료 원문과 대조(auto_refresh.check_warnings 재사용).
+    자료에 단위 없이 적힌 표 숫자(예: 만 원 단위 표의 '3.5')처럼 프로그램이 못 맞춘 숫자를 사람 확인에서 덜어 내려는 것.
+    맞다고(ok) 판정된 숫자만 경고에서 빼 확인 기록(fixes)으로 옮기고, 틀림·확인 불가는 근거와 함께 경고에 남긴다.
+    대조를 못 하면(오류·자료 과다·예비 모델) 원래 경고 그대로. 돌려주는 값: (경고, 확인 기록)."""
+    figures = split_figures(warnings)
+    if not figures or getattr(generator, "structured", None) is None:
+        return list(warnings), []
+    try:
+        checks = check_warnings(generator, figures, [{"url": s.url, "text": s.text} for s in sources], article)
+    except Exception as exc:  # noqa: BLE001 - 대조는 덧붙이는 검사라 실패하면 사람이 확인하면 된다
+        log.warning("숫자 경고 AI 대조 실패: %s: %s", exc.__class__.__name__, exc)
+        return list(warnings), []
+    ok = [c for c in checks if c.verdict == "ok"]
+    bad = [c for c in checks if c.verdict != "ok"]
+    kept = [w for w in warnings if not str(w).startswith(FIGURE_WARNING)]
+    if bad:   # 알림은 경고 8줄까지만 보이므로 판정 근거는 한 줄로 모은다
+        kept.append(f"{FIGURE_WARNING}(확인 필요): " + ", ".join(figures[c.id] for c in bad))
+        kept.append("AI 대조: " + " / ".join(f"{figures[c.id]} {VERDICT_WORDS.get(c.verdict, c.verdict)}"
+                                             f"({_short(c.why)})" for c in bad))
+    checked = (["숫자 자료 대조 확인(AI): " + " / ".join(f"{figures[c.id]} ({_short(c.why)})" for c in ok)] if ok else [])
+    return kept, checked
+
+
 def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequence[str] = (),
                  must_read: Sequence[str] = ()) -> dict:
     """must_read: 꼭 읽을 주소(근거 페이지가 바뀌어 자동 등록된 갱신이면 그 페이지). 검색 결과보다 앞에 둔다."""
@@ -131,11 +166,20 @@ def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequenc
     fallback = result.model != svc.settings.gemini_model
     if fallback:
         warnings.insert(0, f"예비 모델({result.model}) 작성 — {svc.settings.gemini_model}이(가) 한도 초과·혼잡이라 대신 썼습니다. 품질 확인 필요")
+    checked: list[str] = []
+    if not fallback:   # 예비 모델로 썼다면 1순위 모델이 한도라 대조도 못 하므로 부르지 않는다
+        before = split_figures(warnings)
+        warnings, checked = verify_figures(svc.generator, warnings, sources, result.content.model_dump_json())
+        # AI가 맞다고 본 숫자도 남겨, 사람 없이 반영하는 갱신 자동 반영에서 한 번 더 대조하게 한다
+        cleared = [f for f in before if f not in split_figures(warnings)]
+    else:
+        cleared = []
     return {
         "content": json.loads(result.content.model_dump_json()),
         "warnings": warnings,
-        "fixes": (changes.notes if changes else []) + list(result.fixes),   # 알림은 앞 8줄만 보이므로 먼저
+        "fixes": (changes.notes if changes else []) + checked + list(result.fixes),   # 알림은 앞 8줄만 보이므로 먼저
         "fact_check": fact.as_dict(),
+        "cleared_figures": cleared,
         "recent_changes": changes.as_dict() if changes else {},
         "fallback_model": fallback,
         "source_errors": errors,

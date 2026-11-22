@@ -155,8 +155,15 @@ def _all_warnings(cp: dict[str, Any]) -> list[str]:
 
 def figure_list(cp: dict[str, Any]) -> list[str]:
     """'자료에서 못 찾은 숫자' 경고의 숫자들(하나씩 AI가 자료와 대조). 다른 경고는 static_reasons가 거부한다."""
+    # 글 작성 때 AI 대조로 경고에서 빠진 숫자(cleared_figures)도 다시 본다(한 번의 판정만 믿고 자동 반영하지 않게)
+    cleared = [str(f) for f in (cp.get("content") or {}).get("cleared_figures") or [] if str(f).strip()]
+    return list(dict.fromkeys(split_figures(_all_warnings(cp)) + cleared))
+
+
+def split_figures(warnings: Sequence[str]) -> list[str]:
+    """경고 목록에서 '자료에서 못 찾은 숫자' 경고의 숫자들만(중복 제거)."""
     out: list[str] = []
-    for w in _all_warnings(cp):
+    for w in warnings:
         if str(w).startswith(FIGURE_WARNING):
             # ai_generator가 ", "로 이어 붙인다. 쉼표만으로 자르면 "1,500만 원"이 "1"과 "500만 원"으로 깨진다
             out += [f.strip() for f in re.split(r",\s+", str(w).split(":", 1)[-1]) if f.strip()]
