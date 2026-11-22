@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Jalcheck Home (홈 글 목록 페이지 나누기)
  * Description: 홈 화면 카드 목록을 /page/2/ 같은 주소로 넘겨 볼 수 있게 한다.
- *              1쪽은 맨 위 큰 글 1개 + 카드 9개, 2쪽부터는 큰 글 없이 그다음 글부터 카드 9개씩.
+ *              1쪽은 맨 위 큰 글 1개 + 카드 12개, 2쪽부터는 큰 글 없이 그다음 글부터 카드 12개씩.
  *              (검색엔진이 링크만 따라가도 옛 글까지 닿고, 쪽마다 내용이 달라 중복 주소가 생기지 않게)
  * 원본: auto-word-press/deploy/wp/mu-plugins/jalcheck-home.php (서버의 wp-content/mu-plugins/에 복사해 사용)
  * 짝: deploy/wp/templates/home.html 의 카드 목록(jc-card-query)은 이 주 목록을 그대로 쓴다(inherit).
@@ -14,14 +14,14 @@ if (!defined('ABSPATH')) {
 }
 
 const JALCHECK_HOME_FEATURE = 1;   // 1쪽 맨 위 큰 글 수(home.html의 jc-feature-query)
-const JALCHECK_HOME_PER_PAGE = 9;  // 카드 수(3칸 격자라 3의 배수)
+const JALCHECK_HOME_PER_PAGE = 12; // 카드 수. 화면 너비에 따라 한 줄 1~4개라 1·2·3·4로 다 나눠지는 12(빈칸 방지)
 
 function jalcheck_home_is_list(WP_Query $q): bool
 {
     return !is_admin() && $q->is_main_query() && $q->is_home() && !$q->is_feed();
 }
 
-// 큰 글로 보여 준 최신 글을 건너뛰고, 쪽마다 9개씩 이어서 보여 준다.
+// 큰 글로 보여 준 최신 글을 건너뛰고, 쪽마다 12개씩 이어서 보여 준다.
 add_action('pre_get_posts', static function (WP_Query $q): void {
     if (!jalcheck_home_is_list($q)) {
         return;
