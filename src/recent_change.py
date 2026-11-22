@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 from src.ai_generator import _fact_norm, _quoted_in_sources
 from src.source_fetcher import Source
+from src.source_finder import core_keyword
 
 log = logging.getLogger(__name__)
 
@@ -29,8 +30,6 @@ MAX_NOTES = 4               # 승인 알림에 보일 줄 수
 RECENT_DAYS = 365           # 이보다 오래된 기사는 안내 페이지에 이미 반영됐을 가능성이 높다
 QUERY_WORDS = ("개편", "개정", "달라지는")
 
-# 주제 이름에서 제도 이름 뒤에 붙는 일반 낱말(여기서 끊는다)
-_GENERIC = re.compile(r"^(신청|대상|지원|자격|방법|발급|환급|계산|조건|가입|사용|신규|요건|기간|기한|금액|안내|정리|총정리|혜택)")
 # 확정 근거: 국회·국무회의를 통과했다, 공포·고시됐다(최저임금·기준중위소득은 고시로 확정), 이미 시행 중
 _FINAL = re.compile(
     r"(본회의|국회)[^.\n]{0,15}(통과|의결|가결)(했|됐|되었|된|돼|하면서|함에)"
@@ -58,21 +57,6 @@ class RecentChanges:
 
     def as_dict(self) -> dict:
         return self.memo
-
-
-def core_keyword(topic: str) -> str:
-    """'월세 세액공제 신청 대상과 …' → '월세 세액공제'. 검색어와 기사 관련성 판단에 쓴다."""
-    core: list[str] = []
-    for w in topic.split():
-        if core and _GENERIC.match(w):
-            break
-        if len(w) > 2 and w[-1] in "과와":          # '근로장려금과 자녀장려금' → 앞 제도만
-            core.append(w[:-1])
-            break
-        core.append(w)
-        if len(core) >= 3:
-            break
-    return " ".join(core) or topic.strip()
 
 
 def is_final(proof: str) -> bool:

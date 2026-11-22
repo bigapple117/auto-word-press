@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import urllib3
 from google.genai import errors as genai_errors
 
 from src import source_fetcher
@@ -373,7 +374,7 @@ def test_internal_addresses_blocked(url):
 class FakeResp:
     def __init__(self, status, headers=None, body=b""):
         self.status = status
-        self.headers = headers or {}
+        self.headers = urllib3.HTTPHeaderDict(headers or {})
         self._body = body
         self.read_called = False
         self.closed = False
@@ -394,14 +395,16 @@ class FakePool:
 def fake_network(monkeypatch, responses, internal_hosts=()):
     """_resolve_public와 _open을 가짜로 바꾼다. 접속 기록(호스트, 고정 IP)을 돌려준다."""
     opened = []
+    cookies = fake_network.cookies = []
 
     def resolve(host, port, timeout):
         if host in internal_hosts:
             raise SourceError(f"내부 주소로는 접속하지 않습니다: {host}")
         return "203.0.113.10"
 
-    def open_(target, ip, timeout, watch):
+    def open_(target, ip, timeout, watch, cookie=""):
         opened.append((target.host, target.path, ip))
+        cookies.append(cookie)
         return responses.pop(0), FakePool()
 
     monkeypatch.setattr(source_fetcher, "_resolve_public", resolve)
@@ -429,6 +432,20 @@ def test_fetch_follows_redirect_and_connects_to_checked_ip(monkeypatch):
     assert src.url == "https://example.go.kr/final?x=1" and src.title == "제목"
     assert opened == [("example.go.kr", "/start", "203.0.113.10"),
                       ("example.go.kr", "/final?x=1", "203.0.113.10")]
+
+
+def test_cookie_redirect_loop_is_followed_with_cookie_only_on_same_host(monkeypatch):
+    """국토교통부처럼 쿠키를 주고 같은 주소로 다시 보내는 곳: 쿠키를 그 호스트에만 돌려준다."""
+    fake_network(monkeypatch, [
+        FakeResp(307, {"Location": "https://www.molit.go.kr/a", "Set-Cookie": "TMOS=abc; Path=/; HttpOnly"}),
+        FakeResp(302, {"Location": "http://www.molit.go.kr/a", "Set-Cookie": "BAD=x\x01y"}),
+        FakeResp(302, {"Location": "https://other.go.kr/b"}),
+        FakeResp(200, {"Content-Type": "text/html; charset=utf-8"}, PAGE),
+    ])
+    src = fetch_source("https://www.molit.go.kr/a", "S1")
+    assert src.url == "https://other.go.kr/b"
+    # https 쿠키는 http 주소·다른 호스트에 안 보내고, 제어문자 든 쿠키는 버린다
+    assert fake_network.cookies == ["", "TMOS=abc", "", ""]
 
 
 def test_official_page_redirected_outside_cannot_vouch_for_links(monkeypatch):
@@ -485,7 +502,7 @@ def test_page_without_charset_is_decoded(monkeypatch):
 
 
 def test_network_errors_become_source_errors(monkeypatch):
-    def broken(target, ip, timeout, watch):
+    def broken(target, ip, timeout, watch, cookie=""):
         raise ConnectionResetError("reset")
 
     monkeypatch.setattr(source_fetcher, "_resolve_public", lambda h, p, t: "203.0.113.10")

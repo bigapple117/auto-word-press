@@ -28,7 +28,17 @@ OFFICIAL_HOSTS = frozenset({
     "kibo.or.kr", "semas.or.kr", "khug.or.kr", "kead.or.kr", "kicox.or.kr",
     "mnuri.kr", "arko.or.kr",      # 문화누리카드 공식 누리집, 한국문화예술위원회(운영 기관)
     "energyv.or.kr",               # 에너지바우처 공식 누리집(한국에너지공단)
+    "kotsa.or.kr",                 # 한국교통안전공단(K-패스 운영 기관, korea-pass.kr은 이 서버 접속을 끊음)
 })
+# 시·도청 누리집. 전국 제도 글에 지역 사업(경기패스·인천 i-패스 등) 기준이 섞이지 않게,
+# 검색 제목에 그 제도 이름이 없는 페이지는 뒤로 미룬다(기후동행카드처럼 그 지역 제도면 제목에 이름이 있어 그대로)
+LOCAL_HOSTS = frozenset({
+    "seoul.go.kr", "busan.go.kr", "daegu.go.kr", "incheon.go.kr", "gwangju.go.kr", "daejeon.go.kr",
+    "ulsan.go.kr", "sejong.go.kr", "gg.go.kr", "gwd.go.kr", "chungbuk.go.kr", "chungnam.go.kr",
+    "jeonbuk.go.kr", "jb.go.kr", "jeonnam.go.kr", "gb.go.kr", "gyeongnam.go.kr", "jeju.go.kr",
+})
+# 주제 이름에서 제도 이름 뒤에 붙는 일반 낱말(여기서 끊는다)
+_GENERIC = re.compile(r"^(신청|대상|지원|자격|방법|발급|환급|계산|조건|가입|사용|신규|요건|기간|기한|금액|안내|정리|총정리|혜택)")
 # 자바스크립트로 그려서 본문을 읽을 수 없는 주소
 UNREADABLE_PATTERNS = ("websquare", "/index_pp.xml")
 
@@ -129,6 +139,36 @@ def official_candidates(hits: Sequence[SearchHit], limit: int = 8) -> list[str]:
     return urls
 
 
+def core_keyword(topic: str) -> str:
+    """'월세 세액공제 신청 대상과 …' → '월세 세액공제'. 주제에서 제도 이름만 뽑는다."""
+    core: list[str] = []
+    for w in topic.split():
+        if core and _GENERIC.match(w):
+            break
+        if len(w) > 2 and w[-1] in "과와":          # '근로장려금과 자녀장려금' → 앞 제도만
+            core.append(w[:-1])
+            break
+        core.append(w)
+        if len(core) >= 3:
+            break
+    return " ".join(core) or topic.strip()
+
+
+def is_local(url: str) -> bool:
+    """시·도청 누리집인지."""
+    host = (urlparse(url).hostname or "").lower()
+    return host in LOCAL_HOSTS or any(host.endswith("." + h) for h in LOCAL_HOSTS)
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"[\s\-·]", "", text).lower()
+
+
 def find_official_urls(search: NaverSearch, topic: str, limit: int = 8) -> list[str]:
-    """주제로 웹문서를 검색해 공식 근거 후보 주소를 돌려준다."""
-    return official_candidates(search.web(topic, display=30), limit)
+    """주제로 웹문서를 검색해 공식 근거 후보 주소를 돌려준다. 시·도청 페이지 중 검색 제목에 제도 이름이 없는 것
+    (전국 K-패스 글에 나온 경기패스·인천 i-패스 안내 등)은 중앙부처·공공기관 뒤로 미룬다(빼지는 않음)."""
+    hits = search.web(topic, display=30)
+    titles = {h.url: _squash(h.title) for h in hits}
+    core = _squash(core_keyword(topic))
+    urls = official_candidates(hits, limit=30)
+    return sorted(urls, key=lambda u: is_local(u) and core not in titles.get(u, ""))[:limit]

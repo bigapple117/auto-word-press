@@ -235,7 +235,7 @@ def _recording(base: type, watch: _Watch) -> type:
     return Recording
 
 
-def _open(target: _Target, ip: str, timeout: urllib3.Timeout, watch: _Watch):
+def _open(target: _Target, ip: str, timeout: urllib3.Timeout, watch: _Watch, cookie: str = ""):
     """검사한 IP로만 접속한다. Host 헤더와 TLS 인증서 확인은 원래 호스트 이름으로 한다."""
     headers = {
         "Host": target.host,
@@ -243,6 +243,8 @@ def _open(target: _Target, ip: str, timeout: urllib3.Timeout, watch: _Watch):
         "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
         "Accept-Encoding": "gzip, deflate",
     }
+    if cookie:
+        headers["Cookie"] = cookie
     if target.scheme == "https":
         pool = urllib3.HTTPSConnectionPool(
             ip, target.port, timeout=timeout, retries=False, maxsize=1,
@@ -276,9 +278,15 @@ def _decode(body: bytes, content_type: str) -> str:
         return body.decode("utf-8", errors="replace")
 
 
+_BAD_COOKIE = re.compile(r"[\x00-\x20\x7f;,]")   # 제어문자·공백·구분자가 든 쿠키는 버린다
+
+
 def _fetch(url: str, deadline: float) -> tuple[str, str, str]:
     """(최종 주소, Content-Type, 본문 글자). 리다이렉트마다 주소·IP를 다시 검사한다."""
     current = url
+    # 일부 기관(국토교통부 등)은 첫 방문에 쿠키를 주고 같은 주소로 다시 보낸다. 쿠키를 돌려주지 않으면
+    # 같은 주소로 계속 돌아 '리다이렉트가 너무 많다'가 된다. 이 한 번의 읽기 안에서, 준 호스트에만 돌려준다.
+    jar: dict[tuple[str, str], dict[str, str]] = {}      # (scheme, host)별: https 쿠키를 http로 보내지 않게
     for _ in range(MAX_REDIRECTS + 1):
         target = _parse(current)
         remaining = deadline - time.monotonic()
@@ -298,7 +306,8 @@ def _fetch(url: str, deadline: float) -> tuple[str, str, str]:
         watchdog.daemon = True
         watchdog.start()
         try:
-            resp, pool = _open(target, ip, timeout, watch)
+            cookie = "; ".join(f"{k}={v}" for k, v in jar.get((target.scheme, target.host), {}).items())
+            resp, pool = _open(target, ip, timeout, watch, cookie)
         except (urllib3.exceptions.HTTPError, OSError) as exc:
             watchdog.cancel()
             if time.monotonic() >= deadline:
@@ -314,6 +323,10 @@ def _fetch(url: str, deadline: float) -> tuple[str, str, str]:
                 location = resp.headers.get("Location")
                 if not location:
                     raise SourceError(f"이동할 주소가 없는 리다이렉트: {current}")
+                for raw in resp.headers.getlist("Set-Cookie"):
+                    name, sep, value = raw.split(";", 1)[0].strip().partition("=")
+                    if sep and name and not _BAD_COOKIE.search(name + value):
+                        jar.setdefault((target.scheme, target.host), {})[name] = value
                 current = urljoin(current, location)   # 리다이렉트 본문은 읽지 않는다
                 continue
             if resp.status != 200:

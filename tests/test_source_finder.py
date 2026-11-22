@@ -1,7 +1,7 @@
 import pytest
 
 from src.source_finder import (NaverSearch, SearchError, SearchHit, is_official,
-                               official_candidates)
+                               find_official_urls, is_local, official_candidates)
 
 
 @pytest.mark.parametrize("url, ok", [
@@ -91,3 +91,18 @@ def test_trend_parses_results():
 def test_errors(resp, msg):
     with pytest.raises(SearchError, match=msg):
         NaverSearch("i", "s", session=FakeSession(resp)).web("x")
+
+
+def test_local_government_pages_go_last_unless_title_names_the_program():
+    class S:
+        def web(self, q, display=30):
+            return [SearchHit(t, u, "") for t, u in [
+                ("사업개요 | The 경기패스", "https://www.gg.go.kr/a"),
+                ("대중교통비 환급지원(K-패스)", "https://www.busan.go.kr/b"),
+                ("모두의카드 - 국토교통부", "https://www.molit.go.kr/c"),
+                ("기후동행카드 안내", "https://news.seoul.go.kr/d")]]
+    assert is_local("https://www.incheon.go.kr/x") and not is_local("https://www.smartcity.go.kr/x")
+    assert find_official_urls(S(), "K-패스 환급 대상", limit=3) == [
+        "https://www.busan.go.kr/b", "https://www.molit.go.kr/c", "https://www.gg.go.kr/a"]
+    assert find_official_urls(S(), "기후동행카드 신청 방법", limit=2) == [
+        "https://www.molit.go.kr/c", "https://news.seoul.go.kr/d"]   # 제목에 이름이 있는 서울시 페이지는 안 밀림
