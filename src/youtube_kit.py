@@ -24,7 +24,7 @@ class UploadKit:
     title: str
     description: str
     hashtags: list[str]
-    clip_text: str = ""     # 네이버 클립 설명(클립은 제목 칸이 없어 쇼츠 제목을 첫 줄에 넣는다)
+    clip_text: str = ""     # 네이버 클립 설명(쇼츠 제목·글 주소 포함)
 
 
 def _hashtag(word: str) -> str:
@@ -65,19 +65,21 @@ def build_upload_kit(content: MasterContent, post_url: str) -> UploadKit:
         "",
         " ".join(tags),
     ]
-    return UploadKit(title, "\n".join(lines)[:DESCRIPTION_MAX], tags, clip_text(content, tags))
+    return UploadKit(title, "\n".join(lines)[:DESCRIPTION_MAX], tags, clip_text(content, tags, post_url))
 
 
-def clip_text(content: MasterContent, tags: list[str]) -> str:
-    """네이버 클립 설명. 유튜브 설명보다 짧게 하고, 설명 속 주소는 눌리지 않으므로
-    긴 글 주소 대신 사이트 이름만 적는다. 음악 출처(CC BY 4.0 조건)는 플랫폼마다 필요하다."""
+def clip_text(content: MasterContent, tags: list[str], post_url: str) -> str:
+    """네이버 클립 설명. 클립은 제목 칸이 없어 쇼츠 제목을 첫 줄에 넣는다.
+    글 주소는 눌리지 않더라도 복사해 들어갈 수 있게 넣는다(주소가 짧은 영문이라 부담 없음).
+    음악 출처(CC BY 4.0 조건)는 플랫폼마다 필요하다."""
     lines = [
         content.shorts.title.strip(),
         "",
         content.meta_description.strip(),
         f"정보 기준: {content.reference_note.strip()}",
         "",
-        "자세한 조건과 신청 방법은 블로그 잘체크(jalcheck.com)에서 확인하세요.",
+        "자세한 조건과 신청 방법은 블로그 잘체크에서 확인하세요.",
+        post_url,
         "신청 전에는 담당 기관의 최신 안내를 꼭 다시 확인해 주세요.",
         "",
         MUSIC_CREDIT,

@@ -566,7 +566,7 @@ def test_publish_sends_youtube_upload_kit(env):
     title, desc, clip = svc.telegram.texts
     assert title == good_data()["shorts"]["title"]
     assert f"https://jalcheck.com/post-{500 + job_id}/" in desc and desc.rstrip().endswith("#잘체크")
-    assert clip.startswith(title) and "Daily Beetle" in clip and clip.rstrip().endswith("#잘체크")
+    assert clip.startswith(title) and f"https://jalcheck.com/post-{500 + job_id}/" in clip and "Daily Beetle" in clip and clip.rstrip().endswith("#잘체크")
 
 
 def test_blog_only_publish_sends_no_upload_kit(env):
