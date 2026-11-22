@@ -563,9 +563,10 @@ def test_publish_sends_youtube_upload_kit(env):
     svc.telegram.texts.clear()
     assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
     assert svc.telegram.videos[0][0] == "short.mp4" and "업로드용" in svc.telegram.videos[0][1]
-    title, desc = svc.telegram.texts
+    title, desc, clip = svc.telegram.texts
     assert title == good_data()["shorts"]["title"]
     assert f"https://jalcheck.com/post-{500 + job_id}/" in desc and desc.rstrip().endswith("#잘체크")
+    assert clip.startswith(title) and "Daily Beetle" in clip and clip.rstrip().endswith("#잘체크")
 
 
 def test_blog_only_publish_sends_no_upload_kit(env):
@@ -699,7 +700,7 @@ def test_upload_kit_warns_first_when_post_edited_after_approval(env):
     cp["content"]["shorts"]["scenes"][0]["narration"] = "2026년 기준 1,200원"
     db.save_checkpoint(conn, job_id, "content", cp)
     assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
-    warn, title, desc = svc.telegram.texts
+    warn, title, desc, clip = svc.telegram.texts
     assert "올리기 전 확인 필요" in warn and "장면 1:" in warn
     assert title == good_data()["shorts"]["title"] and len(svc.telegram.videos) == 1
 
@@ -712,7 +713,7 @@ def test_upload_kit_still_sent_when_number_check_fails(env):
     svc.telegram.texts.clear()
     svc.wp.fail_content = True
     assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
-    assert len(svc.telegram.texts) == 2 and len(svc.telegram.videos) == 1
+    assert len(svc.telegram.texts) == 3 and len(svc.telegram.videos) == 1
 
 
 def test_upload_kit_still_sent_when_number_warning_fails_to_send(env):
@@ -727,13 +728,14 @@ def test_upload_kit_still_sent_when_number_warning_fails_to_send(env):
     svc.wp.edited = {pid: "<p>직접 고친 본문</p>"}
     sent = []
 
-    def flaky_send(text):
+    def flaky_send(text, **_):
         if "확인 필요" in text:
             raise RuntimeError("텔레그램 오류 시험")
         sent.append(text)
     svc.telegram.send_text = flaky_send
     assert orch.handle_decision(decision(job_id, "publish", req.nonce)) == "발행했습니다"
-    assert len(sent) == 2 and len(svc.telegram.videos) == 1
+    assert len(sent) == 3 and len(svc.telegram.videos) == 1
+    assert not any("보내지 못했습니다" in t for t in sent)
 
 
 def _awaiting(orch, svc, conn, n):

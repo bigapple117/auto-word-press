@@ -1,4 +1,4 @@
-"""유튜브 쇼츠 업로드용 제목·설명·해시태그를 만든다(사용자가 휴대폰에서 복사해 붙여 넣는 용도).
+"""유튜브 쇼츠·네이버 클립 업로드용 제목·설명·해시태그를 만든다(사용자가 휴대폰에서 복사해 붙여 넣는 용도).
 
 AI를 다시 부르지 않고 이미 검사를 통과한 글 내용(쇼츠 제목, 검색 설명, 태그, 기준 시점)만 쓴다.
 → 추가 비용이 없고, 검사받지 않은 새 문장이 끼어들지 않는다.
@@ -24,6 +24,7 @@ class UploadKit:
     title: str
     description: str
     hashtags: list[str]
+    clip_text: str = ""     # 네이버 클립 설명(클립은 제목 칸이 없어 쇼츠 제목을 첫 줄에 넣는다)
 
 
 def _hashtag(word: str) -> str:
@@ -64,7 +65,26 @@ def build_upload_kit(content: MasterContent, post_url: str) -> UploadKit:
         "",
         " ".join(tags),
     ]
-    return UploadKit(title, "\n".join(lines)[:DESCRIPTION_MAX], tags)
+    return UploadKit(title, "\n".join(lines)[:DESCRIPTION_MAX], tags, clip_text(content, tags))
+
+
+def clip_text(content: MasterContent, tags: list[str]) -> str:
+    """네이버 클립 설명. 유튜브 설명보다 짧게 하고, 설명 속 주소는 눌리지 않으므로
+    긴 글 주소 대신 사이트 이름만 적는다. 음악 출처(CC BY 4.0 조건)는 플랫폼마다 필요하다."""
+    lines = [
+        content.shorts.title.strip(),
+        "",
+        content.meta_description.strip(),
+        f"정보 기준: {content.reference_note.strip()}",
+        "",
+        "자세한 조건과 신청 방법은 블로그 잘체크(jalcheck.com)에서 확인하세요.",
+        "신청 전에는 담당 기관의 최신 안내를 꼭 다시 확인해 주세요.",
+        "",
+        MUSIC_CREDIT,
+        "",
+        " ".join(tags),
+    ]
+    return "\n".join(lines)
 
 
 def _norm_number(raw: str) -> str:

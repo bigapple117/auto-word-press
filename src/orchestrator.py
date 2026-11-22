@@ -476,15 +476,17 @@ class Orchestrator:
                                  "영상에서 이 숫자가 맞는지 확인하고 올려 주세요.")
                 except Exception as exc:  # noqa: BLE001
                     log.warning("작업 %s번 쇼츠 숫자 확인 요청 전송 실패: %s", job_id, exc)
-            tg.send_video(Path(video), f"[작업 {job_id}] 유튜브 쇼츠 업로드용 영상\n"
-                                       "아래 두 메시지(제목, 설명)를 길게 눌러 복사해 붙여 넣으세요.")
+            tg.send_video(Path(video), f"[작업 {job_id}] 유튜브 쇼츠·네이버 클립 업로드용 영상\n"
+                                       "아래 메시지를 길게 눌러 복사해 붙여 넣으세요: "
+                                       "① 유튜브 제목 ② 유튜브 설명 ③ 네이버 클립 설명(같은 영상을 클립에도 올림)")
             tg.send_text(kit.title)
+            tg.send_text(kit.description)
             try:
                 markup = self.next_markup(job_id)
             except Exception as exc:  # noqa: BLE001 - 버튼이 없어도 설명은 보낸다
                 log.warning("다음 글 버튼 만들기 실패: %s", exc)
                 markup = None
-            tg.send_text(kit.description, reply_markup=markup)
+            tg.send_text(kit.clip_text, reply_markup=markup)   # 다음 글 버튼은 맨 마지막 메시지에
             return True
         except Exception as exc:  # noqa: BLE001 - 발행은 끝났으니 업로드 안내 실패는 알리기만
             log.exception("작업 %s번 유튜브 업로드 안내 실패", job_id)
