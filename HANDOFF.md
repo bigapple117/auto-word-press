@@ -995,3 +995,4 @@
 - 변경: src/youtube_kit.py(UploadKit.clip_text, clip_text(): 쇼츠 제목 첫 줄(클립은 제목 칸 없음)·검색 설명·정보 기준·글 주소(11-22 추가: 눌리지 않아도 복사해 들어갈 수 있게. 처음엔 안 눌릴 것이라 추정해 뺐으나 확인된 근거 없었음)·확인 안내·음악 출처(CC BY 4.0, 플랫폼마다 필요)·해시태그), src/orchestrator.py send_upload_kit(영상 → 유튜브 제목 → 유튜브 설명 → 클립 설명, 다음 글 버튼은 마지막 메시지로 이동)
 - 테스트: tests/test_orchestrator.py 업로드 안내 4개 갱신. 기존 test_upload_kit_still_sent_when_number_warning_fails_to_send는 가짜 send_text가 reply_markup을 못 받아 설명 전송이 실패하는데도 우연히 통과하던 것을 바로잡음. 전체 772 통과
 - 남은 일: 2~3주 뒤 클립 반응 보고 계속·릴스 추가 여부 결정. 이미 발행된 글의 쇼츠는 클립 설명이 안 감(필요하면 따로 생성)
+- 2026-11-22 사용자 캡처로 클립 업로드 화면 확인(clipcreators.naver.com): 제목 칸 없음·설명 1칸(최대 3,000자) → 첫 줄 제목 방식 맞음. '콘텐츠 링크'는 네이버 블로그·네이버TV·뉴스만 가능 → 외부 글은 설명 속 주소로만. 'AI 활용 설정' 있음 → 우리 쇼츠(AI 대본·Gemini 음성)는 켜도록 안내. 설명 속 주소가 눌리는지는 아직 미확인
