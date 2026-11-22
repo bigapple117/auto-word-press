@@ -963,3 +963,11 @@
 - 실제 시험: 월세·부모급여·생계급여·K-패스 → 논의 중 개편안만 잡힘(정상), 육아휴직 → 없음. 확정 사례는 아직 실제로 못 봐서 단위 테스트로만 검증.
 - 파일: src/recent_change.py(신규), src/ai_generator.py, src/pipeline.py, templates/prompt_template.py, tests/test_recent_change.py(11개). 전체 테스트 765개 통과. 커밋 8874ca7, worker 재시작·사이트 200 확인.
 - 남은 일: 실제 확정 사례가 글에 어떻게 반영되는지 관찰. K-패스 글에서 전국 공식 페이지 대신 경기·인천 페이지가 자료로 잡히는 문제(별개, fact_check 보류 1건 원인).
+
+## 2026-11-22 홈 글 목록 페이지 나누기(SEO)
+- 지시: 사용자(선택지 1번) / 작업: Claude(오라클2) / 검토: Gemini hydrogen-medium(지적 2건 중 1건 반영)
+- 이유: 홈은 최신 10개만 보이고 더 보기가 없었음. 게다가 /page/2/ 주소가 1쪽과 같은 글을 보여 주면서 자기 주소를 대표 주소(canonical)로 표시해 중복 페이지가 될 수 있었음. 구글 권장대로 쪽마다 고유 주소·실제 링크(페이지 번호)로 나눔. '더 보기' 버튼(자바스크립트로 이어 붙이기)은 구글이 못 눌러 제외.
+- 동작: 1쪽 = 큰 글 1개 + 카드 9개, 2쪽부터 = 큰 글 칸 없이 다음 글부터 카드 9개씩. 카드 목록(home.html jc-card-query)을 주 목록(inherit)으로 바꾸고 페이지 번호 블록 추가, 새 mu-plugin jalcheck-home.php가 offset(1+(쪽-1)×9)·쪽수 보정(found_posts-1)·2쪽부터 큰 글 칸 생략(pre_render_block)을 맡음. 피드·관리자는 제외.
+- 주의: 주 목록에만 조건(예: 카테고리 제외)을 추가하면 큰 글 쿼리와 어긋나 중복·누락될 수 있음 → 바꿀 땐 home.html 큰 글 쿼리도 같이.
+- 파일: deploy/wp/mu-plugins/jalcheck-home.php(새), deploy/wp/templates/home.html. 반영: apply_site_pages.py(백업 data/backups/site-pages-20261122-032444).
+- 검증(실서버): 1~5쪽 카드 38개 + 큰 글 1개 = 39개 전부, 중복 0, 6쪽 404, 쪽별 canonical 자기 주소, 피드 10개 정상.
