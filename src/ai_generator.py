@@ -989,9 +989,12 @@ class ContentGenerator:
         except ValidationError as exc:
             raise GenerationError(f"최근 변경 응답 형식 오류: {exc.errors()[:1]}") from exc
 
-    def structured(self, prompt: str, schema: type, system: str) -> tuple[str, str]:
-        """정해진 형식(JSON)으로 답을 받는 짧은 질문. (응답 글자, 실제 쓴 모델)."""
-        return self._call_with_retry(prompt, schema=schema, system=system)
+    def structured(self, prompt: str, schema: type, system: str, main_only: bool = False) -> tuple[str, str]:
+        """정해진 형식(JSON)으로 답을 받는 짧은 질문. (응답 글자, 실제 쓴 모델).
+        main_only: 1순위 모델 판정만 믿는 곳(자동 반영 판정)용. 1순위가 실패하면 예비 모델을 부르지 않고
+        ModelBusyError(예비 모델 결과는 어차피 버리므로 호출만 낭비)."""
+        return self._call_with_retry(prompt, models=self.models[:1] if main_only else None,
+                                     schema=schema, system=system)
 
     def choose_category(self, title: str, summary: str, tags: Sequence[str],
                         options: Sequence[tuple[str, str, str]]) -> str:

@@ -42,7 +42,7 @@ class FakeEvalGenerator:
         self.exc = exc
         self.calls: list[tuple[str, object, str]] = []
 
-    def structured(self, prompt, schema, system):
+    def structured(self, prompt, schema, system, main_only=False):
         self.calls.append((prompt, schema, system))
         if self.exc is not None:
             raise self.exc
@@ -1422,7 +1422,7 @@ def test_orchestrator_preserves_held_when_reevaluating_auto_apply(env, monkeypat
     monkeypatch.setattr(
         svc.generator,
         "structured",
-        lambda prompt, schema, system: (json.dumps({"differences": []}), "fake-eval"),
+        lambda prompt, schema, system, main_only=False: (json.dumps({"differences": []}), "fake-eval"),
         raising=False,
     )
     monkeypatch.setattr(svc.wp, "get_post_title", lambda pid: f"제목 {pid}", raising=False)

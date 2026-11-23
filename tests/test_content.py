@@ -1216,3 +1216,20 @@ def test_reference_line_does_not_repeat_gijun():
     assert reference_note_text("기준") == "기준"
     html = render_blog_html(MasterContent.model_validate(good_data()), [])
     assert '<p class="jc-reference">기준: 2026년 정기신청(2025년 소득)</p>' in html
+
+
+def test_structured_main_only_never_calls_other_models():
+    # 자동 반영 판정은 1순위 결과만 믿으므로, 1순위가 한도면 2·3순위를 부르지 않는다(호출 낭비 방지)
+    client = FakeClient([api_error(429)])
+    gen = ContentGenerator(client, "main-model", second_model="second-model",
+                           fallback_model="backup-model", sleep=lambda s: None, retry_waits=(1, 1))
+    with pytest.raises(ModelBusyError):
+        gen.structured("q", dict, "sys", main_only=True)
+    assert [m for m, _ in client.calls] == ["main-model"]
+
+
+def test_structured_default_still_falls_back():
+    client = FakeClient([api_error(429), '{"a": 1}'])
+    gen = ContentGenerator(client, "main-model", second_model="second-model",
+                           fallback_model="backup-model", sleep=lambda s: None, retry_waits=(1, 1))
+    assert gen.structured("q", dict, "sys")[1] == "second-model"

@@ -14,7 +14,7 @@ class FakeGen:
     def __init__(self, checks, model="main", boom=None):
         self.checks, self.model, self.boom, self.prompts = checks, model, boom, []
 
-    def structured(self, prompt, schema, system):
+    def structured(self, prompt, schema, system, main_only=False):
         self.prompts.append(prompt)
         if self.boom:
             raise self.boom

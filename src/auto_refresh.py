@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator
 
+from src.ai_generator import ModelBusyError
 from src.freshness import html_to_text
 
 log = logging.getLogger(__name__)
@@ -99,7 +100,8 @@ class FallbackModelError(Exception):
 
 def compare(generator: Any, old_text: str, new_text: str,
             changes: Sequence[dict[str, Any]]) -> CompareOutcome:
-    raw, model = generator.structured(build_prompt(old_text, new_text, changes), CompareOutcome, SYSTEM_INSTRUCTION)
+    raw, model = generator.structured(build_prompt(old_text, new_text, changes), CompareOutcome, SYSTEM_INSTRUCTION,
+                                      main_only=True)
     main = (getattr(generator, "models", None) or [None])[0]
     if main and model != main:                    # 한도·혼잡으로 가벼운 모델이 대신 판정했으면 믿지 않는다
         raise FallbackModelError(model)
@@ -184,7 +186,7 @@ def check_warnings(generator: Any, figures: Sequence[str], sources: Sequence[dic
         raise ValueError("자료가 없거나 너무 길어 전부 대조할 수 없습니다")
     prompt = ("[숫자]\n" + "\n".join(f"{i}. {f}" for i, f in enumerate(figures))
               + "\n\n[자료]\n" + _fence("자료", "\n\n".join(texts)) + "\n\n[글]\n" + _fence("글", article))
-    raw, model = generator.structured(prompt, WarningOutcome, WARNING_INSTRUCTION)
+    raw, model = generator.structured(prompt, WarningOutcome, WARNING_INSTRUCTION, main_only=True)
     main = (getattr(generator, "models", None) or [None])[0]
     if main and model != main:
         raise FallbackModelError(model)
@@ -279,6 +281,9 @@ def evaluate(generator: Any, wp: Any, cp: dict[str, Any], now: datetime | None =
                        for d in compare(generator, old_text, new_text, auto.get("changes") or []).differences]
     except FallbackModelError as exc:
         result["reasons"] = [f"예비 모델({exc})이 판정해 믿을 수 없습니다"]
+        return result
+    except ModelBusyError:   # 1순위 모델만 부르므로(main_only) 혼잡·한도면 여기로
+        result["reasons"] = ["1순위 모델이 혼잡·한도로 판정하지 못했습니다"]
         return result
     except Exception as exc:  # noqa: BLE001 - 비교를 못 하면 확실하다고 볼 수 없다
         log.warning("갱신 자동 반영 판정: 예전 글과 비교 실패: %s: %s", exc.__class__.__name__, exc)
