@@ -236,3 +236,35 @@ def test_orchestrator_passing_news_job_is_auto_published_and_remembered(env, tmp
     assert job["status"] == "published" and job["checkpoint"]["news_gate"]["ok"] is True
     path = orch.svc.settings.data_dir / "topic_seeds_news.txt"
     assert "청년 이사비 지원" in path.read_text()
+
+
+def test_late_recheck_is_dropped_when_job_redrafted(env):  # noqa: F811
+    orch, svc, conn, _ = env
+    news = db.create_job(conn, "청년 이사비 지원 신청", checkpoint={"topic_origin": origin()})
+    orch.run_once()
+    db.save_checkpoint(conn, news, "news_gate", {"ok": False, "at": "2026-11-20T00:00:00+00:00"})
+
+    def codex(prompt):                              # AI 확인 도중 사람이 다시 만들기(승인 요청이 지워짐)
+        db.clear_checkpoint(conn, news, ("draft", "approval", "news_gate"))
+        return Verdict(exists=True, open_now=True, reason="확인")
+    orch.news_checker = Checker(lambda: True, codex, codex)
+    job = db.get_job(conn, news)
+    content = job["checkpoint"]["content"]
+    content["sources"] = cp()["content"]["sources"]
+    db.save_checkpoint(conn, news, "content", content)
+    orch.recheck_news_gate(db.get_job(conn, news))
+    assert "news_gate" not in db.get_job(conn, news)["checkpoint"]
+
+
+def test_morning_rechecks_at_most_two_news_jobs(env, tmp_path, monkeypatch):  # noqa: F811
+    orch, svc, conn, _ = env
+    ids = [db.create_job(conn, f"뉴스 {i}", checkpoint={"topic_origin": origin(name=f"제도 {i}")}) for i in range(3)]
+    for i in ids:
+        orch.run_once()
+        db.save_checkpoint(conn, i, "news_gate", {"ok": True, "at": "2026-11-20T00:00:00+00:00"})   # 어제 이전 판정
+    seen = []
+    monkeypatch.setattr(orch, "recheck_news_gate", lambda j: seen.append(j["id"]) or j)
+    g = DailyGuard(orch, tmp_path / "daily_guard.json")
+    assert g.run_if_due(datetime(2026, 11, 24, 8, 0, tzinfo=KST)) == "사실 확인 보류 글만 있음"
+    assert seen == ids[:2]
+    assert all(db.get_job(conn, i)["status"] == "awaiting_approval" for i in ids)

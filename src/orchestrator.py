@@ -520,8 +520,15 @@ class Orchestrator:
         cp = job.get("checkpoint") or {}
         if not news_gate.origin(cp) or not news_gate.stale(cp.get("news_gate")):
             return job
+        nonce = (cp.get("approval") or {}).get("nonce")
         try:
             gate = news_gate.evaluate(self.conn, job["topic"], cp, self.news_checker)
+            now = db.get_job(self.conn, job["id"])
+            # AI 확인(수십 초) 사이에 다시 만들기·취소 등으로 글이 바뀌었으면 늦은 판정을 버린다(되살리면 새 글에 낡은 판정)
+            if not now or now["status"] != "awaiting_approval" \
+                    or ((now.get("checkpoint") or {}).get("approval") or {}).get("nonce") != nonce:
+                log.info("작업 %s번 뉴스 주제 재확인 중 글이 바뀌어 판정을 버림", job["id"])
+                return now or job
             db.save_checkpoint(self.conn, job["id"], "news_gate", gate)
             log.info("작업 %s번 뉴스 주제 조건 다시 확인: %s", job["id"], "통과" if gate["ok"] else gate["reasons"])
         except Exception:  # noqa: BLE001

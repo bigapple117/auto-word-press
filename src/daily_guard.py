@@ -34,6 +34,7 @@ KST = ZoneInfo("Asia/Seoul")
 PUBLISH_AT = time(8, 0)          # 매일 이 시각 자동 발행
 CHECK_SECONDS = 60               # 실행기가 1분마다 확인(8시 전에는 시각만 보고 끝)
 MAX_TRIES = 3                    # 한 번 확인할 때 워드프레스가 분명히 거절하면 다음 대기 글로(최대 이만큼)
+MAX_NEWS_RECHECKS = 2            # 아침에 다시 확인할 뉴스 주제 글 수(AI 확인 동안 버튼 처리가 멈추므로 제한)
 AUTO_CALLBACK = "auto"           # 아침 자동 발행이 handle_decision에 넘기는 버튼 번호(순서 확인을 건너뜀)
 MAX_ATTEMPTS = 3                 # 하루 자동 발행 시도 횟수 상한(장애 때 알림 반복 방지)
 
@@ -155,8 +156,7 @@ class DailyGuard:
         """(기록용 문장, 오늘 일을 끝냈는지, 결과를 지켜볼 작업 번호). 거절된 글 번호는 rejected에 더한다."""
         # 갱신 작업은 사람이 직접 승인할 때만 반영(아침 자동 발행에서 뺀다)
         waiting = [j for j in self.orch.awaiting_jobs() if j["id"] not in rejected and not refresh.is_refresh(j)]
-        waiting = [self.orch.recheck_news_gate(j) for j in waiting]   # 뉴스 주제 판정은 그날 것만 유효
-        held = [j["id"] for j in waiting if auto_hold(j)]
+        held = [j["id"] for j in waiting if fact_hold(j)]   # 뉴스 주제 조건은 차례가 온 글만 아래에서 다시 확인
         jobs = [j for j in waiting if j["id"] not in held]
         if not jobs:
             if rejected:
@@ -167,10 +167,16 @@ class DailyGuard:
             self.orch._notify("[아침 자동 발행] 승인 대기 글이 없어 오늘 아침 글을 올리지 못했습니다.\n"
                               "주제를 등록해 주세요.")
             return "대기 글 없음", True, None
-        tried = False
-        for listed in jobs[:MAX_TRIES]:
+        tried, tries, rechecks = False, 0, 0
+        for listed in jobs:
+            if tries >= MAX_TRIES:
+                break
             job = db.get_job(self.orch.conn, listed["id"])    # 그사이 [다음 글]로 요청 번호가 바뀌었을 수 있어 다시 읽음
-            if job and auto_hold(job):                       # 그사이 다시 만들어져 보류가 됐을 수 있음
+            if job and news_gate.origin(job) and news_gate.stale((job.get("checkpoint") or {}).get("news_gate")) \
+                    and rechecks < MAX_NEWS_RECHECKS:        # 뉴스 주제 판정은 그날 것만 유효 → 차례가 온 글만 다시 확인
+                rechecks += 1
+                job = self.orch.recheck_news_gate(job)
+            if job and auto_hold(job):                       # 사실 확인 보류·뉴스 주제 조건 불통과(그사이 다시 만들어졌을 수도)
                 held.append(job["id"])
                 continue
             if not job or job["status"] != "awaiting_approval":
@@ -180,7 +186,7 @@ class DailyGuard:
                 log.warning("작업 %s번: 승인 요청 번호가 없어 자동 발행에서 건너뜀", job["id"])
                 rejected.append(job["id"])
                 continue
-            tried = True
+            tried, tries = True, tries + 1
             note = self.orch.handle_decision(Decision(job["id"], "publish", approval["nonce"],
                                                       AUTO_CALLBACK, approval.get("message_id")))
             if note == "발행했습니다":                    # 알림은 handle_decision이 버튼과 똑같이 보냄
