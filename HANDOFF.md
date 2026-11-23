@@ -1041,3 +1041,9 @@
 - 파일: src/topic_finder.py, src/topic_store.py, src/topic_service.py, src/news_gate.py, src/orchestrator.py, src/daily_guard.py, src/pipeline.py(extra_tags), scripts/jobctl.py, scripts/find_topics.py, tests(test_news_gate 신규, topic_finder·topic_auto). 커밋 bb202a5, 782ffce, c37406e, 938c21b.
 - 검증: 전체 테스트 808개 통과. Codex·agy 실제 호출로 JSON 판정 받는 것 확인(각 20~30초). jalcheck-worker 재시작·사이트 200. 기존 대기 글은 topic_origin이 없어 영향 없음.
 - 남은 일: 실제 뉴스 주제 글이 처음 나오면 승인 요청 표시·아침 재확인 로그 확인. 최적화 ④(Gemini 자동 캐시)·⑤(쉬운 일 가벼운 모델) 확인 후 진행. 2단계 분야(건강·의료·정책금융)는 1단계 운영 뒤 NEWS_FIELDS에 추가.
+
+## 2026-11-24 최적화 ④(Gemini 자동 캐시) 확인 결과: 보류
+- 지시: 사용자("1": ④ 먼저 확인) / 작업: 오라클2 Claude / 호출 구조 조사: Gemini neon-high
+- 실험(gemini-3.8-flash, 우리 선불 키, 약 2.2만 토큰 같은 자료를 앞에 둔 요청 23회): 캐시 적중 2회뿐(첫 실험 3회 중 2회, 이후 20회 0회). 시스템 지시 같음/다름, JSON 설정 있음/없음 모두 적중 없음 → 자동 캐시는 "할인 보장 없음"(공식 문서)대로 거의 기대할 수 없음.
+- 조사: 글 쓰기·검토·사실 확인·숫자 대조가 같은 자료를 공유하지만 시스템 지시와 자료 앞 문구가 달라 앞부분이 다름. 고치려면 4종 프롬프트 구조를 바꿔야 함(글 품질 위험).
+- 판단: 적중이 불확실한 할인 때문에 프롬프트 구조를 흔들지 않음. 명시적 캐시(cachedContents)는 할인 확실하지만 보관 요금·캐시 수명 관리가 붙어 비용 대비 복잡. 비용이 문제가 되면 그때 다시 검토.
