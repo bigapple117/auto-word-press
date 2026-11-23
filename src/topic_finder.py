@@ -23,7 +23,7 @@ import logging
 import math
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -103,6 +103,7 @@ class Seed:
     category: str = "지원금"
     aliases: tuple[str, ...] = ()
     discovered: bool = False          # 뉴스에서 새로 찾은 제도
+    remembered: bool = False          # 뉴스에서 찾아 발행한 뒤 extra 목록에 더해진 제도(계속 뉴스 주제 조건 적용)
     news_titles: tuple[str, ...] = ()
     scope: str = "전국"                # 전국·광역·시군구
     region: str = ""                  # 광역·시군구일 때 지역명(제목·태그에 넣음)
@@ -131,13 +132,13 @@ def load_seeds(path: Path = SEEDS_PATH, extra: Path | None = None) -> list[Seed]
     if extra is not None and extra.exists():
         for s in _read_seeds(extra):
             if not any(o.matches(s.name) or s.matches(o.name) for o in seeds):
-                seeds.append(s)
+                seeds.append(replace(s, remembered=True))
     return seeds
 
 
 def seed_line(seed: Seed) -> str:
     """extra 파일에 적을 한 줄(load_seeds가 다시 읽는 형식)."""
-    clean = [re.sub(r"[|\n]", " ", x).strip() for x in
+    clean = [" ".join(x.replace("|", " ").split()) for x in   # split(): \r·U+2028 등 splitlines가 자르는 문자도 없앰
              (seed.name, seed.query, ",".join(map(str, seed.months)), seed.category, ",".join(seed.aliases),
               seed.scope, seed.region, seed.field)]
     return " | ".join(clean)

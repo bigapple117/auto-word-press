@@ -154,7 +154,7 @@ def add_candidates(conn: sqlite3.Connection, batch_id: int, cands: Sequence[Cand
                     "news": c.news_titles[:2], "interest": c.interest,
                     "post_id": c.written.post_id if c.written else None,
                     "written_year": c.written.year if c.written else None}
-            if c.seed.discovered:   # 뉴스 주제: 작업에 넘겨 발행 전 추가 확인(news_gate)·지역 태그·목록 자동 추가에 쓴다
+            if c.seed.discovered or c.seed.remembered:   # 뉴스 주제: 작업에 넘겨 발행 전 추가 확인(news_gate)·지역 태그·목록 자동 추가에 쓴다
                 info["origin"] = origin_of(c)
             cur = conn.execute(
                 "INSERT INTO candidates (batch_id, ckey, kind, name, year, category, topic, info, created_at, expires_at)"

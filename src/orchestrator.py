@@ -514,6 +514,21 @@ class Orchestrator:
                          "영상은 승인 요청 메시지에 있습니다.")
             return False      # 안내가 끊겼으면 다음 글 버튼은 따로 보낸다
 
+    def recheck_news_gate(self, job: dict[str, Any]) -> dict[str, Any]:
+        """뉴스 주제 글의 판정이 오늘 것이 아니면 다시 확인해 저장한다(아침 자동 발행 직전).
+        실패하면 원래 작업을 돌려준다(news_gate.hold가 오늘 판정이 아닌 글을 보류로 본다)."""
+        cp = job.get("checkpoint") or {}
+        if not news_gate.origin(cp) or not news_gate.stale(cp.get("news_gate")):
+            return job
+        try:
+            gate = news_gate.evaluate(self.conn, job["topic"], cp, self.news_checker)
+            db.save_checkpoint(self.conn, job["id"], "news_gate", gate)
+            log.info("작업 %s번 뉴스 주제 조건 다시 확인: %s", job["id"], "통과" if gate["ok"] else gate["reasons"])
+        except Exception:  # noqa: BLE001
+            log.exception("작업 %s번 뉴스 주제 조건 다시 확인 실패", job["id"])
+            return job
+        return db.get_job(self.conn, job["id"]) or job
+
     def remember_news_seed(self, job: dict[str, Any]) -> None:
         """발행된 뉴스 제도를 주제 기본 목록(data/topic_seeds_news.txt)에 더한다. 실패해도 발행에는 영향 없음."""
         try:

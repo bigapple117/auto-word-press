@@ -14,6 +14,8 @@
 
 사실 확인 보류(daily_guard.fact_hold)와는 별개 조건이며, 둘 중 하나라도 걸리면 아침 자동 발행에서 빠진다.
 발행된 뉴스 제도는 data/topic_seeds_news.txt에 더해 다음부터 기본 목록처럼 쓴다(지역별 비교 글은 제외).
+그 목록에서 다시 고른 주제도 뉴스 주제로 보고 같은 조건을 적용한다(한 번 확인됐다고 다음 해에도 있다는 보장이 없음).
+판정은 그날(한국 날짜)만 유효하다. 아침 자동 발행 직전에 오늘 판정이 아니면 다시 확인한다(그사이 신청이 끝났을 수 있음).
 """
 from __future__ import annotations
 
@@ -47,6 +49,7 @@ AI_TIMEOUT = 600                 # 초. 시험 때 20~30초
 GATE_TIMEOUT = 30
 MAX_ARTICLE_CHARS = 12000
 MAX_SOURCE_CHARS = 14000         # agy는 질문을 명령줄로 받으므로(한 인자 128KB) 전체를 짧게 유지
+MAX_PROMPT_CHARS = 32000         # 한글 3바이트 × 32000 ≈ 96KB < 128KB(제목·주소가 길어도 넘지 않게 마지막에 자름)
 COUNTED_VIA = ("direct", "gemini")
 BIN = Path.home() / ".local" / "bin"
 READY = "[뉴스 주제: 자동 발행 가능]"
@@ -121,7 +124,7 @@ def build_prompt(topic: str, o: dict[str, Any], content: dict[str, Any], sources
         used += len(text)
         parts.append(f"[{s.get('id')}] {s.get('title')} ({s.get('url')})\n{text}")
     where = "전국" if o.get("scope", "전국") == "전국" else f"{o.get('scope')} {o.get('region')}"
-    return (
+    prompt = (
         "너는 한국 생활 정보 블로그의 발행 전 검증자다. 다른 AI가 뉴스에서 찾은 제도로 쓴 글이 있다.\n"
         f"오늘은 {today}(한국 시간)이다. 아래 두 가지를 판단해 JSON 하나로만 답하라.\n"
         "- exists: 이 제도가 정부·지자체·공공기관이 실제로 운영하는 제도인가(광고·민간 상품·검토 단계 아님)\n"
@@ -133,6 +136,7 @@ def build_prompt(topic: str, o: dict[str, Any], content: dict[str, Any], sources
         f"근거 뉴스 제목: {' | '.join(o.get('news_titles') or [])}\n\n"
         "글(JSON):\n" + article + "\n\n자료:\n" + "\n\n".join(parts)
     )
+    return prompt[:MAX_PROMPT_CHARS]
 
 
 def _parse(text: str) -> Verdict:
@@ -252,11 +256,24 @@ def approval_line(gate: dict[str, Any] | None) -> str:
     return f"{MANUAL} " + "; ".join(gate.get("reasons") or ["이유 없음"]) + tail
 
 
-def hold(job: dict[str, Any]) -> bool:
-    """뉴스 주제 글인데 자동 발행 조건을 못 넘었거나 판정 기록이 없으면 True(아침 자동 발행에서 뺀다)."""
+def stale(gate: dict[str, Any] | None, now: datetime | None = None) -> bool:
+    """판정이 없거나 오늘(한국 날짜) 판정이 아니면 True."""
+    try:
+        at = datetime.fromisoformat((gate or {})["at"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at.astimezone(KST).date() != (now or datetime.now(timezone.utc)).astimezone(KST).date()
+
+
+def hold(job: dict[str, Any], now: datetime | None = None) -> bool:
+    """뉴스 주제 글인데 자동 발행 조건을 못 넘었거나, 판정 기록이 없거나 오늘 판정이 아니면 True
+    (아침 자동 발행에서 뺀다. daily_guard가 발행 직전 Orchestrator.recheck_news_gate로 오늘 판정을 새로 만든다)."""
     if origin(job) is None:
         return False
-    return not ((job.get("checkpoint") or {}).get("news_gate") or {}).get("ok")
+    gate = (job.get("checkpoint") or {}).get("news_gate")
+    return not (gate or {}).get("ok") or stale(gate, now)
 
 
 def remember_published(path: Path, job: dict[str, Any]) -> bool:

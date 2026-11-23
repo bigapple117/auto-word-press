@@ -155,6 +155,7 @@ class DailyGuard:
         """(기록용 문장, 오늘 일을 끝냈는지, 결과를 지켜볼 작업 번호). 거절된 글 번호는 rejected에 더한다."""
         # 갱신 작업은 사람이 직접 승인할 때만 반영(아침 자동 발행에서 뺀다)
         waiting = [j for j in self.orch.awaiting_jobs() if j["id"] not in rejected and not refresh.is_refresh(j)]
+        waiting = [self.orch.recheck_news_gate(j) for j in waiting]   # 뉴스 주제 판정은 그날 것만 유효
         held = [j["id"] for j in waiting if auto_hold(j)]
         jobs = [j for j in waiting if j["id"] not in held]
         if not jobs:

@@ -143,12 +143,24 @@ def test_codex_gate_reads_usage_tool():
     assert news_gate.codex_allowed(boom) is False
 
 
-def test_hold():
+def test_hold_and_stale():
+    today = {"ok": True, "at": NOW.isoformat()}
     assert news_gate.hold({"checkpoint": {}}) is False                               # 뉴스 주제 아님
-    assert news_gate.hold({"checkpoint": cp()}) is True                              # 판정 기록 없음
-    assert news_gate.hold({"checkpoint": {**cp(), "news_gate": {"ok": False}}}) is True
-    assert news_gate.hold({"checkpoint": {**cp(), "news_gate": {"ok": True}}}) is False
+    assert news_gate.hold({"checkpoint": cp()}, NOW) is True                         # 판정 기록 없음
+    assert news_gate.hold({"checkpoint": {**cp(), "news_gate": {**today, "ok": False}}}, NOW) is True
+    assert news_gate.hold({"checkpoint": {**cp(), "news_gate": today}}, NOW) is False
+    tomorrow = datetime(2026, 11, 23, 16, 0, tzinfo=timezone.utc)                    # 한국 24일 01시
+    assert news_gate.stale(today, tomorrow) is True                                  # 어제 판정은 무효
+    assert news_gate.hold({"checkpoint": {**cp(), "news_gate": today}}, tomorrow) is True
+    assert news_gate.stale({"at": "깨짐"}) is True
     assert auto_hold({"checkpoint": cp()}) is True
+
+
+def test_prompt_is_capped_for_command_line():
+    long = [{"id": f"S{i}", "url": "https://www.molit.go.kr/" + "a" * 5000, "title": "제" * 20000, "text": "본문"}
+            for i in range(5)]
+    prompt = news_gate.build_prompt("주제", origin(), {"title": "제목"}, long, "2026-11-23")
+    assert len(prompt) <= news_gate.MAX_PROMPT_CHARS and prompt.startswith("너는")
 
 
 def test_remember_published(tmp_path):
@@ -162,6 +174,22 @@ def test_remember_published(tmp_path):
     assert news_gate.remember_published(path, job) is False                         # 이미 있음
     assert news_gate.remember_published(path, {"checkpoint": cp(name="A 지역별 비교", compare_with=["서울"])}) is False
     assert news_gate.remember_published(path, {"checkpoint": {}}) is False
+    assert s.remembered is True                                                     # 다시 고르면 뉴스 주제 조건 적용
+
+
+def test_seed_line_removes_line_breaking_characters(tmp_path):
+    path = tmp_path / "topic_seeds_news.txt"
+    job = {"checkpoint": cp(name="이상한\r이름\u2028지원", query="검색|어\x85신청")}
+    assert news_gate.remember_published(path, job) is True
+    assert any(s.name == "이상한 이름 지원" and s.query == "검색 어 신청" for s in load_seeds(extra=path))
+
+
+def test_remembered_seed_candidate_keeps_news_origin():
+    from src.topic_finder import Seed
+    from src.topic_store import origin_of
+    sd = Seed("청년 이사비 지원", "청년 이사비 지원 신청", remembered=True, scope="광역", region="서울", field="주거")
+    o = origin_of(type("C", (), {"seed": sd})())
+    assert o["news"] is True and o["field"] == "주거" and o["region"] == "서울"
 
 
 # ---------- 실행기·아침 자동 발행 연결 ----------
@@ -190,14 +218,21 @@ def test_orchestrator_holds_news_job_and_shows_reason(env, tmp_path):  # noqa: F
 
 def test_orchestrator_passing_news_job_is_auto_published_and_remembered(env, tmp_path):  # noqa: F811
     orch, svc, conn, _ = env
-    orch.news_checker = checker()[0]
+    ch, calls = checker()
+    orch.news_checker = ch
     news = db.create_job(conn, "청년 이사비 지원 신청", checkpoint={"topic_origin": origin()})
     orch.run_once()
-    gate = db.get_job(conn, news)["checkpoint"]["news_gate"]
-    if gate["ok"] is False:                       # 가짜 자료가 한 사이트라 통과시키려면 판정을 직접 넣는다
-        db.save_checkpoint(conn, news, "news_gate", {**gate, "ok": True, "reasons": []})
+    job = db.get_job(conn, news)
+    assert job["checkpoint"]["news_gate"]["ok"] is False and calls == []      # 가짜 자료는 한 사이트
+    content = job["checkpoint"]["content"]                                    # 공식 사이트 두 곳 자료로 바꿈
+    content["sources"] = cp()["content"]["sources"]
+    db.save_checkpoint(conn, news, "content", content)
+    db.save_checkpoint(conn, news, "news_gate", {**job["checkpoint"]["news_gate"], "at": "2026-11-20T00:00:00+00:00"})
     g = DailyGuard(orch, tmp_path / "daily_guard.json")
+    # 어제 판정은 무효 → 아침 자동 발행 직전 다시 확인(다른 회사 AI 호출) → 통과 → 발행
     assert g.run_if_due(datetime(2026, 11, 24, 8, 0, tzinfo=KST)) == f"자동 발행: 작업 {news}번"
-    assert db.get_job(conn, news)["status"] == "published"
+    assert calls == ["codex"]
+    job = db.get_job(conn, news)
+    assert job["status"] == "published" and job["checkpoint"]["news_gate"]["ok"] is True
     path = orch.svc.settings.data_dir / "topic_seeds_news.txt"
     assert "청년 이사비 지원" in path.read_text()
