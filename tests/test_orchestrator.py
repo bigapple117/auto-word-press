@@ -716,6 +716,20 @@ def test_category_failure_on_existing_draft_does_not_send_categories(env):
     assert "분류를 바꾸지 않고 저장" in out["category_warning"]
 
 
+def test_redraft_keeps_category_without_asking_again(env):
+    # 화면만 다시 만들 때(kept_category) 분류를 다시 고르지 않고 워드프레스의 분류를 그대로 둔다
+    from src.pipeline import make_draft
+    orch, svc, conn, _ = env
+    job_id = db.create_job(conn, "주제")
+    orch.run_once()
+    pid = db.get_job(conn, job_id)["post_id"]
+    svc.generator.category = AssertionError("분류를 다시 고르면 안 됨")
+    content = MasterContent.model_validate(good_data())
+    media = {"blog": [None] * len(content.sections), "scenes": []}
+    out = make_draft(svc, job_id, content, [], media, pid, kept_category="세금")
+    assert out["category"] == "세금" and out["category_warning"] == "" and svc.wp.last_categories is None
+
+
 def _mismatched_content(narration):
     data = good_data()
     data["shorts"]["scenes"][0]["narration"] = narration

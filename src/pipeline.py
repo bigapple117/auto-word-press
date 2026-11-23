@@ -297,8 +297,10 @@ def make_video(svc: Services, job_id: int, content: MasterContent, tts: dict, me
 # ---------- 3. 워드프레스 임시 글 ----------
 
 def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list[Source], media: dict,
-               post_id: int | None) -> dict:
+               post_id: int | None, kept_category: str | None = None) -> dict:
     """사진을 올리고 임시 글을 저장한다. 첫 사진은 대표 사진으로도 쓴다.
+    kept_category: 화면만 다시 만들 때(jobctl redraft) 이전 분류 이름. 글 내용이 같으므로 분류를 다시 고르지 않고
+    워드프레스에 저장된 분류를 그대로 둔다(Gemini 호출 1번 절약, 사람이 바꾼 분류도 유지).
 
     글 화면 맨 위에는 대표 사진을 보여 주지 않으므로(single.html) 첫 사진도 본문 제 소제목 아래에 넣는다.
     """
@@ -318,12 +320,16 @@ def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list
     checked_on = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %-m월 %-d일")
     html = render_blog_html(content, sources, images, checked_on=checked_on)
     tag_ids = svc.wp.ensure_tags([content.focus_keyword, *content.tags][:5])
-    category, category_warning = choose_category(svc, content)
+    if kept_category is not None and post_id:
+        category, category_warning = None, ""
+    else:
+        category, category_warning = choose_category(svc, content)
     post = svc.wp.save_draft(job_id, content.title, html, slug=slug_without_year(content.slug),
                              excerpt=content.meta_description, featured_media=featured, post_id=post_id,
                              tags=tag_ids, categories=[category["id"]] if category else None)
     return {"post_id": post.id, "status": post.status, "link": post.link, "featured": featured,
-            "category": category["name"] if category else "", "category_warning": category_warning}
+            "category": category["name"] if category else (kept_category or ""),
+            "category_warning": category_warning}
 
 
 def choose_category(svc: Services, content: MasterContent) -> tuple[dict | None, str]:

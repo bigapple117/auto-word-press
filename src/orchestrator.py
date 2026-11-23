@@ -121,7 +121,8 @@ class Orchestrator:
 
         current = db.get_job(self.conn, job_id)
         if "draft" not in cp:
-            cp["draft"] = make_draft(self.svc, job_id, content, sources, cp["media"], current["post_id"])
+            cp["draft"] = make_draft(self.svc, job_id, content, sources, cp["media"], current["post_id"],
+                                     kept_category=cp.get("kept_category"))
             db.save_checkpoint(self.conn, job_id, "draft", cp["draft"])
         post_id = cp["draft"]["post_id"]
         db.record_post(self.conn, job_id, post_id, cp["draft"]["link"])
