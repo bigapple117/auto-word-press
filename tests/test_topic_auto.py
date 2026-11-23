@@ -26,7 +26,7 @@ def jobs(env):
 def test_nothing_before_9am_or_when_queue_is_full(env):
     fill(env, 2)
     assert auto_register_if_due(env.deps, now=AM9 - timedelta(minutes=20)) is None
-    fill(env, 3, status="queued")                              # 글쓰기 중 3 + 승인 대기 2 = 5
+    fill(env, 6, status="queued")                              # 글쓰기 중 6 + 승인 대기 2 = 8
     assert auto_register_if_due(env.deps, now=AM9) is None
     assert env.calls == [] and env.tg.texts == []
 
@@ -43,14 +43,57 @@ def test_fills_up_to_target_with_button_registration(env):
     assert all(topic_store.get_candidate(s, int(j["source_ref"][6:]))["job_id"] == j["id"] for j in new)
 
 
-def test_max_three_a_day_and_once_a_day(env):
-    env.found["cands"] = [cand(n) for n in ("기초연금", "부모급여", "아동수당", "실업급여")]
-    assert auto_register_if_due(env.deps, now=AM9) == "자동 등록 3편"   # 0편 → 상한 3편
+def test_max_five_a_day_and_once_per_slot(env):
+    env.found["cands"] = [cand(n) for n in ("기초연금", "부모급여", "아동수당", "실업급여", "근로장려금", "자녀장려금")]
+    assert auto_register_if_due(env.deps, now=AM9) == "자동 등록 5편"   # 0편 → 상한 5편
     force(env, 1, "published")
-    assert auto_register_if_due(env.deps, now=AM9 + timedelta(hours=5)) is None   # 오늘은 끝
+    assert auto_register_if_due(env.deps, now=AM9 + timedelta(hours=5)) is None   # 같은 회차
     assert len(env.calls) == 1
-    env.found["cands"] = [cand(n) for n in ("근로장려금", "자녀장려금")]
-    assert auto_register_if_due(env.deps, now=AM9 + timedelta(days=1)) == "자동 등록 2편"   # 대기 2편 → 3편 필요, 후보 2개
+    env.found["cands"] = [cand(n) for n in ("자녀장려금", "청년수당")]
+    assert auto_register_if_due(env.deps, now=AM9 + timedelta(days=1)) == "자동 등록 2편"
+
+
+def test_afternoon_fills_queue_after_publication(env):
+    fill(env, 6)
+    assert auto_register_if_due(env.deps, now=AM9) == "자동 등록 2편"
+    force(env, 1, "published")
+    force(env, 2, "published")
+    env.found["cands"] = [cand("아동수당"), cand("실업급여")]
+    assert auto_register_if_due(env.deps, now=AM9 + timedelta(hours=6)) == "자동 등록 2편"
+    assert topic_service._pending(env.jobs) == 8
+    assert topic_store.auto_registered_today(store(env), AM9 + timedelta(hours=6)) == 4
+
+
+def test_daily_limit_is_shared_between_slots(env):
+    env.found["cands"] = [cand(n) for n in ("기초연금", "부모급여", "아동수당")]
+    assert auto_register_if_due(env.deps, now=AM9) == "자동 등록 3편"
+    force(env, 1, "published")
+    env.found["cands"] = [cand(n) for n in ("실업급여", "근로장려금", "자녀장려금")]
+    afternoon = AM9 + timedelta(hours=6)
+    assert auto_register_if_due(env.deps, now=afternoon) == "자동 등록 2편"
+    assert topic_store.auto_registered_today(store(env), afternoon) == 5
+    assert len(jobs(env)) == 5
+
+
+def test_success_is_not_repeated_at_13_in_same_slot(env):
+    assert auto_register_if_due(env.deps, now=AM9) == "자동 등록 2편"
+    env.found["cands"] = [cand("아동수당")]
+    assert auto_register_if_due(env.deps, now=AM9 + timedelta(hours=4)) is None
+    assert len(env.calls) == 1
+    assert len(jobs(env)) == 2
+
+
+def test_afternoon_retries_after_morning_fails_twice(env):
+    good = env.deps.finder
+    def fail(*a, **k):
+        raise RuntimeError("naver down")
+    env.deps.finder = fail
+    assert "실패" in auto_register_if_due(env.deps, now=AM9)
+    assert "실패" in auto_register_if_due(env.deps, now=AM9 + timedelta(hours=1))
+    env.deps.finder = good
+    assert auto_register_if_due(env.deps, now=AM9 + timedelta(hours=4)) is None
+    assert auto_register_if_due(env.deps, now=AM9 + timedelta(hours=6)) == "자동 등록 2편"
+    assert [b["status"] for b in topic_store.auto_batches_today(store(env), AM9 + timedelta(hours=6))] == ["failed", "failed", "sent"]
 
 
 def test_skips_update_and_news_discovered(env):
@@ -145,7 +188,7 @@ def test_old_store_is_migrated_keeping_ids(tmp_path):
 
 def test_auto_ignores_rest_rule_and_its_leftovers_do_not_rest_weekly(env):
     from src.topic_service import run_batch
-    fill(env, 4)
+    fill(env, 7)
     run_batch(env.deps, "weekly", now=AM9 - timedelta(hours=1))   # 기초연금·부모급여 보냈는데 안 고름
     assert auto_register_if_due(env.deps, now=AM9) == "자동 등록 1편"
     assert env.calls[-1]["skip"] == set()                      # 자동 등록은 쉬는 후보도 봄
@@ -178,7 +221,7 @@ def test_skipped_duplicate_is_replaced_by_next_candidate(env):
 
 
 def test_need_is_recounted_after_search(env):
-    fill(env, 3)
+    fill(env, 6)
     real = env.deps.finder
 
     def slow(*a, **k):
@@ -186,4 +229,4 @@ def test_need_is_recounted_after_search(env):
         return real(*a, **k)
     env.deps.finder = slow
     assert auto_register_if_due(env.deps, now=AM9) == "자동 등록 1편"
-    assert "4편으로 줄어" in env.tg.texts[-1]
+    assert "7편으로 줄어" in env.tg.texts[-1]

@@ -613,7 +613,7 @@ def run_forever(services: Services, stop: threading.Event | None = None) -> None
                         log.info("주간 주제 후보: %s", note)
                 except Exception:  # noqa: BLE001
                     log.exception("주간 주제 후보 확인 오류")
-                try:   # 대기 글이 줄면 하루 한 번 자동 등록(오전 9시 이후)
+                try:   # 대기 글이 줄면 회차(오전 9시·오후 3시)마다 자동 등록
                     note = topic_service.auto_register_if_due(deps)
                     if note:
                         log.info("주제 자동 등록: %s", note)

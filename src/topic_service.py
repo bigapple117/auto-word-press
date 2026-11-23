@@ -24,11 +24,13 @@ WEEKLY_HOUR = 9                   # 한국 시간 월요일 이 시각부터 그
 WEEKLY_MAX_TRIES = 2              # 실패하면 다음 날 한 번 더
 RETRY_AFTER = timedelta(hours=20)
 CHECK_SECONDS = 600               # 실행기가 10분마다 확인
-# 자동 등록(2026-11-15 사용자 결정): 글쓰기·승인 대기 글이 AUTO_TARGET편보다 적으면 하루 한 번 채운다.
-AUTO_HOUR = 9                     # 한국 시간 이 시각 이후(아침 8시 자동 발행 뒤)
-AUTO_TARGET = 5                   # 대기 글을 이만큼 유지
-AUTO_MAX_PER_DAY = 3              # 하루 자동 등록 상한
-AUTO_MAX_TRIES = 2                # 찾기가 실패하면 그날 한 번 더
+# 자동 등록(2026-11-15 사용자 결정, 2026-11-23 변경): 글쓰기·승인 대기 글이 AUTO_TARGET편보다 적으면
+# 하루 AUTO_HOURS 회차마다 채운다. 사용자가 하루 3~4편을 올리므로 하루 상한을 소비량보다 크게,
+# 낮에 승인해서 줄어든 만큼 그날 오후에 다시 채우려고 회차를 둘로 나눴다(글쓰기는 원래 한 편씩 차례로 돌아 부하는 같다).
+AUTO_HOURS = (9, 15)              # 한국 시간 회차 시작 시각(9시는 아침 8시 자동 발행 뒤)
+AUTO_TARGET = 8                   # 대기 글을 이만큼 유지
+AUTO_MAX_PER_DAY = 5              # 하루(모든 회차 합계) 자동 등록 상한
+AUTO_MAX_TRIES = 2                # 찾기가 실패하면 그 회차에 한 번 더
 AUTO_RETRY_AFTER = timedelta(hours=1)
 PENDING = ("queued", "generating", "tts", "media", "rendering", "awaiting_approval")
 HEADERS = {"weekly": "이번 주 블로그 주제 후보", "more": "새 블로그 주제 후보", "manual": "블로그 주제 후보"}
@@ -252,12 +254,28 @@ def run_weekly_if_due(deps: TopicDeps, now: datetime | None = None) -> str | Non
         return note
 
 
+def _slot_start(now: datetime) -> datetime | None:
+    """지금 속한 자동 등록 회차의 시작 시각(한국 시간). 첫 회차 전이면 None."""
+    local = now.astimezone(topic_store.KST)
+    hours = [h for h in AUTO_HOURS if h <= local.hour]
+    return local.replace(hour=max(hours), minute=0, second=0, microsecond=0) if hours else None
+
+
+def _slot_batches(store: sqlite3.Connection, now: datetime) -> list[dict[str, Any]]:
+    start = _slot_start(now)
+    if start is None:
+        return []
+    return [b for b in topic_store.auto_batches_today(store, now)
+            if datetime.fromisoformat(b["created_at"]) >= start]
+
+
 def auto_due(store: sqlite3.Connection, now: datetime) -> bool:
-    """오늘 자동 등록을 해도 되는가(대기 글 수는 따로 본다). 성공한 회차가 있으면 끝, 실패는 1시간 뒤 1번만 재시도."""
-    if now.astimezone(topic_store.KST).hour < AUTO_HOUR:
+    """이번 회차에 자동 등록을 해도 되는가(대기 글 수는 따로 본다).
+    회차마다: 성공한 시도가 있으면 끝, 실패는 1시간 뒤 1번만 재시도."""
+    if _slot_start(now) is None:
         return False
     topic_store.fail_stale_running(store, now=now)
-    batches = topic_store.auto_batches_today(store, now)
+    batches = _slot_batches(store, now)
     if any(b["status"] != "failed" for b in batches) or len(batches) >= AUTO_MAX_TRIES:
         return False
     if batches:
@@ -280,7 +298,7 @@ def auto_register_if_due(deps: TopicDeps, now: datetime | None = None) -> str | 
         if not auto_due(store, now):
             return None
         pending = _pending(jobs_conn)
-        need = min(AUTO_TARGET - pending, AUTO_MAX_PER_DAY)
+        need = min(AUTO_TARGET - pending, AUTO_MAX_PER_DAY - topic_store.auto_registered_today(store, now))
         if need <= 0:
             return None
         if not _RUN_LOCK.acquire(blocking=False):
@@ -288,7 +306,7 @@ def auto_register_if_due(deps: TopicDeps, now: datetime | None = None) -> str | 
         try:
             if not auto_due(store, now):                  # 잠금 잡는 사이 바뀌었을 수 있음
                 return None
-            tries = len(topic_store.auto_batches_today(store, now)) + 1
+            tries = len(_slot_batches(store, now)) + 1
             batch_id = topic_store.start_batch(store, "auto", now=now)
             try:
                 return _auto_register(deps, store, jobs_conn, batch_id, need, now)
@@ -299,12 +317,12 @@ def auto_register_if_due(deps: TopicDeps, now: datetime | None = None) -> str | 
                     # 등록을 시작한 뒤 멈춤: 일부가 이미 들어갔을 수 있어 오늘은 다시 돌리지 않는다
                     topic_store.finish_batch(store, batch_id, None, now=now, note=f"등록 중 오류: {err}"[:500])
                     _send(deps, f"[주제 자동 등록] 등록 도중 오류가 났습니다({exc.__class__.__name__}). "
-                                "일부만 들어갔을 수 있어 오늘은 더 시도하지 않습니다.")
+                                "일부만 들어갔을 수 있어 이번 회차는 더 시도하지 않습니다.")
                     return f"등록 중 오류: {exc.__class__.__name__}"
                 topic_store.fail_batch(store, batch_id, err, now=now)
                 note = f"[주제 자동 등록] 실패({exc.__class__.__name__})"
                 if tries >= AUTO_MAX_TRIES:
-                    _send(deps, f"{note}. 오늘은 더 시도하지 않습니다. 대기 글이 {pending}편이니 "
+                    _send(deps, f"{note}. 이번 회차는 더 시도하지 않습니다. 대기 글이 {pending}편이니 "
                                 f"월요일 후보 메시지에서 직접 등록해 주세요.")
                 return note
         finally:
@@ -340,7 +358,7 @@ def _auto_register(deps: TopicDeps, store: sqlite3.Connection, jobs_conn: sqlite
     pending = _pending(jobs_conn)                     # 찾는 1~2분 사이 버튼으로 등록했을 수 있어 다시 셈
     need = min(need, AUTO_TARGET - pending)
     ids = topic_store.add_candidates(store, batch_id, picks, now=now) if need > 0 else []
-    topic_store.mark_sending(store, batch_id)        # 여기부터는 작업이 생기므로 같은 날 다시 돌리지 않는다
+    topic_store.mark_sending(store, batch_id)        # 여기부터는 작업이 생기므로 같은 회차에 다시 돌리지 않는다
     done: list[str] = []
     for cid in ids:
         if len(done) >= need:

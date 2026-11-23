@@ -251,6 +251,15 @@ def auto_batches_today(conn: sqlite3.Connection, now: datetime | None = None) ->
         "SELECT * FROM batches WHERE kind = 'auto' AND created_at >= ? ORDER BY id", (_iso(start),))]
 
 
+def auto_registered_today(conn: sqlite3.Connection, now: datetime | None = None) -> int:
+    """오늘(한국 시간) 자동 등록 회차들이 글쓰기 대기열에 넣은 글 수(하루 상한 계산용)."""
+    now = now or _now()
+    start = datetime.combine(now.astimezone(KST).date(), datetime.min.time(), KST)
+    return conn.execute(
+        "SELECT COUNT(*) FROM candidates c JOIN batches b ON c.batch_id = b.id "
+        "WHERE b.kind = 'auto' AND b.created_at >= ? AND c.job_id IS NOT NULL", (_iso(start),)).fetchone()[0]
+
+
 def weekly_batches(conn: sqlite3.Connection, week: str) -> list[dict[str, Any]]:
     return [dict(r) for r in conn.execute(
         "SELECT * FROM batches WHERE kind = 'weekly' AND week = ? ORDER BY id", (week,))]
