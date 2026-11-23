@@ -501,6 +501,49 @@ def test_busy_model_requeues_and_pauses_queue(env):
     assert not any("] 실패:" in t for t in svc.telegram.texts)
 
 
+def test_busy_retry_reuses_gathered_sources(env):
+    # Gemini가 바빠 다시 시도할 때 공식 자료를 다시 읽지 않는다(저장해 둔 자료 재사용), 글을 쓰면 저장본은 비운다
+    from src.ai_generator import ModelBusyError
+    from src.orchestrator import BUSY_WAIT_SECONDS
+    orch, svc, conn, _ = env
+    now = [1000.0]
+    orch.clock = lambda: now[0]
+    real_gen, real_fetch = svc.generator.generate, svc.fetch
+    state = {"busy": 1, "fetches": 0}
+
+    def generate(*a, **kw):
+        if state["busy"]:
+            state["busy"] -= 1
+            raise ModelBusyError("503")
+        return real_gen(*a, **kw)
+
+    def fetch(*a, **kw):
+        state["fetches"] += 1
+        return real_fetch(*a, **kw)
+
+    svc.generator.generate, svc.fetch = generate, fetch
+    job_id = db.create_job(conn, "A")
+    orch.run_once()
+    assert db.get_job(conn, job_id)["checkpoint"]["gathered"]["sources"]
+    now[0] += BUSY_WAIT_SECONDS + 1
+    orch.run_once()
+    job = db.get_job(conn, job_id)
+    assert job["status"] == "awaiting_approval" and state["fetches"] == 1
+    assert job["checkpoint"]["gathered"] is None
+
+
+def test_gathered_usable_checks_topic_must_read_and_age():
+    from datetime import datetime, timedelta, timezone
+    from src.pipeline import GATHER_TTL_HOURS, gathered_usable
+    now = datetime(2026, 11, 23, tzinfo=timezone.utc)
+    g = {"at": now.isoformat(), "topic": "A", "must_read": ["u"], "sources": []}
+    assert gathered_usable(g, "A", ["u"], now=now)
+    assert not gathered_usable(g, "B", ["u"], now=now)
+    assert not gathered_usable(g, "A", [], now=now)
+    assert not gathered_usable(g, "A", ["u"], now=now + timedelta(hours=GATHER_TTL_HOURS))
+    assert not gathered_usable(None, "A", [], now=now)
+
+
 def test_busy_gives_up_after_limit_and_moves_on(env):
     from src.ai_generator import ModelBusyError
     from src.orchestrator import BUSY_GIVE_UP_SECONDS, BUSY_WAIT_SECONDS

@@ -11,7 +11,7 @@ import logging
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Callable, Collection, Sequence
@@ -126,9 +126,21 @@ def verify_figures(generator: Any, warnings: Sequence[str], sources: Sequence[So
     return kept, checked
 
 
-def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequence[str] = (),
-                 must_read: Sequence[str] = ()) -> dict:
-    """must_read: 꼭 읽을 주소(근거 페이지가 바뀌어 자동 등록된 갱신이면 그 페이지). 검색 결과보다 앞에 둔다."""
+@dataclass(frozen=True)
+class _News:
+    """저장해 둔 뉴스 검색 결과(SearchHit 중 글쓰기에 쓰는 칸만)."""
+    published: str
+    title: str
+    url: str
+
+
+GATHER_TTL_HOURS = 24   # 저장해 둔 자료를 다시 쓰는 기간(그보다 오래되면 공식 페이지가 바뀌었을 수 있어 새로 읽음)
+
+
+def gather_sources(svc: Services, topic: str, must_read: Sequence[str] = ()) -> dict:
+    """글쓰기 자료 모으기(공식 자료·법령·최근 변경·뉴스). 체크포인트에 저장할 수 있는 형태로 돌려준다.
+    Gemini가 바빠 15분 뒤 다시 시도할 때 페이지 읽기·법령 고르기·최근 변경 확인(Gemini 호출 포함)을 반복하지 않으려고
+    글쓰기와 나눴다(2026-11-23)."""
     # 사이트 첫 화면(예: hometax.go.kr/)은 메뉴뿐이라 근거 자료에서 뺀다.
     # 바로가기 링크로는 다른 자료 본문에 그 도메인이 적혀 있을 때만 남는다(link_check)
     first = [u for u in dict.fromkeys(must_read) if u and not is_home(u)]
@@ -156,6 +168,40 @@ def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequenc
         except Exception as exc:  # noqa: BLE001 - 덧붙이는 조사라 실패해도 글은 계속 쓴다
             log.warning("최근 변경 찾기 실패: %r", exc)
             errors = list(errors) + [f"최근 변경 찾기 실패: {exc.__class__.__name__}"]
+    return {
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "topic": topic,
+        "must_read": list(must_read),
+        "sources": [{"id": s.id, "url": s.url, "title": s.title, "via": s.via, "text": s.text} for s in sources],
+        "errors": list(errors),
+        "news": [{"published": n.published, "title": n.title, "url": n.url} for n in news],
+        "change_notes": list(changes.notes) if changes else [],
+        "recent_changes": changes.as_dict() if changes else {},
+    }
+
+
+def gathered_usable(gathered: Any, topic: str, must_read: Sequence[str] = (),
+                    now: datetime | None = None) -> bool:
+    """저장해 둔 자료를 다시 써도 되나: 같은 주제·같은 필수 주소이고 GATHER_TTL_HOURS 안."""
+    if not isinstance(gathered, dict) or gathered.get("topic") != topic \
+            or list(gathered.get("must_read") or []) != list(must_read):
+        return False
+    try:
+        at = datetime.fromisoformat(gathered["at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (now or datetime.now(timezone.utc)) - at < timedelta(hours=GATHER_TTL_HOURS)
+
+
+def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequence[str] = (),
+                 must_read: Sequence[str] = (), gathered: dict | None = None) -> dict:
+    """must_read: 꼭 읽을 주소(근거 페이지가 바뀌어 자동 등록된 갱신이면 그 페이지). 검색 결과보다 앞에 둔다.
+    gathered: gather_sources 결과(재시도 때 저장해 둔 것). 없으면 새로 모은다."""
+    if gathered is None:
+        gathered = gather_sources(svc, topic, must_read)
+    sources = sources_from(gathered["sources"])
+    errors = list(gathered["errors"])
+    news = [_News(**n) for n in gathered["news"]]
     result = svc.generator.generate(topic, sources, target_seconds,
                                     news=[(n.published[5:16], n.title) for n in news], checks=checks)
     # 발행 전 자동 검토: 자료와 다시 대조해 고치고, 사람에게는 끝내 판단 못 한 것만 넘긴다
@@ -177,10 +223,10 @@ def make_content(svc: Services, topic: str, target_seconds: int, checks: Sequenc
     return {
         "content": json.loads(result.content.model_dump_json()),
         "warnings": warnings,
-        "fixes": (changes.notes if changes else []) + checked + list(result.fixes),   # 알림은 앞 8줄만 보이므로 먼저
+        "fixes": list(gathered["change_notes"]) + checked + list(result.fixes),   # 알림은 앞 8줄만 보이므로 먼저
         "fact_check": fact.as_dict(),
         "cleared_figures": cleared,
-        "recent_changes": changes.as_dict() if changes else {},
+        "recent_changes": gathered["recent_changes"],
         "fallback_model": fallback,
         "source_errors": errors,
         "model": result.model,

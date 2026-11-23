@@ -29,7 +29,8 @@ from typing import Any, Iterator
 from src import db
 from src.ai_generator import ModelBusyError
 from src.content_schema import MasterContent
-from src.pipeline import (PipelineError, Services, job_dir, make_content, make_draft, make_tts, make_video,
+from src.pipeline import (PipelineError, Services, gather_sources, gathered_usable, job_dir, make_content,
+                          make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
 from src import auto_refresh, daily_guard, freshness, refresh, source_watch, topic_service
 from src.daily_guard import DailyGuard
@@ -81,8 +82,15 @@ class Orchestrator:
         if "content" not in cp:
             checks = (refresh.target_of(job) or {}).get("checks") or ()   # 갱신이면 점검 장부의 '바뀔 항목'
             must_read = (auto_refresh.auto_info(job) or {}).get("urls") or ()   # 근거 변경 자동 갱신: 바뀐 페이지
-            cp["content"] = make_content(self.svc, job["topic"], seconds, checks=checks, must_read=must_read)
+            # 자료는 따로 저장해, Gemini가 바빠 다시 시도할 때 페이지 읽기·법령·최근 변경 확인을 반복하지 않는다
+            gathered = cp.get("gathered")
+            if not gathered_usable(gathered, job["topic"], must_read):
+                gathered = gather_sources(self.svc, job["topic"], must_read)
+                db.save_checkpoint(self.conn, job_id, "gathered", gathered)
+            cp["content"] = make_content(self.svc, job["topic"], seconds, checks=checks, must_read=must_read,
+                                         gathered=gathered)
             db.save_checkpoint(self.conn, job_id, "content", cp["content"])
+            db.save_checkpoint(self.conn, job_id, "gathered", None)   # 글에 자료가 함께 저장되므로 비움
             db.update_fields(self.conn, job_id, title=cp["content"]["content"]["title"])
             if cp["content"].get("fallback_model"):
                 self._notify(f"[작업 {job_id}] 1순위 모델이 한도 초과·혼잡이라 예비 모델({cp['content']['model']})로 글을 썼습니다. "
