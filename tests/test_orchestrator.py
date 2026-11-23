@@ -529,7 +529,7 @@ def test_busy_retry_reuses_gathered_sources(env):
     orch.run_once()
     job = db.get_job(conn, job_id)
     assert job["status"] == "awaiting_approval" and state["fetches"] == 1
-    assert job["checkpoint"]["gathered"] is None
+    assert "gathered" not in job["checkpoint"]
 
 
 def test_gathered_usable_checks_topic_must_read_and_age():
@@ -542,6 +542,8 @@ def test_gathered_usable_checks_topic_must_read_and_age():
     assert not gathered_usable(g, "A", [], now=now)
     assert not gathered_usable(g, "A", ["u"], now=now + timedelta(hours=GATHER_TTL_HOURS))
     assert not gathered_usable(None, "A", [], now=now)
+    busy = {**g, "errors": ["법령 조문 고르기 실패: ModelBusyError"]}   # 혼잡으로 법령이 빠진 자료는 다시 안 씀
+    assert not gathered_usable(busy, "A", ["u"], now=now)
 
 
 def test_busy_gives_up_after_limit_and_moves_on(env):

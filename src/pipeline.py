@@ -180,11 +180,18 @@ def gather_sources(svc: Services, topic: str, must_read: Sequence[str] = ()) -> 
     }
 
 
+# 자료 모으기 중 AI 단계(법령 조문 고르기·최근 변경 판정)가 실패한 흔적. Gemini 혼잡이면 이 단계들이 오류를 삼키고
+# 빈 결과로 넘어가므로, 이런 자료를 저장해 두고 다시 쓰면 혼잡이 풀린 뒤에도 법령·최근 변경이 빠진 채 글을 쓰게 된다
+_AI_STEP_FAILURES = ("ModelBusyError", "조문 고르기 실패", "최근 변경 판정 실패", "최근 변경 찾기 실패")
+
+
 def gathered_usable(gathered: Any, topic: str, must_read: Sequence[str] = (),
                     now: datetime | None = None) -> bool:
-    """저장해 둔 자료를 다시 써도 되나: 같은 주제·같은 필수 주소이고 GATHER_TTL_HOURS 안."""
+    """저장해 둔 자료를 다시 써도 되나: 같은 주제·같은 필수 주소, GATHER_TTL_HOURS 안, AI 단계 실패 흔적 없음."""
     if not isinstance(gathered, dict) or gathered.get("topic") != topic \
             or list(gathered.get("must_read") or []) != list(must_read):
+        return False
+    if any(m in str(e) for e in gathered.get("errors") or [] for m in _AI_STEP_FAILURES):
         return False
     try:
         at = datetime.fromisoformat(gathered["at"])
@@ -320,7 +327,8 @@ def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list
     checked_on = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %-m월 %-d일")
     html = render_blog_html(content, sources, images, checked_on=checked_on)
     tag_ids = svc.wp.ensure_tags([content.focus_keyword, *content.tags][:5])
-    if kept_category is not None and post_id:
+    keep = bool(kept_category and post_id)
+    if keep:
         category, category_warning = None, ""
     else:
         category, category_warning = choose_category(svc, content)
@@ -328,7 +336,7 @@ def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list
                              excerpt=content.meta_description, featured_media=featured, post_id=post_id,
                              tags=tag_ids, categories=[category["id"]] if category else None)
     return {"post_id": post.id, "status": post.status, "link": post.link, "featured": featured,
-            "category": category["name"] if category else (kept_category or ""),
+            "category": kept_category if keep else (category["name"] if category else ""),
             "category_warning": category_warning}
 
 

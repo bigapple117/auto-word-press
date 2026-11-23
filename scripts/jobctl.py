@@ -112,7 +112,8 @@ def _run(args, settings, conn) -> int:
         if j["status"] not in ("failed", "canceled"):
             db.set_status(conn, args.job_id, "canceled")
         removed = WordPressClient.from_settings(settings).delete_job_media(args.job_id)
-        db.clear_checkpoint(conn, args.job_id, ("content", "tts", "media", "video", "draft", "approval", "kept_category"))
+        db.clear_checkpoint(conn, args.job_id, ("content", "tts", "media", "video", "draft", "approval", "kept_category",
+                                                   "gathered"))
         db.set_status(conn, args.job_id, "queued")
         print(f"작업 {args.job_id}번을 다시 쓰기 대기열에 넣었습니다(예전 사진 {len(removed)}장 삭제, 임시 글 번호 유지)")
     elif args.cmd == "redraft":
@@ -136,6 +137,8 @@ def _run(args, settings, conn) -> int:
         old_draft = j["checkpoint"].get("draft") or {}
         if old_draft.get("category") and not old_draft.get("category_warning"):   # 분류는 글 내용이 같으니 다시 안 고름
             db.save_checkpoint(conn, args.job_id, "kept_category", old_draft["category"])
+        else:
+            db.clear_checkpoint(conn, args.job_id, ("kept_category",))
         db.clear_checkpoint(conn, args.job_id, ("draft", "approval"))
         db.set_status(conn, args.job_id, "queued")
         print(f"작업 {args.job_id}번: 화면만 다시 만들도록 대기열에 넣었습니다(글 내용 유지, 새 승인 요청 예정)")

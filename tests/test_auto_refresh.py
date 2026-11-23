@@ -395,6 +395,23 @@ def test_evaluate_rejects_when_compare_uses_fallback_model():
     assert "draft_print" not in verdict
 
 
+def test_evaluate_rejects_when_main_model_busy_and_asks_main_only():
+    from src.ai_generator import ModelBusyError
+    cp, _ = _valid_cp()
+    seen = []
+
+    class BusyGen(FakeEvalGenerator):
+        def structured(self, prompt, schema, system, main_only=False):
+            seen.append(main_only)
+            raise ModelBusyError("429")
+
+    gen = BusyGen({"differences": []}, model="gemini-3.8-flash", models=["gemini-3.8-flash", "gemini-3.6-flash"])
+    wp = FakeEvalWP({80: "<p>기존 글</p>", 180: "<p>새 글</p>"})
+    verdict = auto_refresh.evaluate(gen, wp, cp, now=NOW)
+    assert verdict["ok"] is False and seen == [True]
+    assert verdict["reasons"] == ["1순위 모델이 혼잡·한도로 판정하지 못했습니다"]
+
+
 def test_evaluate_ok_when_all_differences_explained():
     cp, _ = _valid_cp()
     gen = FakeEvalGenerator(

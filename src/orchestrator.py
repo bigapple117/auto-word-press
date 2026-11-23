@@ -90,7 +90,7 @@ class Orchestrator:
             cp["content"] = make_content(self.svc, job["topic"], seconds, checks=checks, must_read=must_read,
                                          gathered=gathered)
             db.save_checkpoint(self.conn, job_id, "content", cp["content"])
-            db.save_checkpoint(self.conn, job_id, "gathered", None)   # 글에 자료가 함께 저장되므로 비움
+            db.clear_checkpoint(self.conn, job_id, ("gathered",))   # 글에 자료가 함께 저장되므로 비움
             db.update_fields(self.conn, job_id, title=cp["content"]["content"]["title"])
             if cp["content"].get("fallback_model"):
                 self._notify(f"[작업 {job_id}] 1순위 모델이 한도 초과·혼잡이라 예비 모델({cp['content']['model']})로 글을 썼습니다. "
@@ -124,6 +124,7 @@ class Orchestrator:
             cp["draft"] = make_draft(self.svc, job_id, content, sources, cp["media"], current["post_id"],
                                      kept_category=cp.get("kept_category"))
             db.save_checkpoint(self.conn, job_id, "draft", cp["draft"])
+            db.clear_checkpoint(self.conn, job_id, ("kept_category",))   # 한 번만 쓴다(다음 redraft가 새로 남김)
         post_id = cp["draft"]["post_id"]
         db.record_post(self.conn, job_id, post_id, cp["draft"]["link"])
 
