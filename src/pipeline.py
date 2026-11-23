@@ -304,7 +304,7 @@ def make_video(svc: Services, job_id: int, content: MasterContent, tts: dict, me
 # ---------- 3. 워드프레스 임시 글 ----------
 
 def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list[Source], media: dict,
-               post_id: int | None, kept_category: str | None = None) -> dict:
+               post_id: int | None, kept_category: str | None = None, extra_tags: Sequence[str] = ()) -> dict:
     """사진을 올리고 임시 글을 저장한다. 첫 사진은 대표 사진으로도 쓴다.
     kept_category: 화면만 다시 만들 때(jobctl redraft) 이전 분류 이름. 글 내용이 같으므로 분류를 다시 고르지 않고
     워드프레스에 저장된 분류를 그대로 둔다(Gemini 호출 1번 절약, 사람이 바꾼 분류도 유지).
@@ -326,7 +326,8 @@ def make_draft(svc: Services, job_id: int, content: MasterContent, sources: list
                                  width=w, height=h, media_id=up.id)
     checked_on = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y년 %-m월 %-d일")
     html = render_blog_html(content, sources, images, checked_on=checked_on)
-    tag_ids = svc.wp.ensure_tags([content.focus_keyword, *content.tags][:5])
+    # extra_tags: 지역 제도 글의 지역명(사용자 결정: 지역은 태그로). 핵심 검색어 다음에 둔다
+    tag_ids = svc.wp.ensure_tags(list(dict.fromkeys([content.focus_keyword, *extra_tags, *content.tags]))[:5])
     keep = bool(kept_category and post_id)
     if keep:
         category, category_warning = None, ""

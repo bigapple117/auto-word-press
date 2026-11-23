@@ -112,7 +112,7 @@ def _run(args, settings, conn) -> int:
         if j["status"] not in ("failed", "canceled"):
             db.set_status(conn, args.job_id, "canceled")
         removed = WordPressClient.from_settings(settings).delete_job_media(args.job_id)
-        db.clear_checkpoint(conn, args.job_id, ("content", "tts", "media", "video", "draft", "approval", "kept_category",
+        db.clear_checkpoint(conn, args.job_id, ("content", "tts", "media", "video", "draft", "approval", "kept_category", "news_gate",
                                                    "gathered"))
         db.set_status(conn, args.job_id, "queued")
         print(f"작업 {args.job_id}번을 다시 쓰기 대기열에 넣었습니다(예전 사진 {len(removed)}장 삭제, 임시 글 번호 유지)")
@@ -139,7 +139,7 @@ def _run(args, settings, conn) -> int:
             db.save_checkpoint(conn, args.job_id, "kept_category", old_draft["category"])
         else:
             db.clear_checkpoint(conn, args.job_id, ("kept_category",))
-        db.clear_checkpoint(conn, args.job_id, ("draft", "approval"))
+        db.clear_checkpoint(conn, args.job_id, ("draft", "approval", "news_gate"))
         db.set_status(conn, args.job_id, "queued")
         print(f"작업 {args.job_id}번: 화면만 다시 만들도록 대기열에 넣었습니다(글 내용 유지, 새 승인 요청 예정)")
     elif args.cmd == "cancel":

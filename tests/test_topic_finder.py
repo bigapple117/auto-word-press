@@ -114,18 +114,74 @@ def test_valid_topic_rejects_invented_numbers_and_missing_name():
     assert fallback_topic(Candidate(seed("연말정산", cat="세금"), "new_year", 2027)).startswith("2027년 연말정산")
 
 
-def test_validate_discovered_keeps_only_names_in_titles_national_and_new():
+def dsc(ids, name, query=None, scope="전국", region="", **kw):
+    base = dict(category="지원금", field="기본", agency="보건복지부", public=True, group=name,
+                duplicate_of="", similar_existing="")
+    base.update(kw)
+    return Discovered(ids=ids, name=name, query=query or name, scope=scope, region=region, **base)
+
+
+def test_validate_discovered_keeps_only_names_in_titles_and_new():
     titles = ["스포츠강좌이용권 신청 접수 시작", "평창군 청소년 지원", "기초연금 인상"]
     items = [
-        Discovered(ids=[0], name="스포츠강좌이용권", query="스포츠강좌이용권", category="지원금", national=True),
-        Discovered(ids=[1], name="평창 청소년 바우처", query="평창 바우처", category="지원금", national=True),
-        Discovered(ids=[1], name="평창군 청소년 지원", query="x", category="지원금", national=False),
-        Discovered(ids=[2], name="기초연금", query="기초연금", category="지원금", national=True),
-        Discovered(ids=[9], name="없는제도", query="없는제도", category="지원금", national=True),
+        dsc([0], "스포츠강좌이용권"),
+        dsc([1], "평창 청소년 바우처", "평창 바우처"),                  # 제목에 없는 이름
+        dsc([2], "기초연금"),                                           # 기본 목록에 있음
+        dsc([9], "없는제도"),
     ]
     out = validate_discovered(items, titles, [seed("기초연금")])
     assert [(s.name, s.discovered, s.news_titles) for s in out] == [
         ("스포츠강좌이용권", True, ("스포츠강좌이용권 신청 접수 시작",))]
+
+
+def test_validate_discovered_filters_ads_fields_duplicates_and_fake_regions():
+    titles = ["서울시 청년월세 지원 신청", "KB 청년 적금 출시", "주택연금 가입 요건 완화",
+              "실손보험 청구 간소화", "에너지캐시백 신청", "부산 청년 교통비 지원"]
+    items = [
+        dsc([0], "청년월세 지원", scope="광역", region="서울시", field="주거", agency="서울시"),
+        dsc([1], "청년 적금", public=False),                              # 은행 상품
+        dsc([2], "주택연금", field="연금", agency="한국주택금융공사"),
+        dsc([3], "실손보험 청구 간소화", field="건강·의료"),               # 아직 범위 밖(2단계)
+        dsc([4], "에너지캐시백", duplicate_of="2026년 에너지캐시백 신청 방법"),   # 이미 쓴 제도
+        dsc([5], "청년 교통비 지원", scope="광역", region="대구시"),        # 제목에 없는 지역
+    ]
+    out = validate_discovered(items, titles, [])
+    assert [(s.name, s.scope, s.region, s.field) for s in out] == [
+        ("주택연금", "전국", "", "연금"), ("청년월세 지원", "광역", "서울시", "주거")]
+    assert out[1].is_regional and not out[1].compare_with
+
+
+def test_validate_discovered_groups_same_kind_regions_into_compare_candidate():
+    titles = ["서울시 청년 교통비 지원", "부산시 청년 교통비 지원 시작", "인천 출산축하금 확대"]
+    items = [
+        dsc([0], "서울시 청년 교통비 지원", "서울 청년 교통비", scope="광역", region="서울시",
+            group="청년 교통비 지원", agency="서울시"),
+        dsc([1], "부산시 청년 교통비 지원", "부산 청년 교통비", scope="광역", region="부산시",
+            group="청년 교통비 지원", agency="부산시"),
+        dsc([2], "출산축하금", scope="광역", region="인천", group="출산축하금",
+            similar_existing="경기도 출산축하금 신청 방법"),
+    ]
+    out = validate_discovered(items, titles, [])
+    by = {s.name: s for s in out}
+    cmp = by["청년 교통비 지원 지역별 비교"]
+    assert cmp.compare_with == ("서울시", "부산시") and cmp.region == "서울시, 부산시"
+    assert cmp.matches("부산시 청년 교통비 지원 정리")                  # 원래 이름도 같은 제도로 봄
+    inc = by["출산축하금 지역별 비교"]
+    assert inc.compare_with == ("인천", "경기도 출산축하금 신청 방법")
+
+
+def test_regional_topic_needs_region_and_ended_discovered_is_dropped():
+    c = Candidate(seed("청년월세 지원", scope="광역", region="서울시", discovered=True), "new", 2026)
+    assert not valid_topic("청년월세 지원 신청 자격과 받는 방법", c)
+    assert valid_topic("서울시 청년월세 지원 신청 자격과 받는 방법", c)
+    assert fallback_topic(c).startswith("서울시 청년월세 지원")
+    s = FakeSearch(
+        web={"2026년 문화패스": [gov("문화패스")], "2026년 체육바우처": [gov("체육바우처")]},
+        news={"문화패스": [news("문화패스 신청 조기 마감")], "체육바우처": [news("체육바우처 마감 임박")]},
+    )
+    seeds = [seed("문화패스", discovered=True), seed("체육바우처", discovered=True)]
+    result = find_candidates(s, None, seeds, [], today=TODAY)
+    assert [c.seed.name for c in result.candidates] == ["체육바우처"]
 
 
 def test_pick_respects_limit_category_cap_and_update_cap():
@@ -225,8 +281,7 @@ class FakeGen:
 
 def test_writer_discovers_and_phrases_with_validation_and_fallback():
     seeds = [seed("기초연금")]
-    disc = DiscoveredList(items=[Discovered(ids=[0], name="스포츠강좌이용권", query="스포츠강좌이용권",
-                                            category="지원금", national=True)]).model_dump_json()
+    disc = DiscoveredList(items=[dsc([0], "스포츠강좌이용권")]).model_dump_json()
     phrased = PhrasedList(items=[
         {"key": "기초연금:2026:new", "topic": "기초연금 월 34만 원 받는 법"},          # 숫자 지어냄 → 틀 문장
         {"key": "스포츠강좌이용권:2026:new", "topic": "스포츠강좌이용권 지원 대상과 신청 방법"},

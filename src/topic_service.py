@@ -32,6 +32,9 @@ AUTO_TARGET = 8                   # 대기 글을 이만큼 유지
 AUTO_MAX_PER_DAY = 5              # 하루(모든 회차 합계) 자동 등록 상한
 AUTO_MAX_TRIES = 2                # 찾기가 실패하면 그 회차에 한 번 더
 AUTO_RETRY_AFTER = timedelta(hours=1)
+NOT_FOUND_NOTE = "못 찾음 알림"    # 이 표시가 오늘 회차 기록에 있으면 '주제 못 찾음' 알림을 다시 보내지 않음(하루 한 번)
+EXISTING_TOPICS = 200             # 뉴스 제도가 이미 쓴 글과 같은지 AI가 볼 최근 글 주제 수
+NEWS_SEEDS_FILE = "topic_seeds_news.txt"   # 발행한 뉴스 제도가 쌓이는 목록(data 폴더, Git 제외)
 PENDING = ("queued", "generating", "tts", "media", "rendering", "awaiting_approval")
 HEADERS = {"weekly": "이번 주 블로그 주제 후보", "more": "새 블로그 주제 후보", "manual": "블로그 주제 후보"}
 
@@ -43,6 +46,21 @@ class TopicDeps:
     generator: Any | None          # None이면 Gemini 없이(기본 목록 + 틀 문장)
     telegram: Any
     finder: Callable = find_candidates
+
+
+def news_seeds_path(settings: Any):
+    return settings.data_dir / NEWS_SEEDS_FILE
+
+
+def _seeds(settings: Any):
+    return load_seeds(extra=news_seeds_path(settings))
+
+
+def _existing_topics(jobs: list[dict[str, Any]]) -> list[str]:
+    """이미 쓴(쓰는 중인) 글 주제, 최근 것부터. 뉴스 제도가 이름만 다른 같은 제도인지 AI가 대조한다."""
+    alive = [j for j in jobs if j.get("status") != "canceled" and j.get("topic")]
+    alive.sort(key=lambda j: j["id"], reverse=True)
+    return list(dict.fromkeys(j["topic"] for j in alive))[:EXISTING_TOPICS]
 
 
 def _all_jobs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -81,12 +99,13 @@ def _run_batch(deps: TopicDeps, kind: str, today: date | None, now: datetime | N
             return "이번 주 후보는 이미 보냈습니다"
         sending = False
         try:
-            seeds = load_seeds()
+            seeds = _seeds(settings)
             jobs = _all_jobs(jobs_conn)
             written = written_from_jobs(jobs, seeds)
             writer = TopicWriter(deps.generator) if deps.generator is not None else None
             result = deps.finder(deps.search, writer, seeds, written, today=today,
-                                 skip_keys=topic_store.recent_skip_keys(store, now=now))
+                                 skip_keys=topic_store.recent_skip_keys(store, now=now),
+                                 existing=_existing_topics(jobs))
             ids = topic_store.add_candidates(store, batch_id, result.candidates, now=now)
             links = {j["post_id"]: j.get("post_url") or "" for j in jobs if j.get("post_id")}
             lines = [TopicLine(cid, c.kind, c.topic, c.seed.category, c.interest, c.reasons, c.warnings,
@@ -142,7 +161,10 @@ def _register_candidate(store: sqlite3.Connection, jobs_conn: sqlite3.Connection
             return None, False, f"같은 주제를 이미 등록했습니다(작업 {same}번)"
         if topic_store.is_expired(cand, now):
             return None, False, "기한(7일)이 지난 후보입니다. [새 후보 더 받기]를 눌러 주세요"
-    job_id = db.create_job(jobs_conn, cand["topic"], source="web", source_ref=ref)
+    origin = (cand.get("info") or {}).get("origin")
+    # 뉴스에서 찾은 제도는 출처를 작업에 남겨 발행 전 추가 확인(news_gate)을 받게 한다(버튼 등록도 같음)
+    job_id = db.create_job(jobs_conn, cand["topic"], source="web", source_ref=ref,
+                           checkpoint={"topic_origin": origin} if origin else None)
     topic_store.mark_chosen(store, cand["id"], job_id, now=now)
     return job_id, existing is not None, ""
 
@@ -287,7 +309,8 @@ def auto_due(store: sqlite3.Connection, now: datetime) -> bool:
 def auto_register_if_due(deps: TopicDeps, now: datetime | None = None) -> str | None:
     """실행기가 주기적으로 부른다. 대기 글이 넉넉하거나 오늘 이미 했으면 None.
 
-    - 기본 제도 목록에서만 고른다(뉴스에서 새로 찾은 제도·기존 글 고치기는 자동 등록하지 않음).
+    - 기본 제도 목록 + 뉴스에서 새로 찾은 제도(2026-11-23 사용자 결정). 기존 글 고치기와 '지역별 비교' 후보는
+      자동 등록하지 않는다(비교 글은 월요일 후보로만). 뉴스 제도 글은 발행 전 news_gate 추가 확인을 받는다.
     - 등록은 [n번 등록] 버튼과 같은 코드(같은 주제 두 번 등록 방지 포함).
     - 텔레그램에 무엇을 넣었는지 알린다. 마음에 안 들면 승인 요청 때 [취소].
     """
@@ -347,14 +370,15 @@ def _pending(jobs_conn: sqlite3.Connection) -> int:
 
 def _auto_register(deps: TopicDeps, store: sqlite3.Connection, jobs_conn: sqlite3.Connection,
                    batch_id: int, need: int, now: datetime) -> str:
-    seeds = load_seeds()
-    written = written_from_jobs(_all_jobs(jobs_conn), seeds)
+    seeds = _seeds(deps.settings)
+    jobs = _all_jobs(jobs_conn)
+    written = written_from_jobs(jobs, seeds)
     writer = TopicWriter(deps.generator) if deps.generator is not None else None
     # 쉬는 후보(보냈는데 안 고른 것)도 본다: 사람이 안 눌렀다고 빼면 좋은 주제가 3주씩 빠지고 목록이 금방 바닥난다.
     # 자동으로 넣은 뒤 월요일 메시지에서 같은 주제를 누르면 _job_for_same_topic이 막는다.
     result = deps.finder(deps.search, writer, seeds, written, today=now.astimezone(topic_store.KST).date(),
-                         skip_keys=(), discover=False)
-    picks = [c for c in result.candidates if c.kind != "update" and not c.seed.discovered]
+                         skip_keys=(), existing=_existing_topics(jobs))
+    picks = [c for c in result.candidates if c.kind != "update" and not c.seed.compare_with]
     pending = _pending(jobs_conn)                     # 찾는 1~2분 사이 버튼으로 등록했을 수 있어 다시 셈
     need = min(need, AUTO_TARGET - pending)
     ids = topic_store.add_candidates(store, batch_id, picks, now=now) if need > 0 else []
@@ -368,7 +392,8 @@ def _auto_register(deps: TopicDeps, store: sqlite3.Connection, jobs_conn: sqlite
         if job_id is None:
             log.info("자동 등록 건너뜀(후보 %s): %s", cid, why)
             continue
-        done.append(f"- 작업 {job_id}번: {cand['topic']}")
+        origin = (cand.get("info") or {}).get("origin")
+        done.append(f"- 작업 {job_id}번: {cand['topic']}" + (" (뉴스에서 찾은 제도: 발행 전 추가 확인)" if origin else ""))
     topic_store.finish_batch(store, batch_id, None, now=now, note=f"자동 등록 {len(done)}편")
     if done:
         _send(deps, f"[주제 자동 등록] 대기 글이 {pending}편으로 줄어 {len(done)}편을 글쓰기 대기열에 넣었습니다.\n"
@@ -377,6 +402,12 @@ def _auto_register(deps: TopicDeps, store: sqlite3.Connection, jobs_conn: sqlite
         return f"자동 등록 {len(done)}편"
     if need <= 0:
         return "그사이 대기 글이 채워져 등록 안 함"
+    # '못 찾음' 알림은 하루 한 번만(사용자 결정). 오늘 이미 보냈으면 기록만 남긴다
+    told = any(NOT_FOUND_NOTE in (b.get("error") or "") for b in topic_store.auto_batches_today(store, now)
+               if b["id"] != batch_id)
+    topic_store.finish_batch(store, batch_id, None, now=now, note=f"자동 등록 0편({NOT_FOUND_NOTE})")
+    if told:
+        return "자동 등록할 후보 없음(오늘 이미 알림)"
     _send(deps, f"[주제 자동 등록] 대기 글이 {pending}편인데 자동으로 넣을 만한 주제를 찾지 못했습니다. "
                 "월요일 후보 메시지에서 직접 등록하거나 [새 후보 더 받기]를 눌러 주세요.")
     return "자동 등록할 후보 없음"

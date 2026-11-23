@@ -32,7 +32,7 @@ from src.content_schema import MasterContent
 from src.pipeline import (PipelineError, Services, gather_sources, gathered_usable, job_dir, make_content,
                           make_draft, make_tts, make_video,
                           pick_media, request_approval, sources_from)
-from src import auto_refresh, daily_guard, freshness, refresh, source_watch, topic_service
+from src import auto_refresh, daily_guard, freshness, news_gate, refresh, source_watch, topic_service
 from src.daily_guard import DailyGuard
 from src.telegram_notifier import Decision, NextAction, RefreshCommand, TelegramError, TopicAction
 from src.wp_client import WPError
@@ -64,6 +64,7 @@ class Orchestrator:
         self._busy_since: dict[int, float] = {}   # 작업 번호 → 처음 바빴던 시각(재시작하면 초기화)
         self._pending_requeue: dict[int, tuple[dict[str, Any], Exception, str]] = {}  # 대기열 되돌리기 기록에 실패한 작업 → 다음 작업 전에 다시
         self._unrecorded: dict[int, str] = {}     # 실패 기록에 실패한 작업 → 다음 작업 전에 다시 기록
+        self.news_checker = news_gate.Checker()   # 뉴스 주제 글 다른 회사 AI 확인(테스트에서 바꿔 끼움)
 
     # ---------- 작업 처리 ----------
     def _advance(self, job_id: int, status: str) -> None:
@@ -90,7 +91,8 @@ class Orchestrator:
             cp["content"] = make_content(self.svc, job["topic"], seconds, checks=checks, must_read=must_read,
                                          gathered=gathered)
             db.save_checkpoint(self.conn, job_id, "content", cp["content"])
-            db.clear_checkpoint(self.conn, job_id, ("gathered",))   # 글에 자료가 함께 저장되므로 비움
+            db.clear_checkpoint(self.conn, job_id, ("gathered", "news_gate"))   # 글에 자료가 함께 저장되므로 비움
+            cp.pop("news_gate", None)                                         # 글이 바뀌었으니 뉴스 주제 판정도 새로
             db.update_fields(self.conn, job_id, title=cp["content"]["content"]["title"])
             if cp["content"].get("fallback_model"):
                 self._notify(f"[작업 {job_id}] 1순위 모델이 한도 초과·혼잡이라 예비 모델({cp['content']['model']})로 글을 썼습니다. "
@@ -122,7 +124,7 @@ class Orchestrator:
         current = db.get_job(self.conn, job_id)
         if "draft" not in cp:
             cp["draft"] = make_draft(self.svc, job_id, content, sources, cp["media"], current["post_id"],
-                                     kept_category=cp.get("kept_category"))
+                                     kept_category=cp.get("kept_category"), extra_tags=news_gate.region_tags(cp))
             db.save_checkpoint(self.conn, job_id, "draft", cp["draft"])
             db.clear_checkpoint(self.conn, job_id, ("kept_category",))   # 한 번만 쓴다(다음 redraft가 새로 남김)
         post_id = cp["draft"]["post_id"]
@@ -132,6 +134,11 @@ class Orchestrator:
             held = (cp.get("auto_apply") or {}).get("held")   # 한 번 [보류]한 갱신은 다시 써도 자동 반영하지 않음
             cp["auto_apply"] = {**auto_refresh.evaluate(self.svc.generator, self.svc.wp, cp), **({"held": True} if held else {})}
             db.save_checkpoint(self.conn, job_id, "auto_apply", cp["auto_apply"])
+
+        if news_gate.origin(cp) and "news_gate" not in cp:
+            # 뉴스에서 찾은 제도: 자동 발행 추가 조건(공식 자료 2곳·숫자 경고 0·다른 회사 AI 확인·새 분야 첫 3편)
+            cp["news_gate"] = news_gate.evaluate(self.conn, job["topic"], cp, self.news_checker)
+            db.save_checkpoint(self.conn, job_id, "news_gate", cp["news_gate"])
 
         # 승인 요청은 매번 새로 보낸다(재시작 후 다시 보내도 새 요청 번호만 유효)
         draft = cp["draft"]
@@ -274,6 +281,7 @@ class Orchestrator:
             log.exception("작업 %s번: 발행됐지만 장부 기록 실패(나중에 다시 맞춤)", d.job_id)
             recorded = False
         log.info("작업 %s번 발행(%s)", d.job_id, "아침 자동" if d.callback_id == daily_guard.AUTO_CALLBACK else "버튼")
+        self.remember_news_seed(job)
         done = f"글 {target['post_id']}번을 갱신했습니다(주소 그대로)" if target else "발행했습니다"
         # 결과는 원래 승인 요청 메시지에 단다. 순서 확인 메시지에서 눌렀으면 그 메시지 버튼만 지운다.
         approval_msg = approval.get("message_id") or d.message_id
@@ -293,7 +301,7 @@ class Orchestrator:
         for other in self.awaiting_jobs():
             if other["id"] >= job["id"]:
                 return None
-            if not refresh.is_refresh(other) and not daily_guard.fact_hold(other):
+            if not refresh.is_refresh(other) and not daily_guard.auto_hold(other):
                 return other
         return None
 
@@ -340,6 +348,8 @@ class Orchestrator:
             warnings.insert(0, refresh.approval_note(cp["target"]))
             if cp.get("auto_apply"):
                 warnings.insert(1, auto_refresh.approval_line(cp["auto_apply"]))
+        if news_gate.origin(cp):
+            warnings.insert(0, news_gate.approval_line(cp.get("news_gate")))
         if "video" in cp:
             mismatch = self.shorts_number_check(content, post_id)
             if mismatch:
@@ -504,6 +514,14 @@ class Orchestrator:
                          "영상은 승인 요청 메시지에 있습니다.")
             return False      # 안내가 끊겼으면 다음 글 버튼은 따로 보낸다
 
+    def remember_news_seed(self, job: dict[str, Any]) -> None:
+        """발행된 뉴스 제도를 주제 기본 목록(data/topic_seeds_news.txt)에 더한다. 실패해도 발행에는 영향 없음."""
+        try:
+            if news_gate.remember_published(topic_service.news_seeds_path(self.svc.settings), job):
+                log.info("작업 %s번 뉴스 제도를 기본 목록에 더함", job["id"])
+        except Exception:  # noqa: BLE001
+            log.exception("작업 %s번 뉴스 제도 목록 추가 실패", job["id"])
+
     def reconcile_publishing(self, older_than_seconds: int = 180) -> list[int]:
         """'발행 중'으로 오래 멈춘 작업을 워드프레스 실제 상태와 맞춘다(버튼 수신 스레드에서 주기적으로)."""
         fixed = []
@@ -518,6 +536,7 @@ class Orchestrator:
                     post = self.svc.wp.get_post(job["post_id"])
                 if post and post.status == "publish":
                     db.mark_published(self.conn, job["id"], job["post_id"] if target else post.id, post.link)
+                    self.remember_news_seed(job)
                     if not self.send_upload_kit(job["id"], post.link):
                         self.offer_next(job["id"], "다음 승인 대기 글로 넘어가려면 아래 버튼을 누르세요.")
                 else:

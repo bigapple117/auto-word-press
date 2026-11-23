@@ -37,7 +37,8 @@ def test_fills_up_to_target_with_button_registration(env):
     new = [j for j in jobs(env) if (j["source_ref"] or "").startswith("topic:")]
     assert [j["topic"] for j in new] == ["기초연금 신청 자격과 받는 방법", "부모급여 신청 자격과 받는 방법"]
     assert all(j["status"] == "queued" and j["source_ref"].startswith("topic:") for j in new)
-    assert env.calls[-1]["discover"] is False                  # 뉴스 새 제도 찾기는 안 함
+    assert env.calls[-1].get("discover", True)                 # 뉴스 새 제도도 찾음(2026-11-23)
+    assert "existing" in env.calls[-1]                         # 이미 쓴 글 주제를 넘겨 같은 제도인지 AI가 봄
     assert "작업 4번: 기초연금" in env.tg.texts[-1] and "[취소]" in env.tg.texts[-1]
     s = store(env)
     assert all(topic_store.get_candidate(s, int(j["source_ref"][6:]))["job_id"] == j["id"] for j in new)
@@ -96,14 +97,22 @@ def test_afternoon_retries_after_morning_fails_twice(env):
     assert [b["status"] for b in topic_store.auto_batches_today(store(env), AM9 + timedelta(hours=6))] == ["failed", "failed", "sent"]
 
 
-def test_skips_update_and_news_discovered(env):
+def test_registers_news_topic_with_origin_but_skips_update_and_compare(env):
     news = cand("새제도")
-    news.seed = Seed("새제도", "새제도", (), "지원금", discovered=True)
-    env.found["cands"] = [news, cand("에너지바우처", kind="update",
-                                     written=Written("에너지바우처", 2026, 6, 70, date(2026, 11, 1))),
+    news.seed = Seed("새제도", "새제도", (), "지원금", discovered=True, scope="광역", region="서울시",
+                     field="주거", agency="서울시")
+    cmp = cand("청년 교통비 지원 지역별 비교")
+    cmp.seed = Seed("청년 교통비 지원 지역별 비교", "청년 교통비", (), "지원금", discovered=True, scope="광역",
+                    region="서울시, 부산시", group="청년 교통비 지원", compare_with=("서울시", "부산시"))
+    env.found["cands"] = [news, cmp, cand("에너지바우처", kind="update",
+                                          written=Written("에너지바우처", 2026, 6, 70, date(2026, 11, 1))),
                           cand("기초연금")]
-    assert auto_register_if_due(env.deps, now=AM9) == "자동 등록 1편"
-    assert [j["topic"] for j in jobs(env)] == ["기초연금 신청 자격과 받는 방법"]
+    assert auto_register_if_due(env.deps, now=AM9) == "자동 등록 2편"
+    assert [j["topic"] for j in jobs(env)] == ["새제도 신청 자격과 받는 방법", "기초연금 신청 자격과 받는 방법"]
+    origin = db.get_job(env.jobs, 1)["checkpoint"]["topic_origin"]
+    assert origin["news"] and origin["region"] == "서울시" and origin["field"] == "주거"
+    assert "topic_origin" not in db.get_job(env.jobs, 2)["checkpoint"]
+    assert "뉴스에서 찾은 제도" in env.tg.texts[-1]
 
 
 def test_same_topic_already_registered_from_weekly_is_not_doubled(env):
@@ -125,6 +134,11 @@ def test_no_candidates_notifies_once(env):
     assert "찾지 못했습니다" in env.tg.texts[-1]
     assert auto_register_if_due(env.deps, now=AM9 + timedelta(hours=3)) is None
     assert len(env.tg.texts) == 1
+    # 오후 회차도 못 찾으면 기록만 하고 알림은 하루 한 번(2026-11-23 사용자 결정)
+    assert auto_register_if_due(env.deps, now=AM9 + timedelta(hours=6)) == "자동 등록할 후보 없음(오늘 이미 알림)"
+    assert len(env.tg.texts) == 1
+    assert auto_register_if_due(env.deps, now=AM9 + timedelta(days=1)) == "자동 등록할 후보 없음"
+    assert len(env.tg.texts) == 2
 
 
 def test_failure_retries_once_after_an_hour_then_notifies(env):

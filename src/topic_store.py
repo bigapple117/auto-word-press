@@ -154,6 +154,8 @@ def add_candidates(conn: sqlite3.Connection, batch_id: int, cands: Sequence[Cand
                     "news": c.news_titles[:2], "interest": c.interest,
                     "post_id": c.written.post_id if c.written else None,
                     "written_year": c.written.year if c.written else None}
+            if c.seed.discovered:   # 뉴스 주제: 작업에 넘겨 발행 전 추가 확인(news_gate)·지역 태그·목록 자동 추가에 쓴다
+                info["origin"] = origin_of(c)
             cur = conn.execute(
                 "INSERT INTO candidates (batch_id, ckey, kind, name, year, category, topic, info, created_at, expires_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -165,6 +167,13 @@ def add_candidates(conn: sqlite3.Connection, batch_id: int, cands: Sequence[Cand
         conn.execute("ROLLBACK")
         raise
     return ids
+
+
+def origin_of(c: Candidate) -> dict[str, Any]:
+    sd = c.seed
+    return {"news": True, "name": sd.name, "query": sd.query, "category": sd.category, "scope": sd.scope,
+            "region": sd.region, "field": sd.field, "agency": sd.agency, "group": sd.group,
+            "compare_with": list(sd.compare_with), "news_titles": list(sd.news_titles)[:3]}
 
 
 def get_candidate(conn: sqlite3.Connection, cid: int) -> dict[str, Any] | None:

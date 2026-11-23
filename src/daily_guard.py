@@ -3,7 +3,8 @@
 - 매일 오전 8시: 그날 이미 발행한 글이 있어도 승인 대기 중 가장 오래된 글 1편을 발행한다.
 - 발행은 텔레그램 [발행] 버튼과 같은 handle_decision을 쓴다 → 알림도 직접 눌렀을 때와 똑같다
   (승인 요청 메시지가 '발행했습니다 + 주소'로 바뀌고, 유튜브 업로드 안내 또는 다음 글 버튼).
-- 사실 확인에서 근거를 못 찾은 문장이 남은 글(fact_check.hold)은 건너뛴다(사람이 [발행]을 누르면 올라감).
+- 사실 확인에서 근거를 못 찾은 문장이 남은 글(fact_check.hold)과 뉴스 주제 추가 조건을 못 넘은 글(news_gate)은
+  건너뛴다(사람이 [발행]을 누르면 올라감).
 - 승인 대기 글이 없으면 알림만 한다(사람이 한 번도 안 본 글을 새로 만들어 올리지 않음).
 - 따로(apply_refreshes): 근거 페이지 변경으로 자동 등록된 갱신 중 '확실한 정보만 바뀜' 판정을 통과한 글은
   승인 요청 다음 날 8시 이후 원래 글에 반영한다(2026-11-21 사용자 결정, auto_refresh 참고).
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from src import auto_refresh, db, refresh
+from src import auto_refresh, db, news_gate, refresh
 from src.telegram_notifier import Decision
 
 if TYPE_CHECKING:
@@ -55,6 +56,11 @@ def fact_hold(job: dict[str, Any]) -> bool:
     사실 확인이 생기기 전에 만든 글은 기록이 없으므로 예전처럼 자동 발행 대상이다."""
     content = ((job.get("checkpoint") or {}).get("content") or {})
     return bool((content.get("fact_check") or {}).get("hold"))
+
+
+def auto_hold(job: dict[str, Any]) -> bool:
+    """아침 자동 발행에서 뺄 글: 사실 확인 보류 또는 뉴스 주제 추가 조건 불통과(news_gate)."""
+    return fact_hold(job) or news_gate.hold(job)
 
 
 class DailyGuard:
@@ -140,16 +146,16 @@ class DailyGuard:
         return "갱신 자동 반영 — " + ", ".join(notes) if notes else None
 
     def _only_held(self, held: list[int]) -> tuple[str, bool, None]:
-        self.orch._notify("[아침 자동 발행] 승인 대기 글이 모두 사실 확인에서 근거를 못 찾은 문장이 있는 글이라 "
-                          f"자동 발행하지 않았습니다(작업 {', '.join(map(str, held))}번).\n"
-                          "승인 요청의 '사실 확인' 항목을 보고 직접 [발행]을 눌러 주세요.")
+        self.orch._notify("[아침 자동 발행] 승인 대기 글이 모두 사람 확인이 필요한 글(사실 확인에서 근거를 못 찾은 문장, "
+                          f"또는 뉴스 주제 추가 조건 불통과)이라 자동 발행하지 않았습니다(작업 {', '.join(map(str, held))}번).\n"
+                          "승인 요청의 '사실 확인'·'[뉴스 주제: 버튼 승인 필요]' 항목을 보고 직접 [발행]을 눌러 주세요.")
         return "사실 확인 보류 글만 있음", True, None
 
     def publish_oldest(self, rejected: list[int]) -> tuple[str, bool, int | None]:
         """(기록용 문장, 오늘 일을 끝냈는지, 결과를 지켜볼 작업 번호). 거절된 글 번호는 rejected에 더한다."""
         # 갱신 작업은 사람이 직접 승인할 때만 반영(아침 자동 발행에서 뺀다)
         waiting = [j for j in self.orch.awaiting_jobs() if j["id"] not in rejected and not refresh.is_refresh(j)]
-        held = [j["id"] for j in waiting if fact_hold(j)]
+        held = [j["id"] for j in waiting if auto_hold(j)]
         jobs = [j for j in waiting if j["id"] not in held]
         if not jobs:
             if rejected:
@@ -163,7 +169,7 @@ class DailyGuard:
         tried = False
         for listed in jobs[:MAX_TRIES]:
             job = db.get_job(self.orch.conn, listed["id"])    # 그사이 [다음 글]로 요청 번호가 바뀌었을 수 있어 다시 읽음
-            if job and fact_hold(job):                       # 그사이 다시 만들어져 보류가 됐을 수 있음
+            if job and auto_hold(job):                       # 그사이 다시 만들어져 보류가 됐을 수 있음
                 held.append(job["id"])
                 continue
             if not job or job["status"] != "awaiting_approval":

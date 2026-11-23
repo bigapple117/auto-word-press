@@ -2,7 +2,11 @@
 
 좋은 주제 = 사람들이 찾는다 + 지금 쓸 이유 + 공식 근거 + 아직 안 씀.
 
-1. 후보 모으기: 기본 제도 목록(templates/topic_seeds.txt) + 최근 뉴스 제목에서 Gemini가 뽑은 새 제도
+1. 후보 모으기: 기본 제도 목록(templates/topic_seeds.txt + 발행한 뉴스 제도가 쌓이는 data/topic_seeds_news.txt)
+   + 최근 뉴스 제목에서 Gemini가 뽑은 새 제도(같은 호출로 이미 쓴 글과 같은 제도인지·광고성인지도 판단).
+   뉴스 제도 범위(2026-11-23 사용자 결정): NEWS_FIELDS 분야만, 공공기관 운영, 신청 끝난 제도 제외,
+   지역 제도 허용(전국 → 인구 많은 광역 → 검색 많은 시·군·구). 같은 종류의 다른 지역 제도는
+   '지역별 비교' 후보 하나로 묶고 자동 등록하지 않는다(월요일 후보로만).
 2. 걸러내기: 이미 쓴 글 장부와 비교(제도명 + 기준 연도). 공식 자료가 검색되지 않으면 제외
    - 안 쓴 제도 → 새 주제
    - 쓴 연도보다 새 연도 자료가 공식 사이트에 보이면 → 새 연도 글
@@ -58,6 +62,26 @@ REGIONS = ("서울", "부산", "대구", "인천", "광주", "대전", "울산",
 _LOCAL_HEAD = re.compile(r"^\s*[\[(]?[가-힣]{1,8}(시|군|구|도)(청)?[\],)·\s]")
 
 
+# 뉴스 주제 범위(2026-11-23 사용자 결정): 단계적으로 넓힌다. 1단계 = 기존(복지 지원금·세금·절약) + 주거·연금.
+# 2단계(건강·의료·정책 금융상품)로 넓힐 때는 NEWS_FIELDS에 LATER_FIELDS를 더한다.
+# 새 분야(기본 밖) 뉴스 주제 글은 첫 3편을 자동 발행하지 않는다(news_gate.NEW_FIELD_MANUAL).
+BASE_FIELD = "기본"
+NEWS_FIELDS = (BASE_FIELD, "주거", "연금")
+LATER_FIELDS = ("건강·의료", "정책금융")
+# 지역 제도 우선순위(사용자 결정): 전국 → 인구 많은 광역 → 검색이 많거나 특색 있는 시·군·구
+BIG_METROS = ("경기", "서울", "부산", "경남", "인천")
+LOCAL_MIN_INTEREST = 5.0               # 시·군·구 제도는 관심도(기준어=100)가 이만큼 넘을 때만 후보
+OPEN_WORDS = ("임박", "앞두", "앞둬", "연장", "추가 모집", "추가모집", "D-")   # '마감' 소식이라도 아직 신청 가능
+_REGION_TAIL = re.compile(r"(특별자치시|특별자치도|특별시|광역시|도|시|군|구)$")
+
+
+def region_core(region: str) -> str:
+    """'서울특별시'→'서울', '성남시'→'성남'. 제목에 지역명이 나오는지 볼 때 쓴다."""
+    r = (region or "").strip()
+    core = _REGION_TAIL.sub("", r)
+    return core if len(core) >= 2 else r
+
+
 def is_local_news(title: str) -> bool:
     t = title.strip()
     return bool(_LOCAL_HEAD.match(t)) or any(t.startswith(r) for r in REGIONS)
@@ -80,6 +104,16 @@ class Seed:
     aliases: tuple[str, ...] = ()
     discovered: bool = False          # 뉴스에서 새로 찾은 제도
     news_titles: tuple[str, ...] = ()
+    scope: str = "전국"                # 전국·광역·시군구
+    region: str = ""                  # 광역·시군구일 때 지역명(제목·태그에 넣음)
+    field: str = BASE_FIELD           # 범위 단계용 분야(기본·주거·연금…)
+    agency: str = ""                  # 주관 기관(뉴스 주제: 광고성 기사 거르기·확인용)
+    group: str = ""                   # 지역을 뺀 제도 종류 이름(지역별 비교 묶기용)
+    compare_with: tuple[str, ...] = ()   # 같은 종류의 다른 지역 제도·글 → 지역별 비교 글 후보(자동 등록 안 함)
+
+    @property
+    def is_regional(self) -> bool:
+        return self.scope != "전국"
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -90,25 +124,52 @@ class Seed:
         return any(norm(n) and norm(n) in t for n in self.names)
 
 
-def load_seeds(path: Path = SEEDS_PATH) -> list[Seed]:
+def load_seeds(path: Path = SEEDS_PATH, extra: Path | None = None) -> list[Seed]:
+    """기본 목록 + extra(뉴스에서 찾아 발행한 제도가 자동으로 쌓이는 파일, 없으면 무시).
+    extra에서 기본 목록과 겹치는 줄은 건너뛴다(사람이 기본 목록에 옮겨 적었을 때)."""
+    seeds = _read_seeds(path)
+    if extra is not None and extra.exists():
+        for s in _read_seeds(extra):
+            if not any(o.matches(s.name) or s.matches(o.name) for o in seeds):
+                seeds.append(s)
+    return seeds
+
+
+def seed_line(seed: Seed) -> str:
+    """extra 파일에 적을 한 줄(load_seeds가 다시 읽는 형식)."""
+    clean = [re.sub(r"[|\n]", " ", x).strip() for x in
+             (seed.name, seed.query, ",".join(map(str, seed.months)), seed.category, ",".join(seed.aliases),
+              seed.scope, seed.region, seed.field)]
+    return " | ".join(clean)
+
+
+def _read_seeds(path: Path) -> list[Seed]:
+    return parse_seed_lines(path.read_text(encoding="utf-8").splitlines(), path.name)
+
+
+def parse_seed_lines(lines: Sequence[str], label: str = "목록") -> list[Seed]:
+    """목록 파일 줄들을 읽는다. 형식이 틀리면 ValueError."""
     seeds: list[Seed] = []
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for lineno, raw in enumerate(lines, 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         parts = [p.strip() for p in line.split("|")]
-        parts += [""] * (5 - len(parts))
-        name, query, months, category, aliases = parts[:5]
-        if not name or not query or category not in CATEGORIES:
-            raise ValueError(f"{path.name} {lineno}번째 줄 형식이 틀렸습니다: {raw}")
+        parts += [""] * (8 - len(parts))
+        name, query, months, category, aliases, scope, region, fld = parts[:8]
+        scope = scope or "전국"
+        if not name or not query or category not in CATEGORIES or scope not in ("전국", "광역", "시군구") \
+                or (scope != "전국" and not region):
+            raise ValueError(f"{label} {lineno}번째 줄 형식이 틀렸습니다: {raw}")
         try:
             month_list = tuple(int(m) for m in months.split(",") if m.strip())
         except ValueError as exc:
-            raise ValueError(f"{path.name} {lineno}번째 줄 달 형식이 틀렸습니다: {months}") from exc
+            raise ValueError(f"{label} {lineno}번째 줄 달 형식이 틀렸습니다: {months}") from exc
         if any(not 1 <= m <= 12 for m in month_list):
-            raise ValueError(f"{path.name} {lineno}번째 줄 달은 1~12: {months}")
+            raise ValueError(f"{label} {lineno}번째 줄 달은 1~12: {months}")
         seeds.append(Seed(name, query, month_list, category,
-                          tuple(a.strip() for a in aliases.split(",") if a.strip())))
+                          tuple(a.strip() for a in aliases.split(",") if a.strip()),
+                          scope=scope, region=region if scope != "전국" else "", field=fld or BASE_FIELD))
     return seeds
 
 
@@ -204,7 +265,17 @@ class Discovered(BaseModel):
     name: str = Field(description="제도 정식 이름(뉴스 제목에 나온 그대로)")
     query: str = Field(description="사람들이 검색할 짧은 말(15자 이내)")
     category: Literal["지원금", "세금", "절약"]
-    national: bool = Field(description="전국 대상 제도면 true, 특정 시·군·구만이면 false")
+    field: Literal["기본", "주거", "연금", "건강·의료", "정책금융", "기타"] = Field(
+        description="기본=복지 지원금·세금 공제·요금 할인, 주거=월세·전세·주택, 연금=국민·기초·퇴직·개인연금, "
+                    "건강·의료=의료비·검진·간병, 정책금융=정부 지원 대출·적금, 기타=그 밖")
+    scope: Literal["전국", "광역", "시군구"] = Field(description="제도가 적용되는 범위")
+    region: str = Field(description="광역·시군구면 지역명(예: 서울시, 성남시). 전국이면 빈 문자열")
+    agency: str = Field(description="제도를 운영하는 정부·지자체·공공기관 이름. 모르면 빈 문자열")
+    public: bool = Field(description="정부·지자체·공공기관이 운영하는 제도면 true. 은행·카드사·기업 상품이나 홍보성 기사면 false")
+    group: str = Field(description="지역 이름을 뺀 제도 종류(예: '청년 월세 지원'). 전국 제도면 name과 같게")
+    duplicate_of: str = Field(description="'이미 쓴 글 주제' 중 같은 제도를 다룬 주제가 있으면 그 문장 그대로, 없으면 빈 문자열")
+    similar_existing: str = Field(
+        description="광역·시군구 제도일 때, '이미 쓴 글 주제' 중 다른 지역의 같은 종류 제도 주제가 있으면 그 문장 그대로, 없으면 빈 문자열")
 
 
 class DiscoveredList(BaseModel):
@@ -221,8 +292,8 @@ class PhrasedList(BaseModel):
 
 
 DISCOVER_SYSTEM = (
-    "너는 한국 생활 돈 정보 블로그(지원금·세금·절약 제도)의 편집자다. "
-    "주어진 뉴스 제목에 실제로 나온 제도만 고른다. 제목에 없는 제도명·금액·날짜를 지어내지 않는다."
+    "너는 한국 생활 돈 정보 블로그(지원금·세금·절약·주거·연금 제도)의 편집자다. "
+    "주어진 뉴스 제목에 실제로 나온 제도만 고른다. 제목에 없는 제도명·금액·날짜·지역을 지어내지 않는다."
 )
 PHRASE_SYSTEM = (
     "너는 한국 생활 돈 정보 블로그의 편집자다. 검색하는 사람이 바로 알아볼 블로그 주제 문장을 만든다. "
@@ -230,15 +301,20 @@ PHRASE_SYSTEM = (
 )
 
 
-def build_discover_prompt(titles: Sequence[str], known: Sequence[str]) -> str:
+def build_discover_prompt(titles: Sequence[str], known: Sequence[str], existing: Sequence[str] = ()) -> str:
     lines = "\n".join(f"{i}. {t}" for i, t in enumerate(titles))
+    done = "\n".join(f"- {t}" for t in existing) or "- (없음)"
     return (
-        "아래 최근 뉴스 제목에서, 일반 국민이 신청하거나 혜택을 받는 전국 단위 '지원금·세금 공제·요금 할인' 제도를 "
-        f"최대 {MAX_DISCOVERED}개 골라라.\n"
+        "아래 최근 뉴스 제목에서, 일반 국민이 신청하거나 혜택을 받는 '지원금·세금 공제·요금 할인·주거·연금' 제도를 "
+        f"최대 {MAX_DISCOVERED}개 골라라. 전국 제도를 먼저, 그다음 광역 시·도, 시·군·구 제도 순으로.\n"
         "- 이미 아는 제도 목록에 있는 것은 빼라.\n"
-        "- 기업 대상, 특정 지자체 한 곳만의 사업, 정치·사건 기사, 상품 광고는 빼라.\n"
-        "- name은 뉴스 제목에 나온 표기 그대로, ids는 그 제도가 나온 제목 번호.\n\n"
-        f"이미 아는 제도: {', '.join(known)}\n\n뉴스 제목:\n{lines}"
+        "- 기업 대상 사업, 정치·사건 기사, 은행·카드사·기업의 상품 홍보(광고성 기사)는 빼라.\n"
+        "- 신청이 끝났거나 종료·폐지된 제도, 아직 검토·논의 단계인 제도는 빼라.\n"
+        "- name은 뉴스 제목에 나온 표기 그대로, ids는 그 제도가 나온 제목 번호.\n"
+        "- 광역·시군구 제도는 region에 뉴스 제목에 나온 지역명을 적어라.\n"
+        "- '이미 쓴 글 주제'와 같은 제도면 duplicate_of에, 다른 지역의 같은 종류 제도면 similar_existing에 "
+        "그 주제 문장을 그대로 옮겨 적어라.\n\n"
+        f"이미 아는 제도: {', '.join(known)}\n\n이미 쓴 글 주제:\n{done}\n\n뉴스 제목:\n{lines}"
     )
 
 
@@ -259,7 +335,11 @@ def build_phrase_prompt(items: Sequence[Candidate]) -> str:
 
 
 def fallback_topic(c: Candidate) -> str:
+    if c.seed.compare_with:
+        return f"{c.seed.name}: 지역마다 대상과 금액 정리"
     prefix = f"{c.year}년 " if c.kind == "new_year" else ""
+    if c.seed.is_regional and region_core(c.seed.region) not in c.seed.name:
+        prefix += f"{c.seed.region} "
     if c.seed.category == "세금":
         return f"{prefix}{c.seed.name} 대상과 신청 방법 정리"
     return f"{prefix}{c.seed.name} 신청 자격과 받는 방법"
@@ -271,27 +351,68 @@ def valid_topic(text: str, c: Candidate) -> bool:
         return False
     if not c.seed.matches(t):
         return False
+    if c.seed.is_regional and not c.seed.compare_with and region_core(c.seed.region) not in t:
+        return False                                   # 지역 제도는 제목에 지역명(사용자 결정)
     numbers = re.findall(r"\d+", t)
     return all(n == str(c.year) for n in numbers)
 
 
 def validate_discovered(items: Sequence[Discovered], titles: Sequence[str],
-                        seeds: Sequence[Seed]) -> list[Seed]:
-    """제목에 실제로 나온 전국 제도만, 기본 목록과 겹치지 않게."""
+                        seeds: Sequence[Seed], fields: Sequence[str] = NEWS_FIELDS) -> list[Seed]:
+    """제목에 실제로 나온 공공 제도만, 지금 범위(fields) 안에서, 기본 목록·이미 쓴 글과 겹치지 않게.
+    지역 제도는 지역명이 근거 제목에 실제로 나와야 한다. 같은 종류의 다른 지역 제도(이미 쓴 글 또는 이번에 찾은
+    다른 지역)가 있으면 지역별 비교 글 후보 하나로 묶는다(지역마다 따로 찍어내지 않음, 사용자 결정)."""
     out: list[Seed] = []
     for d in items:
         name, query = d.name.strip(), d.query.strip()
+        region = d.region.strip() if d.scope != "전국" else ""
         refs = [titles[i] for i in d.ids if 0 <= i < len(titles)]
-        if not d.national or not name or not query or len(query) > 20 or len(name) > 30:
+        if not name or not query or len(query) > 20 or len(name) > 30:
             continue
+        if not d.public or d.field not in fields or d.duplicate_of.strip():
+            continue                                   # 광고·민간 상품, 아직 범위 밖 분야, 이미 쓴 제도
         if not refs or not any(norm(name) in norm(t) for t in refs):
             continue                                   # 제목에 없는 제도명(지어냄)
+        if d.scope != "전국" and (not region or not any(region_core(region) in t for t in refs)):
+            continue                                   # 지역이 비었거나 제목에 없는 지역(지어냄)
         if any(s.matches(name) or norm(s.name) in norm(name) or norm(name) in norm(s.name)
                for s in [*seeds, *out]):
             continue
-        out.append(Seed(name, query, (), d.category, (), discovered=True, news_titles=tuple(refs[:3])))
+        group = (d.group or "").strip() if d.scope != "전국" else ""
+        if d.scope != "전국" and (not group or len(group) > 25):
+            group = name
+        similar = (d.similar_existing or "").strip() if d.scope != "전국" else ""
+        out.append(Seed(name, query, (), d.category, (), discovered=True, news_titles=tuple(refs[:3]),
+                        scope=d.scope, region=region, field=d.field, agency=d.agency.strip()[:40],
+                        group=group, compare_with=(similar,) if similar else ()))
         if len(out) >= MAX_DISCOVERED:
             break
+    return _group_regional(out)
+
+
+def _group_regional(found: list[Seed]) -> list[Seed]:
+    """같은 종류(group)의 지역 제도가 둘 이상이면 하나의 '지역별 비교' 후보로 묶는다.
+    이미 쓴 다른 지역 글과 같은 종류인 것도 비교 후보로 바꾼다. 비교 후보는 자동 등록하지 않는다."""
+    out: list[Seed] = []
+    groups: dict[str, list[Seed]] = {}
+    for s in found:
+        if s.is_regional:
+            groups.setdefault(norm(s.group), []).append(s)
+        else:
+            out.append(s)
+    for members in groups.values():
+        regions = list(dict.fromkeys(m.region for m in members))
+        existing = [e for m in members for e in m.compare_with]
+        if len(regions) < 2 and not existing:
+            out.append(members[0])
+            continue
+        first = members[0]
+        names = tuple(dict.fromkeys(m.name for m in members))
+        out.append(Seed(f"{first.group} 지역별 비교", first.group, (), first.category, names, discovered=True,
+                        news_titles=tuple(t for m in members for t in m.news_titles)[:3],
+                        scope=first.scope, region=", ".join(regions), field=first.field,
+                        agency=", ".join(dict.fromkeys(m.agency for m in members if m.agency)),
+                        group=first.group, compare_with=tuple(dict.fromkeys([*regions, *existing]))))
     return out
 
 
@@ -301,11 +422,13 @@ class TopicWriter:
     def __init__(self, generator: Any) -> None:
         self.gen = generator
 
-    def discover(self, titles: Sequence[str], seeds: Sequence[Seed]) -> list[Seed]:
+    def discover(self, titles: Sequence[str], seeds: Sequence[Seed], existing: Sequence[str] = ()) -> list[Seed]:
+        """existing: 이미 쓴(쓰는 중인) 글 주제. 이름이 달라도 같은 제도인지 AI가 함께 본다(같은 호출)."""
         if not titles:
             return []
-        raw, _model = self.gen._call_with_retry(build_discover_prompt(titles, [s.name for s in seeds]),
-                                                schema=DiscoveredList, system=DISCOVER_SYSTEM)
+        raw, _model = self.gen._call_with_retry(
+            build_discover_prompt(titles, [s.name for s in seeds], existing),
+            schema=DiscoveredList, system=DISCOVER_SYSTEM)
         return validate_discovered(DiscoveredList.model_validate_json(raw).items, titles, seeds)
 
     def phrase(self, items: Sequence[Candidate]) -> dict[str, str]:
@@ -447,7 +570,10 @@ def assess(seed: Seed, written: Sequence[Written], search: NaverSearch, today: d
         c.reasons.append("글 쓴 뒤 변경 소식이 뉴스에 나옴(바뀌었는지 확인 필요)")
         return c
 
-    hits = _search(budget, search.web, f"{year}년 {seed.name}", display=30)
+    if seed.discovered and ended_news(seed, news):
+        return None                                    # 신청 기간이 끝난 제도는 제외(사용자 결정)
+    look = seed.group if seed.compare_with else seed.name      # 비교 후보는 제도 종류로 찾는다
+    hits = _search(budget, search.web, f"{year}년 {look}", display=30)
     if hits is None:
         return False
     official = _official(hits)
@@ -467,6 +593,12 @@ def is_reform_news(text: str, year: int) -> bool:
     nxt = year + 1
     when = (f"{nxt}년", f"{nxt}학년도", "내년")
     return any(w in text for w in when) and any(r in text for r in REFORM_WORDS)
+
+
+def ended_news(seed: Seed, news: Sequence[SearchHit]) -> bool:
+    """최근 뉴스 제목에 이 제도의 종료·마감 소식이 있나('마감 임박'·'연장'처럼 아직 신청 가능한 표현은 뺀다)."""
+    return any(seed.matches(h.title) and any(w in h.title for w in END_WORDS)
+               and not any(w in h.title for w in OPEN_WORDS) for h in news)
 
 
 def _news_flags(c: Candidate, news: Sequence[SearchHit]) -> None:
@@ -491,6 +623,11 @@ def score(c: Candidate, today: date) -> float:
         s += 0.5
     if c.seed.discovered:
         s += 1.0                                       # 새 제도는 작년 검색 자료가 없어도 불리하지 않게
+    if c.seed.scope == "광역" and not c.seed.compare_with:
+        # 우선순위: 전국 → 인구 많은 광역 → 시·군·구
+        s -= 0.3 if any(c.seed.region.startswith(m) for m in BIG_METROS) else 0.6
+    elif c.seed.scope == "시군구" and not c.seed.compare_with:
+        s -= 0.9
     if c.kind == "new_year":
         s += 1.0
     if c.reform_soon:
@@ -529,6 +666,7 @@ def find_candidates(
     seconds: float = 300,
     clock: Callable[[], float] = time.monotonic,
     discover: bool = True,
+    existing: Sequence[str] = (),
 ) -> FindResult:
     """주제 후보를 고른다. skip_keys: 최근에 보냈지만 안 고른 후보 key(잠시 쉼).
     discover=False: 뉴스에서 새 제도 찾기를 건너뛰고 기본 목록만 본다(자동 등록용, 주제 문장 다듬기는 함)."""
@@ -541,7 +679,7 @@ def find_candidates(
     if writer is not None and discover:
         titles = recent_headlines(search, today, budget)
         try:
-            found = writer.discover(titles, seeds)
+            found = writer.discover(titles, seeds, existing)
             pool += found
             if found:
                 notes.append(f"뉴스에서 새 제도 {len(found)}개 발견")
@@ -565,8 +703,11 @@ def find_candidates(
         notes.append(f"시간·호출 한도로 {unchecked}개 제도는 확인 못 함")
 
     interest = measure_interest(search, [c.seed.query for c in cands], today, budget)
-    for c in cands:
+    for c in list(cands):
         val, seasonal = interest.get(c.seed.query, (None, False))
+        if c.seed.scope == "시군구" and not c.seed.compare_with and (val or 0) < LOCAL_MIN_INTEREST:
+            cands.remove(c)                            # 시·군·구 제도는 검색이 어느 정도 있을 때만
+            continue
         c.interest = val
         c.trend_season = seasonal
         if seasonal:
@@ -577,7 +718,10 @@ def find_candidates(
         if c.in_season:
             c.reasons.insert(0, "신청·납부 시기")
         if c.seed.discovered:
-            c.reasons.insert(0, "최근 뉴스에 나온 제도")
+            c.reasons.insert(0, "최근 뉴스에 나온 제도" + (f"({c.seed.region})" if c.seed.is_regional else ""))
+        if c.seed.compare_with:
+            c.warnings.insert(0, f"지역별 비교 글 후보(같은 종류: {', '.join(c.seed.compare_with)[:80]}) — "
+                                 "자동 등록하지 않음. 지역마다 따로 쓰지 말고 이 한 편으로 묶기")
 
     chosen = pick(cands, limit)
     if len(chosen) < limit:
