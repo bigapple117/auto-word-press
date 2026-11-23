@@ -50,7 +50,8 @@ def main() -> int:
                          TelegramNotifier.from_settings(settings))
         print(run_batch(deps, "manual"))
         return 0
-    seeds = load_seeds()
+    from src.topic_service import news_seeds_path
+    seeds = load_seeds(extra=news_seeds_path(settings))
     written = written_from_jobs(read_jobs(settings.db_path), seeds)
     writer = None
     if not args.no_ai:
