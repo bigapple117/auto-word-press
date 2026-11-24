@@ -168,9 +168,10 @@ def test_next_button_signed_and_parsed_in_poll():
     from src.telegram_notifier import NextAction
     tg, _ = make()
     data = tg.next_markup(16, 6)["inline_keyboard"][0][0]
-    assert data["text"] == "다음 승인 대기 글 보기(남은 6개)" and len(data["callback_data"].encode()) <= 64
+    assert data["text"] == "16번 다음 글 보기(남은 6개)" and len(data["callback_data"].encode()) <= 64
     assert tg.parse_next_callback(data["callback_data"]) == 16
     assert tg.parse_next_callback("n:16:" + "0" * 16) is None
+    assert tg.next_markup(0, 5)["inline_keyboard"][0][0]["text"] == "가장 오래 기다린 글부터 보기(남은 5개)"
     other = TelegramNotifier("999:OTHER", CHAT, session=FakeTG()).next_markup(16, 1)
     assert tg.parse_next_callback(other["inline_keyboard"][0][0]["callback_data"]) is None
     tg2, _ = make([callback(1, data["callback_data"], update_id=1),

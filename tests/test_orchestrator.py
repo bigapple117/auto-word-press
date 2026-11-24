@@ -856,6 +856,22 @@ def test_next_wraps_to_first_waiting_job(env):
     assert svc.telegram.replies[-1] == svc.telegram.requests[0][1].message_id
 
 
+def test_next_double_press_is_ignored(env):
+    """맨 아래 버튼을 누른 직후 새로 생긴 [n번 다음 글] 버튼이 또 눌려도 한 칸만 이동(2026-11-24 실제 사례)."""
+    orch, svc, conn, _ = env
+    t = [100.0]
+    orch.clock = lambda: t[0]
+    a, b, c = _awaiting(orch, svc, conn, 3)
+    orch.handle_next(NextAction(0, "cb", None))
+    sent = len(svc.telegram.texts)
+    t[0] += 1
+    assert "건너뜀" in orch.handle_next(NextAction(a, "cb", None))
+    assert len(svc.telegram.texts) == sent
+    t[0] += 3
+    orch.handle_next(NextAction(a, "cb", None))
+    assert f"[작업 {b}]" in svc.telegram.texts[-1]
+
+
 def test_next_when_nothing_waits(env):
     orch, svc, conn, _ = env
     assert orch.handle_next(NextAction(0, "cb", None)) == "승인 대기 글이 없습니다"
@@ -885,7 +901,10 @@ def test_blog_only_publish_offers_next_button(env):
 def test_next_button_can_be_pressed_again(env):
     orch, svc, conn, _ = env
     a, b = _awaiting(orch, svc, conn, 2)
+    t = [100.0]
+    orch.clock = lambda: t[0]
     orch.handle_next(NextAction(a, "cb1", 55))
+    t[0] += 5                                    # 연달아 눌림(3초 안)이 아니면 다시 누를 수 있음
     orch.handle_next(NextAction(a, "cb2", 55))
     assert svc.telegram.replies[-2:] == [svc.telegram.requests[1][1].message_id] * 2
 
@@ -898,6 +917,7 @@ def test_next_failure_gives_retry_button(env, monkeypatch):
     svc.telegram.markups = []
     assert orch.handle_next(NextAction(a, "cb", 70)) == "다음 글로 이동하지 못했습니다"
     assert "다시 시도" in svc.telegram.texts[-1] and svc.telegram.markups[-1] == {"next": a, "remaining": 2}
+    assert orch._last_next < 0                   # 실패 뒤 [다시 시도]는 바로 눌림
 
 
 def test_resend_ledger_failure_clears_new_buttons_and_keeps_old_nonce(env, monkeypatch):

@@ -209,13 +209,15 @@ class TelegramNotifier:
             rows.append([{"text": f"{int(older_id)}번 먼저 발행", "callback_data": self.callback_data(older_id, "p", older_nonce)}])
         rows.append([{"text": f"그래도 {int(job_id)}번 발행", "callback_data": self.callback_data(job_id, "f", nonce)}])
         payload = f"n:{int(job_id)}"           # 이 질문이 맨 아래에 있어도 다음 글로 갈 수 있게
-        rows.append([{"text": "다음 승인 대기 글 보기", "callback_data": f"{payload}:{self._sign(payload)}"}])
+        rows.append([{"text": f"{int(job_id)}번 다음 글 보기", "callback_data": f"{payload}:{self._sign(payload)}"}])
         return {"inline_keyboard": rows}
 
     def next_markup(self, after_job_id: int, remaining: int) -> dict:
-        """[다음 승인 대기 글 보기(남은 n개)] 버튼 하나."""
+        """다음 글 버튼 하나. 0이면 가장 오래 기다린 글부터, 아니면 그 번호 다음 글로(이름으로 구분, 2026-11-24:
+        같은 이름이라 맨 아래 버튼과 글별 버튼을 헷갈려 46번 다음 48번이 뜬 것을 이상하게 여김)."""
         payload = f"n:{int(after_job_id)}"
-        return {"inline_keyboard": [[{"text": f"다음 승인 대기 글 보기(남은 {int(remaining)}개)",
+        label = "가장 오래 기다린 글부터 보기" if not after_job_id else f"{int(after_job_id)}번 다음 글 보기"
+        return {"inline_keyboard": [[{"text": f"{label}(남은 {int(remaining)}개)",
                                       "callback_data": f"{payload}:{self._sign(payload)}"}]]}
 
     def parse_callback(self, data: str) -> tuple[int, str, str] | None:

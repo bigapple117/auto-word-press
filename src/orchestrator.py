@@ -45,6 +45,7 @@ BUSY_WAIT_SECONDS = 15 * 60               # 글 쓰는 모델이 바쁠 때 대�
 BUSY_GIVE_UP_SECONDS = 12 * 60 * 60        # 한 작업이 처음 바빠진 뒤 이만큼 지나도 계속 바쁘면 실패로 알림
 POLL_WAIT_SECONDS = 25
 BOTTOM_CHECK_SECONDS = 5                   # 맨 아래 다음 글 버튼 확인 주기
+NEXT_DEBOUNCE_SECONDS = 3.0                # [다음 글]을 이 안에 또 누르면 실수(두 번 눌림)로 보고 무시
 NAMES = {"publish": "발행", "force": "발행", "hold": "보류", "cancel": "취소", "register": "주제 등록", "more": "새 후보",
          "next": "다음 글"}
 
@@ -64,6 +65,7 @@ class Orchestrator:
         self._busy_since: dict[int, float] = {}   # 작업 번호 → 처음 바빴던 시각(재시작하면 초기화)
         self._pending_requeue: dict[int, tuple[dict[str, Any], Exception, str]] = {}  # 대기열 되돌리기 기록에 실패한 작업 → 다음 작업 전에 다시
         self._unrecorded: dict[int, str] = {}     # 실패 기록에 실패한 작업 → 다음 작업 전에 다시 기록
+        self._last_next = -1e9                     # 마지막 [다음 글] 처리 시각(연달아 두 번 눌림 막기)
         self.news_checker = news_gate.Checker()   # 뉴스 주제 글 다른 회사 AI 확인(테스트에서 바꿔 끼움)
 
     # ---------- 작업 처리 ----------
@@ -408,6 +410,18 @@ class Orchestrator:
         """after_job_id 다음 번호의 승인 대기 글(끝이면 처음으로)로 바로 이동할 수 있게,
         그 글의 원래 승인 요청 메시지에 답장하는 짧은 메시지를 보낸다(인용을 누르면 그 메시지로 올라감).
         원래 메시지가 없어 답장할 수 없을 때만 승인 요청을 새로 보낸다(화면 캡처 때문에 1분쯤 걸림)."""
+        now = self.clock()
+        if now - self._last_next < NEXT_DEBOUNCE_SECONDS:
+            # 손가락이 두 번 닿거나, 첫 번째 응답으로 화면이 밀려 새로 생긴 버튼이 눌린 경우(2026-11-24 실제 사례)
+            return "방금 눌러서 이번 누름은 건너뜀"
+        self._last_next = now
+        try:
+            return self._go_next(a)
+        finally:
+            # 처리(다시 보내기는 1분쯤)가 끝난 뒤부터 잼: 그동안 쌓인 두 번째 누름도 무시. 실패면 바로 다시 누를 수 있게.
+            self._last_next = self.clock() if self._last_next == now else self._last_next
+
+    def _go_next(self, a: NextAction) -> str:
         tg = self.svc.telegram
         try:
             jobs = self.awaiting_jobs()
@@ -433,6 +447,7 @@ class Orchestrator:
             return f"작업 {job['id']}번을 아래로 다시 보냈습니다"
         except Exception as exc:  # noqa: BLE001 - 실패하면 다시 누를 수 있는 버튼을 새로 준다
             log.exception("다음 글 안내 실패")
+            self._last_next = -1e9
             self.offer_next(a.after_job_id, f"다음 글로 이동하지 못했습니다({exc.__class__.__name__}). "
                                             "아래 버튼으로 다시 시도해 주세요.")
             return "다음 글로 이동하지 못했습니다"
