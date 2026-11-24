@@ -1062,3 +1062,13 @@
 - 원인: 맨 아래 버튼(가장 오래 기다린 글=46)과 46번 안내에 붙은 버튼(46번 다음=48)이 이름이 같았고, 같은 11:19에 둘 다 처리됨 → 두 번 눌림(첫 응답으로 화면이 밀려 새 버튼이 손가락 밑에 옴)으로 판단. 순서 자체는 정상(오래된 순).
 - 변경: 버튼 이름 구분("가장 오래 기다린 글부터 보기", "N번 다음 글 보기"), `handle_next`에 3초 연달아 누름 무시(`NEXT_DEBOUNCE_SECONDS`, 처리 끝난 시각 기준, 실패 시 바로 재시도 가능).
 - 파일: src/telegram_notifier.py, src/orchestrator.py, tests/test_telegram.py, tests/test_orchestrator.py. 검증: pytest 809 통과, jalcheck-worker 재시작.
+
+## 2026-11-24 한국 통로(해외 차단 기관 사이트 읽기) — 지시: 사용자, 작업: Claude(오라클2), 검토: Gemini neon-high
+- 원인: myhome.go.kr·nhuf.molit.go.kr은 일본(오라클1·2)·Gemini 서버에서 접속 자체가 안 됨(해외 차단). 작업 51(신생아 특례대출) 실패.
+- 구조: 사용자 집의 24시간 노트북(윈도우10, 멜론용, 자동 로그인)이 `ssh -N -R 127.0.0.1:18081 ubuntu@오라클1` → 오라클1 안쪽에 SOCKS 통로. 오라클2 systemd `korea-relay-forward`가 `-L 18081` 로 이어받음. `source_fetcher.fetch_sources`는 직접 접속 실패(ConnectFailedError) 시 `socks5://127.0.0.1:18081`로 재시도 → 그래도 안 되면 기존 Gemini 대신 읽기. 통로로만 열린 호스트는 6시간 동안 바로 통로로.
+- 보안: 내부 주소 차단(SSRF)은 그대로(IP를 우리가 확인 후 IP로 연결). 오라클1 authorized_keys의 노트북 열쇠 = `restrict,port-forwarding,permitlisten="127.0.0.1:18081",permitopen="127.0.0.1:1",command="/bin/false"` (다른 포트·정방향·명령 실행 거절 시험 완료. `permitopen="none"`은 열쇠 자체가 무효가 되니 쓰지 말 것). 비밀 열쇠는 노트북에서 만들어 밖으로 안 나감. 백업 `~/.ssh/authorized_keys.bak-20261124b`(오라클1).
+- 감수한 위험: 통로는 오라클1·2 안쪽 127.0.0.1에서 인증 없이 쓰임 → 두 서버가 해킹되면 집 공유기 안쪽으로 접근 가능. 노트북 OpenSSH ≥8.7이면 `PermitRemoteOpen=*:80 *:443`로 웹 포트만 허용(윈도우10 기본 8.1은 미지원).
+- 노트북 쪽: `%USERPROFILE%\.korea-relay\`(key, known_hosts, run.ps1), 작업 스케줄러 "Korea Relay Tunnel"(로그인 시, 끊기면 30초 뒤 재접속). 다시 설치는 `scripts/korea_relay/setup_laptop.ps1`(__KNOWN_HOST__를 오라클1 ED25519 호스트 키 줄로 채워 배포).
+- 추가 수정: 마이홈포털은 `<head>` 중복 + 본문이 `<main>` 밖 `#contentsArea`라 본문 0자로 판단되던 문제 → 추출기 수정(8d168d6).
+- 커밋: b9d0839, 2bfdb66, e0623c0, 8d168d6. 테스트 810 통과. 실제 검증: 오라클2에서 relay_ready True, 51번 자료 두 페이지 통로로 읽힘(7,581자). 임시 배포 파일 relay-setup-k7q2.ps1 삭제(404 확인).
+- 상태 확인: `.venv/bin/python -c "from src.source_fetcher import relay_ready;print(relay_ready())"` / `systemctl status korea-relay-forward`.
