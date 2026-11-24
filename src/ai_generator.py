@@ -504,6 +504,7 @@ _PERIOD_KEY = re.compile(r"(?:신청|접수)\s*(?:기간|일정|기한)|신청�
 # 소수(2.15%)·시각(12.30, 9:00)은 끝 점이나 '일'이 없어 날짜로 보지 않는다.
 _DATE_Y = re.compile(r"(?<!\d)(20\d{2})\s*(?:년|[.\-/])\s*(\d{1,2})\s*(?:월|[.\-/])\s*(\d{1,2})(?!\d)")
 _DATE_NOY = re.compile(r"(?<![\d.\-/])(\d{1,2})\s*(?:월\s*(\d{1,2})\s*일|\.\s*(\d{1,2})\s*\.(?!\d))")
+_OTHER_FIELD = re.compile(r"[가-힣]{1,4}\s*(?:기간|기한|일정)|[○●※■▶□◆]")
 _KST = timezone(timedelta(hours=9))
 
 
@@ -524,6 +525,10 @@ def _period_ends(texts: Sequence[str], today: date) -> set[tuple[int, int]]:
     for text in texts:
         for key in _PERIOD_KEY.finditer(text):
             window = text[key.end():key.end() + 160]
+            # 뒤에 붙은 다른 항목('사용기간: 발급일 ~ 12. 31.' 등)의 범위는 신청 마감이 아니다
+            stop = _OTHER_FIELD.search(window)
+            if stop:
+                window = window[:stop.start()]
             pos = 0
             while (tilde := window.find("~", pos)) != -1:
                 pos = tilde + 1

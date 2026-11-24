@@ -1362,3 +1362,12 @@ def test_coverage_money_needs_won_and_topic_wording():
     assert coverage_problems("근로장려금 자격 요건", c, srcs, today=date(2026, 11, 24)) == []   # 프로그램 이름만으로는 안 걸림
     people = [Source("S1", "https://a.go.kr", "t", "지원 인원 10만 명")]
     assert coverage_problems("지원 금액 정리", c, people, today=date(2026, 11, 24)) == []       # 자료에 돈이 없음
+
+
+def test_period_ends_stops_at_next_field():
+    from datetime import date
+    from src.ai_generator import _period_ends
+    t = date(2026, 11, 24)
+    text = "신청기간: 2026. 2. 25.(수) ~ 2026. 6. 30.(화) *지역별 선착순 ○ 사용기간: 발급일 ~ 2026. 12. 31.(목)"
+    assert _period_ends([text], t) == set()   # 사용 마감(12. 31.)을 신청 마감으로 보지 않음
+    assert _period_ends(["신청기간 2026.11.24 ~ 2027.1.7 사용기간 ~ 2027.12.31"], t) == {(1, 7)}
