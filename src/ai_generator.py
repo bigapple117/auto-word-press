@@ -10,6 +10,7 @@ import logging
 import re
 import unicodedata
 import time
+from datetime import date, datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Sequence
 
@@ -492,6 +493,94 @@ def check_content(
     return problems, warnings
 
 
+# ---------- 주제가 약속한 내용이 글에 있는지 ----------
+# 2026-11-24 국가장학금 글: 주제는 '지원 금액'인데 금액이 없고, 자료에 있던 신청 기간(~1.7)도 빠진 채 검사를 통과했다.
+COVERAGE_PROBLEM = "주제에 맞는 핵심 내용 빠짐"
+# 프로그램 이름(장려금·수당·지원금)만으로는 걸지 않는다: '근로장려금 신청 방법'은 금액이 주제가 아닐 수 있음
+_TOPIC_AMOUNT = re.compile(r"금액|한도|지급액|수령액|얼마|공제액|급여액|받는\s*돈|지원\s*액")
+_TOPIC_APPLY = re.compile(r"신청|접수|기한|마감|기간")
+_PERIOD_KEY = re.compile(r"(?:신청|접수)\s*(?:기간|일정|기한)|신청일정|접수일정")
+# 날짜로 볼 표기만: 연도가 있으면 2027.01.07·2027-01-07·2027년 1월 7일, 없으면 '1월 7일'·'1. 7.'(끝 점 필수).
+# 소수(2.15%)·시각(12.30, 9:00)은 끝 점이나 '일'이 없어 날짜로 보지 않는다.
+_DATE_Y = re.compile(r"(?<!\d)(20\d{2})\s*(?:년|[.\-/])\s*(\d{1,2})\s*(?:월|[.\-/])\s*(\d{1,2})(?!\d)")
+_DATE_NOY = re.compile(r"(?<![\d.\-/])(\d{1,2})\s*(?:월\s*(\d{1,2})\s*일|\.\s*(\d{1,2})\s*\.(?!\d))")
+_KST = timezone(timedelta(hours=9))
+
+
+def _dates(text: str) -> list[tuple[int, int | None, int, int]]:
+    """text 안 날짜들 (위치, 연도 또는 None, 월, 일), 앞에서부터. 연도 있는 표기 안쪽의 '1. 7.'은 겹쳐 세지 않는다."""
+    found = [(m.start(), int(m.group(1)), int(m.group(2)), int(m.group(3))) for m in _DATE_Y.finditer(text)]
+    spans = [(m.start(), m.end()) for m in _DATE_Y.finditer(text)]
+    for m in _DATE_NOY.finditer(text):
+        if not any(a <= m.start() < b for a, b in spans):
+            found.append((m.start(), None, int(m.group(1)), int(m.group(2) or m.group(3))))
+    return sorted(d for d in found if 1 <= d[2] <= 12 and 1 <= d[3] <= 31)
+
+
+def _period_ends(texts: Sequence[str], today: date) -> set[tuple[int, int]]:
+    """자료의 '신청 기간: A ~ B'(여러 차수면 모두)에서 끝나는 날(월, 일)을 모은다. 이미 지난 날은 뺀다.
+    끝 날에 연도가 없으면 시작 날의 연도(끝 달이 더 앞이면 다음 해), 둘 다 없으면 올해로 본다."""
+    ends: set[tuple[int, int]] = set()
+    for text in texts:
+        for key in _PERIOD_KEY.finditer(text):
+            window = text[key.end():key.end() + 160]
+            pos = 0
+            while (tilde := window.find("~", pos)) != -1:
+                pos = tilde + 1
+                after = _dates(window[tilde + 1:tilde + 25])
+                if not after or after[0][0] > 8:
+                    continue
+                before = _dates(window[max(0, tilde - 30):tilde])
+                start = before[-1] if before else None
+                _, year, month, day = after[0]
+                if year is None:
+                    if start and start[1]:
+                        year = start[1] + (1 if month < start[2] else 0)
+                    else:
+                        year = today.year + (1 if start and month < start[2] else 0)
+                try:
+                    if date(year, month, day) < today:
+                        continue
+                except ValueError:
+                    continue
+                ends.add((month, day))
+    return ends
+
+
+def _mentions_day(text: str, month: int, day: int) -> bool:
+    return re.search(rf"(?<!\d)0?{month}\s*(?:월\s*0?{day}\s*일|[.\-/]\s*0?{day}(?!\d))", text) is not None
+
+
+_UNIT_WON = re.compile(r"단위\s*[:：]?\s*(?:천|만|백만|억)?\s*원")
+
+
+def _has_money(text: str) -> bool:
+    """'원'이 붙은 1만 원 이상 금액, 또는 '(단위: 만원)' 표가 있는지. '10만 명'은 금액이 아니다."""
+    if any(k.startswith("won:") and float(k[4:]) >= 10_000 and "원" in shown
+           for k, shown in extract_figures(text).items()):
+        return True
+    return bool(_UNIT_WON.search(text)) and re.search(r"\d", text) is not None
+
+
+def coverage_problems(topic: str, c: MasterContent, sources: Sequence[Source],
+                      today: date | None = None) -> list[str]:
+    """주제가 금액·신청을 다루는데 자료에 있는 금액·신청 마감일이 글에 하나도 없으면 다시 쓰게 한다."""
+    problems: list[str] = []
+    joined = "\n".join(_all_texts(c))
+    src_texts = [s.text for s in sources]
+    if _TOPIC_AMOUNT.search(topic):
+        if any(_has_money(t) for t in src_texts) and not _has_money(joined):
+            problems.append(f"{COVERAGE_PROBLEM}: 주제가 금액·한도를 다루는데 글에 금액이 하나도 없습니다. "
+                            "자료에 있는 지원 금액(구간·대상별 금액표 등)을 표나 문단으로 넣어 주세요.")
+    if _TOPIC_APPLY.search(topic):
+        ends = _period_ends(src_texts, today or datetime.now(_KST).date())
+        if ends and not any(_mentions_day(joined, m, d) for m, d in ends):
+            shown = ", ".join(f"{m}월 {d}일" for m, d in sorted(ends))
+            problems.append(f"{COVERAGE_PROBLEM}: 자료에 신청 기간(마감 {shown})이 있는데 글에 없습니다. "
+                            "신청 기간과 마감일을 본문에 넣어 주세요.")
+    return problems
+
+
 # 단위가 바로 붙지 않은 맨숫자(표의 '(단위: 원)' 아래 숫자). '30만원'의 30, '2026년'의 2026은 빼다.
 _BARE_NUMBER = re.compile(rf"(?<![\d.,\-/:]){_N}(?![\d.,\-/:]|\s*[억천백십만원%세년월일개명인회건차호분초시])")
 
@@ -823,6 +912,7 @@ class ContentGenerator:
                 problems_for_next = draft[1] if draft else last_problems
             else:
                 problems, warnings = check_content(content, sources, target_seconds)
+                problems = problems + coverage_problems(topic, content, sources)
                 if problems and all(p.startswith(NARRATION_PROBLEM) for p in problems):
                     content, problems, warnings = self._repair_shorts(content, sources, target_seconds)
                 if not problems:
@@ -858,7 +948,7 @@ class ContentGenerator:
             notes.append("자동 검토를 하지 못했습니다(모델 오류). 숫자·표를 직접 한 번 봐 주세요.")
         else:
             try:
-                candidate, why = self._accept_review(original, outcome, sources, target_seconds)
+                candidate, why = self._accept_review(original, outcome, sources, target_seconds, topic)
             except Exception as exc:  # noqa: BLE001 - 검토 결과 확인 중 오류도 처음 글로 진행
                 candidate, why = None, [f"{exc.__class__.__name__}: {exc}"]
             if candidate is None:
@@ -913,7 +1003,7 @@ class ContentGenerator:
                 build_review_prompt(topic, sources, content.model_dump_json(), problems),
                 models=self.blog_models, schema=ReviewOutcome, system=REVIEW_SYSTEM_INSTRUCTION)
             outcome = ReviewOutcome.model_validate_json(raw)
-            candidate, why = self._accept_review(content, outcome, sources, target_seconds)
+            candidate, why = self._accept_review(content, outcome, sources, target_seconds, topic)
         except Exception as exc:  # noqa: BLE001 - 고치기에 실패하면 문장을 그대로 사람에게 넘긴다
             candidate, why = None, [f"{exc.__class__.__name__}: {exc}"]
         if candidate is None:
@@ -951,7 +1041,7 @@ class ContentGenerator:
         return GenerationResult(content, result.model, result.attempts, warnings + shown, fixes), report
 
     def _accept_review(self, original: MasterContent, outcome: ReviewOutcome, sources: Sequence[Source],
-                       target_seconds: int) -> tuple[MasterContent | None, list[str]]:
+                       target_seconds: int, topic: str = "") -> tuple[MasterContent | None, list[str]]:
         """검토 결과를 쓸 수 있으면 (글, []), 아니면 (None, 이유)."""
         candidate = outcome.content.model_copy(update={"slug": original.slug})
         problems, _ = check_content(candidate, sources, target_seconds)
@@ -965,6 +1055,10 @@ class ContentGenerator:
                  - len(missing_figures(original, sources, with_calc=False)))
         if added > 0:
             return None, [f"자료에 없는 숫자가 {added}개 늘어남"]
+        # 검토가 금액표·마감일을 지워 버리는 경우도 받지 않는다(처음 글에 있던 것만 따짐)
+        lost = coverage_problems(topic, candidate, sources)
+        if lost and not coverage_problems(topic, original, sources):
+            return None, lost[:1]
         return candidate, []
 
     def choose_law_articles(self, topic: str, candidates: Sequence[Any], limit: int = 4) -> list[str]:

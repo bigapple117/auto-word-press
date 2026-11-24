@@ -16,7 +16,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 import certifi
 import charset_normalizer
@@ -47,6 +47,7 @@ _SKIP_TAGS = {"script", "style", "noscript", "svg", "iframe", "template", "head"
 _MAIN_PRIORITY = ("main", "article", "#contents", "#content", "#main-content",
                   "#maincontent", "#main_content", "#contentsarea", "#contents-area",
                   "#contents_area", "#container")
+_MENU_TAGS = {"nav", "header", "footer"}
 _BLOCK_TAGS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
                "section", "article", "table", "ul", "ol", "dd", "dt", "header"}
 
@@ -84,6 +85,9 @@ class _TextExtractor(HTMLParser):
         self.regions: dict[str, list[str]] = {}   # 후보 이름 → 글자 (처음 만난 것만)
         self._open: list[list] = []               # [후보 이름, 태그, 같은 태그 깊이]
         self._skip_depth = 0
+        self.links: list[tuple[str, str]] = []    # (href, 링크 글자) — 탭 찾기용. 머리·메뉴·바닥 링크는 뺀다
+        self._menu_depth = 0                      # <nav>·<header>·<footer> 안인지(사이트 메뉴를 탭으로 오인하지 않게)
+        self._a: list | None = None               # 지금 읽는 <a>: [href, 글자 조각들]
         self._in_head = False   # 브라우저처럼 <head>는 겹치지 않게 다룬다(<head>를 두 번 여는 페이지 대비)
         self._in_title = False
 
@@ -102,6 +106,10 @@ class _TextExtractor(HTMLParser):
             self._skip_depth = max(0, self._skip_depth - 1)
         if tag == "title":
             self._in_title = True
+        if tag in _MENU_TAGS:
+            self._menu_depth += 1
+        if tag == "a":
+            self._a = [dict(attrs).get("href") or "", []]
         for region in self._open:
             if region[1] == tag:
                 region[2] += 1
@@ -122,6 +130,13 @@ class _TextExtractor(HTMLParser):
             self._in_head = False
         if tag == "title":
             self._in_title = False
+        if tag == "a" and self._a is not None:
+            label = re.sub(r"\s+", " ", "".join(self._a[1])).strip()
+            if self._a[0] and label and not self._menu_depth:
+                self.links.append((self._a[0], label))
+            self._a = None
+        if tag in _MENU_TAGS and self._menu_depth:
+            self._menu_depth -= 1
         if tag in _SKIP_TAGS and self._skip_depth:
             self._skip_depth -= 1
         elif tag in _BLOCK_TAGS:
@@ -132,6 +147,8 @@ class _TextExtractor(HTMLParser):
         self._open = [r for r in self._open if r[2] > 0]
 
     def handle_data(self, data):
+        if self._a is not None:
+            self._a[1].append(data)
         if self._in_title:
             self.title_parts.append(data)
         elif not self._skip_depth:
@@ -149,6 +166,11 @@ def _clean_lines(parts: list[str]) -> str:
 
 def html_to_text(html: str) -> tuple[str, str]:
     """HTML에서 (제목, 본문 글자)를 뽑는다. 본문 영역이 충분히 길면 그 안만 쓴다."""
+    title, text, _links = _parse_html(html)
+    return title, text
+
+
+def _parse_html(html: str) -> tuple[str, str, list[tuple[str, str]]]:
     parser = _TextExtractor()
     parser.feed(html)
     parser.close()
@@ -161,7 +183,93 @@ def html_to_text(html: str) -> tuple[str, str]:
     else:
         text = _clean_lines(parser.parts)
     title = re.sub(r"\s+", " ", "".join(parser.title_parts)).strip()
-    return title, text
+    return title, text, parser.links
+
+
+# 같은 페이지의 탭(예: 한국장학재단 '지원대상 | 지원금액 | 지원절차'). 탭마다 주소가 달라 첫 탭만 읽으면
+# 금액표·신청 기간이 빠진다(2026-11-24 국가장학금 글). 글에 꼭 필요한 내용의 탭만 함께 읽는다.
+TAB_LABEL = re.compile(r"금액|지원\s*내용|혜택|한도|금리|신청|접수|기간|일정|절차|방법|대상|자격|요건|조건")
+TAB_KEY = re.compile(r"tab", re.I)   # 지금 주소에 이미 있는 값을 바꾼 링크는 이름에 tab이 든 값(ttab1, tabNo 등)일 때만 탭으로 본다
+MAX_TABS = 4
+TAB_BUDGET = 20          # 탭 전체를 읽는 데 쓰는 시간(초). 탭마다가 아니라 합계
+TAB_MARK = "\n\n[탭: "    # 본문 뒤에 탭 글자를 붙이는 자리 표시(근거 페이지 감시가 구분에 씀)
+TAB_MAX_CHARS = 4_000    # 덧붙이는 탭 글자 합계 상한(본문 상한 max_chars 안에서 자리를 내어 준다)
+
+
+def _norm(u) -> str:
+    """주소 비교용: 값 순서를 정렬하고 '#' 뒤는 버린다."""
+    q = sorted(parse_qsl(u.query, keep_blank_values=True))
+    return u._replace(query="&".join(f"{k}={v}" for k, v in q), fragment="").geturl()
+
+
+def tab_links(page_url: str, links: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """같은 페이지의 다른 탭 주소들 (주소, 탭 이름).
+    기준: 머리·메뉴·바닥 밖 링크(_TextExtractor가 걸러 줌), 같은 호스트·경로, 이름이 짧고 TAB_LABEL에 맞음,
+    지금 주소의 값(pg=… 등)을 모두 가진 채 ① 새 값만 더했거나(ttab1=1 추가) ② 이름에 tab이 든 값만 바꾼 것.
+    다른 메뉴(pg 값이 다름)는 빠진다."""
+    here = urlparse(page_url)
+    here_q = dict(parse_qsl(here.query, keep_blank_values=True))
+    if not here_q:
+        return []      # 값이 없는 주소는 탭과 다른 페이지를 가를 기준이 없어 읽지 않는다
+    here_key = _norm(here)
+    found: dict[str, tuple[str, str]] = {}
+    for href, label in links:
+        if len(label) > 15 or not TAB_LABEL.search(label):
+            continue
+        full = urljoin(page_url, href.strip()).split("#", 1)[0]
+        u = urlparse(full)
+        if u.scheme not in ("http", "https") or (u.hostname or "").lower() != (here.hostname or "").lower() \
+                or u.path != here.path:
+            continue
+        q = dict(parse_qsl(u.query, keep_blank_values=True))
+        if any(k not in q for k in here_q):
+            continue
+        changed = [k for k, v in here_q.items() if q[k] != v]
+        added = [k for k in q if k not in here_q]
+        if not (changed or added) or any(not TAB_KEY.search(k) for k in changed):
+            continue
+        key = _norm(u)
+        if key != here_key and key not in found:
+            found[key] = (full, label)
+    return list(found.values())[:MAX_TABS]
+
+
+def _tab_extra(page_url: str, base_text: str, tabs: list[tuple[str, str]], proxy: str | None,
+               limit: int = TAB_MAX_CHARS) -> str:
+    """탭 페이지들에서 본문에 아직 없는 줄만 모아 '[탭: 이름]' 머리와 함께 돌려준다(합계 limit 글자 이내).
+    실패한 탭, 다른 호스트로 넘어간 탭, https→http로 내려간 탭은 건너뛴다."""
+    here = urlparse(page_url)
+    deadline = time.monotonic() + TAB_BUDGET
+    seen = set(base_text.splitlines())
+    parts: list[str] = []
+    used = 0
+    for url, label in tabs:
+        if time.monotonic() >= deadline or used >= limit:
+            break
+        try:
+            final, ctype, raw = _fetch(url, deadline, proxy)
+            f = urlparse(final)
+            if (f.hostname or "").lower() != (here.hostname or "").lower() \
+                    or (here.scheme == "https" and f.scheme != "https"):
+                log.info("탭이 다른 곳으로 넘어감(건너뜀): %s → %s", url, final)
+                continue
+            if "html" not in ctype:
+                continue
+            _t, text, _l = _parse_html(raw)
+        except Exception as exc:  # noqa: BLE001 - 탭은 덧붙이는 자료라 실패해도 본 페이지는 쓴다
+            log.info("탭 읽기 실패(건너뜀): %s (%s)", url, exc.__class__.__name__)
+            continue
+        new = [line for line in text.splitlines() if line not in seen]
+        seen.update(new)
+        body = "\n".join(new).strip()
+        if len(body) >= 10:   # 금액표 한 줄도 중요하므로 짧아도 붙인다
+            head = f"[탭: {label}]\n"
+            room = limit - used - len(head) - 2
+            if room < 10:
+                break
+            parts.append(head + body[:room])
+            used += len(parts[-1]) + 2
+    return "\n\n".join(parts)
 
 
 @dataclass(frozen=True)
@@ -418,16 +526,21 @@ def fetch_source(
                             ConnectionError, TimeoutError)):
             raise ConnectFailedError(f"접속 실패: {url} ({exc.__class__.__name__})") from exc
         raise SourceError(f"접속 실패: {url} ({exc.__class__.__name__})") from exc
+    links: list[tuple[str, str]] = []
     if "html" in ctype:
         try:
-            title, text = html_to_text(raw)
+            title, text, links = _parse_html(raw)
         except (AssertionError, ValueError, IndexError) as exc:   # 표준 파서가 깨진 HTML에서 내는 오류
             raise SourceError(f"HTML을 읽지 못했습니다: {final_url}") from exc
     else:
         title, text = "", re.sub(r"[ \t]+", " ", raw).strip()
     if len(text) < 200:
         raise SourceError(f"본문이 거의 없습니다(자바스크립트로 그리는 페이지일 수 있음): {final_url}")
-    return Source(id=source_id, url=final_url, title=title or final_url, text=text[:max_chars])
+    tabs = tab_links(final_url, links) if links else []
+    extra = _tab_extra(final_url, text, tabs, proxy, min(TAB_MAX_CHARS, max_chars // 3)) if tabs else ""
+    # 탭 글자도 max_chars 안에 들어가게 본문을 그만큼 줄인다(글자 상한 약속 유지)
+    text = f"{text[:max_chars - len(extra) - 2]}\n\n{extra}" if extra else text[:max_chars]
+    return Source(id=source_id, url=final_url, title=title or final_url, text=text)
 
 
 def relay_ready(proxy: str = KOREA_PROXY, timeout: float = 5) -> bool:

@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from src import db, freshness, refresh
 from src.freshness import html_to_text
-from src.source_fetcher import DEFAULT_MAX_CHARS, RelayUnavailableError, SourceError, fetch_source
+from src.source_fetcher import DEFAULT_MAX_CHARS, TAB_MARK, RelayUnavailableError, SourceError, fetch_source
 
 log = logging.getLogger(__name__)
 
@@ -271,6 +271,8 @@ def check_pages(deps: Deps, conn: sqlite3.Connection, limit: int = MAX_PER_RUN) 
         checked += 1
         for r in conn.execute("SELECT * FROM pages WHERE url = ? ORDER BY post_id", (url,)).fetchall():
             removed, added = diff_lines(r["baseline"], new)
+            if (removed or added) and _only_tabs_added(r["baseline"], new):
+                removed, added = [], []   # 탭 읽기 도입(2026-11-24) 전 기준: 본문 그대로면 판정 없이 기준만 새로
             if removed or added:
                 changed += 1
                 try:
@@ -293,6 +295,14 @@ def check_pages(deps: Deps, conn: sqlite3.Connection, limit: int = MAX_PER_RUN) 
                          "WHERE url=? AND post_id=?", (new, _now(), url, r["post_id"]))
             conn.commit()
     return tried, checked, changed, affecting
+
+
+def _only_tabs_added(baseline: str, new: str) -> bool:
+    """기준에는 없던 '[탭: …]' 덧붙임만 생겼고 본문은 그대로인지. 탭 자리를 내느라 본문 끝이 줄었을 수 있어 앞부분 일치로 본다."""
+    if TAB_MARK in baseline or TAB_MARK not in new:
+        return False
+    body = new.split(TAB_MARK, 1)[0]
+    return bool(body.strip()) and baseline.startswith(body)
 
 
 # ---------- 알림 ----------

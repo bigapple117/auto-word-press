@@ -590,7 +590,7 @@ def test_unsafe_urls_are_dropped_from_html():
 
 
 def test_broken_html_is_source_error_not_crash(monkeypatch):
-    monkeypatch.setattr(source_fetcher, "html_to_text",
+    monkeypatch.setattr(source_fetcher, "_parse_html",
                         lambda html: (_ for _ in ()).throw(AssertionError("bogus")))
     fake_network(monkeypatch, [FakeResp(200, {"Content-Type": "text/html"}, PAGE),
                                FakeResp(200, {"Content-Type": "text/plain"}, b"plain text " * 40)])
@@ -1244,3 +1244,121 @@ def test_structured_default_still_falls_back():
     gen = ContentGenerator(client, "main-model", second_model="second-model",
                            fallback_model="backup-model", sleep=lambda s: None, retry_waits=(1, 1))
     assert gen.structured("q", dict, "sys")[1] == "second-model"
+
+
+# ---------- 같은 페이지 탭 함께 읽기 ----------
+
+TAB_PAGE = ("""<html><title>국가장학금</title><body>
+  <nav><a href="/ko/scholar.do?pg=other01">대출 신청</a></nav>
+  <ul class="tab"><li><a href="/ko/scholar.do?pg=sch01&ttab1=1">지원금액</a></li>
+  <li><a href="/ko/scholar.do?pg=sch01&ttab1=4">유의사항</a></li>
+  <li><a href="https://other.go.kr/ko/scholar.do?pg=sch01&ttab1=2">지원절차</a></li></ul>
+  <main>%s</main></body></html>""" % ("지원 대상 설명 " * 40)).encode()
+
+
+def test_tab_links_only_same_page_tabs():
+    from src.source_fetcher import tab_links
+    links = [("/ko/scholar.do?pg=other01", "대출 신청"), ("/ko/scholar.do?pg=sch01&ttab1=1", "지원금액"),
+             ("/ko/scholar.do?pg=sch01&ttab1=4", "유의사항"), ("https://other.go.kr/ko/scholar.do?pg=sch01&ttab1=2", "지원절차"),
+             ("/ko/scholar.do?pg=sch01", "지원대상"), ("/ko/scholar.do?pg=sch01&ttab1=1#top", "지원금액")]
+    got = tab_links("https://www.kosaf.go.kr/ko/scholar.do?pg=sch01", links)
+    assert got == [("https://www.kosaf.go.kr/ko/scholar.do?pg=sch01&ttab1=1", "지원금액")]
+    assert tab_links("https://a.go.kr/page.do", [("/page.do?x=1", "지원금액")]) == []   # 기준 주소 값이 없으면 탭으로 안 봄
+
+
+def test_fetch_source_appends_tab_text(monkeypatch):
+    tab = ("<html><main>%s<p>가 구간 300만원 600만원</p></main></html>" % ("지원 대상 설명 " * 40)).encode()
+    opened = fake_network(monkeypatch, [FakeResp(200, {"Content-Type": "text/html"}, TAB_PAGE),
+                                        FakeResp(200, {"Content-Type": "text/html"}, tab)])
+    src = fetch_source("https://www.kosaf.go.kr/ko/scholar.do?pg=sch01", "S1")
+    assert src.text.endswith("[탭: 지원금액]\n가 구간 300만원 600만원")   # 겹치는 줄은 다시 안 붙임
+    assert [p for _h, p, _ip in opened] == ["/ko/scholar.do?pg=sch01", "/ko/scholar.do?pg=sch01&ttab1=1"]   # 다른 메뉴·사이트·유의사항은 안 읽음
+
+
+def test_failed_tab_is_skipped(monkeypatch):
+    fake_network(monkeypatch, [FakeResp(200, {"Content-Type": "text/html"}, TAB_PAGE),
+                               FakeResp(500, {"Content-Type": "text/html"}, b"x")])
+    src = fetch_source("https://www.kosaf.go.kr/ko/scholar.do?pg=sch01", "S1")
+    assert "[탭:" not in src.text and "지원 대상 설명" in src.text
+
+
+# ---------- 주제가 약속한 금액·신청 기간 ----------
+
+def test_coverage_requires_amount_and_deadline_when_sources_have_them():
+    from datetime import date
+    from src.ai_generator import COVERAGE_PROBLEM, coverage_problems
+    c = MasterContent.model_validate(good_data())
+    srcs = [Source("S1", "https://a.go.kr", "t", "신청일정 : 2026. 11. 24.(화) 9시 ~ 2027. 1. 7.(목) 18시. 가 구간 600만원")]
+    probs = coverage_problems("국가장학금 신청 대상과 지원 금액", c, srcs, today=date(2026, 11, 24))
+    # good_data에는 '2,200만 원' 금액이 있으니 금액은 통과, 마감일(1월 7일)은 없어서 지적
+    assert len(probs) == 1 and probs[0].startswith(COVERAGE_PROBLEM) and "1월 7일" in probs[0]
+    assert coverage_problems("국가장학금 자격 정리", c, srcs, today=date(2026, 11, 24)) == []   # 주제가 금액·신청이 아님
+
+
+def test_coverage_amount_missing_and_past_deadline_ignored():
+    from datetime import date
+    from src.ai_generator import coverage_problems
+    data = good_data()
+    data["sections"][0]["blocks"][1]["table"]["rows"] = [["단독", "기준 A"], ["홑벌이", "기준 B"]]
+    c = MasterContent.model_validate(data)
+    srcs = [Source("S1", "https://a.go.kr", "t", "접수기간 2025. 3. 2. ~ 2025. 3. 20. 지원 한도 최대 4억원")]
+    probs = coverage_problems("신생아 특례대출 대출 한도와 신청 기간", c, srcs, today=date(2026, 11, 24))
+    assert len(probs) == 1 and "금액" in probs[0]   # 지난 접수 기간은 요구하지 않음
+
+
+def test_tab_links_menu_sibling_and_order():
+    from src.source_fetcher import _parse_html, tab_links
+    html = ("<html><header><a href='?pg=sch01&lang=ko'>신청 안내</a></header>"
+            "<nav><a href='?pg=sch01&ttab1=9'>신청방법</a></nav><main>"
+            "<a href='?ttab1=1&pg=sch01'>지원금액</a><a href='?pg=sch01&ttab1=1'>지원금액</a>"
+            "<a href='?pg=sch02&ttab1=0'>신청 대상</a></main>"
+            "<footer><a href='?pg=sch01&x=1'>개인정보 신청</a></footer></html>")
+    _t, _x, links = _parse_html(html)
+    assert all(label not in ("신청 안내", "신청방법", "개인정보 신청") for _h, label in links)   # 머리·메뉴·바닥 링크 제외
+    page = "https://www.kosaf.go.kr/ko/scholar.do?pg=sch01&ttab1=0"
+    got = tab_links(page, links)
+    assert [label for _u, label in got] == ["지원금액"]   # 순서만 다른 같은 주소는 하나, pg가 다른 메뉴는 제외
+    assert tab_links(page, [("?pg=sch01&ttab1=0", "지원대상")]) == []   # 지금 페이지 자신
+    assert tab_links("https://a.go.kr/p.do?pg=1", [("?pg=2", "신청 방법")]) == []   # tab이 아닌 값이 바뀌면 다른 메뉴
+
+
+def test_tab_moved_to_other_host_is_skipped(monkeypatch):
+    fake_network(monkeypatch, [FakeResp(200, {"Content-Type": "text/html"}, TAB_PAGE),
+                               FakeResp(302, {"Location": "https://other.go.kr/x?ttab1=1"}, b""),
+                               FakeResp(200, {"Content-Type": "text/html"}, b"<main>" + "가 구간 300만원 ".encode() * 5 + b"</main>")])
+    src = fetch_source("https://www.kosaf.go.kr/ko/scholar.do?pg=sch01", "S1")
+    assert "[탭:" not in src.text
+
+
+def test_tab_text_stays_within_max_chars(monkeypatch):
+    tab = ("<html><main>%s</main></html>" % "".join(f"<p>금액 줄 {i} 300만원</p>" for i in range(500))).encode()
+    fake_network(monkeypatch, [FakeResp(200, {"Content-Type": "text/html"}, TAB_PAGE),
+                               FakeResp(200, {"Content-Type": "text/html"}, tab)])
+    src = fetch_source("https://www.kosaf.go.kr/ko/scholar.do?pg=sch01", "S1", max_chars=1500)
+    assert len(src.text) <= 1500 and "[탭: 지원금액]" in src.text and "지원 대상 설명" in src.text
+
+
+def test_period_ends_date_forms():
+    from datetime import date
+    from src.ai_generator import _mentions_day, _period_ends
+    t = date(2026, 11, 24)
+    assert _period_ends(["신청기간: 2027.01.07 ~ 2027-02-10"], t) == {(2, 10)}          # 0 붙은 날짜·하이픈
+    assert _period_ends(["신청 기간 11월 24일 ~ 1월 7일"], t) == {(1, 7)}                 # 연도 없음, 해를 넘김
+    assert _period_ends(["신청기간: 3월 1일 ~ 3월 31일"], t) == set()                      # 연도 없고 올해 이미 지남
+    assert _period_ends(["접수기간 9.00 ~ 12.30, 금리 1.5 ~ 2.15%"], t) == set()          # 시각·소수는 날짜 아님
+    assert _period_ends(["신청 기간: 1차 2026.11.24 ~ 2027.1.7, 2차 2027.3.2 ~ 2027.3.20"], t) == {(1, 7), (3, 20)}
+    assert _mentions_day("마감은 2027-01-07입니다", 1, 7) and _mentions_day("1월 7일까지", 1, 7)
+    assert not _mentions_day("11월 7일", 1, 7)
+
+
+def test_coverage_money_needs_won_and_topic_wording():
+    from datetime import date
+    from src.ai_generator import _has_money, coverage_problems
+    assert not _has_money("수혜 인원 10만 명") and _has_money("(단위: 만원) 가 구간 300")
+    data = good_data()
+    data["sections"][0]["blocks"][1]["table"]["rows"] = [["단독", "기준 A"], ["홑벌이", "기준 B"]]
+    c = MasterContent.model_validate(data)
+    srcs = [Source("S1", "https://a.go.kr", "t", "최대 330만원 지급")]
+    assert coverage_problems("근로장려금 자격 요건", c, srcs, today=date(2026, 11, 24)) == []   # 프로그램 이름만으로는 안 걸림
+    people = [Source("S1", "https://a.go.kr", "t", "지원 인원 10만 명")]
+    assert coverage_problems("지원 금액 정리", c, people, today=date(2026, 11, 24)) == []       # 자료에 돈이 없음

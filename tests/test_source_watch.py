@@ -666,3 +666,12 @@ def test_run_with_send_false_records_change_leaving_notified_null(env):
     assert change["affects"] == 1
     assert change["notified"] is None
     assert change["summary"] == "월 50만→60만 원"
+
+
+def test_only_tabs_added_is_not_a_change():
+    from src.source_watch import _only_tabs_added
+    old = "본문 줄1\n본문 줄2\n본문 줄3"
+    assert _only_tabs_added(old, "본문 줄1\n본문 줄2\n\n[탭: 지원금액]\n가 300만원")           # 끝이 줄어든 본문 + 탭
+    assert not _only_tabs_added(old, "본문 줄1\n새 줄\n\n[탭: 지원금액]\n가 300만원")          # 본문이 바뀜
+    assert not _only_tabs_added(old + "\n\n[탭: 지원금액]\nx", old + "\n\n[탭: 지원금액]\ny")   # 이미 탭이 있던 기준
+    assert not _only_tabs_added(old, old + "\n추가")
