@@ -360,6 +360,17 @@ def test_html_to_text_does_not_fall_back_to_menu_when_main_is_empty():
     assert text == "준비중"
 
 
+def test_html_to_text_survives_duplicate_head_and_contents_area():
+    # 마이홈포털: <head>를 두 번 열고 한 번만 닫으며, 본문은 <main> 밖 contentsArea 상자에 있다
+    html = """<html><head><meta charset="utf-8"><head><title>마이홈포털</title></head><body>
+      <main id="main"><div id="container"></div></main>
+      <div class="contents-area" id='contentsArea'><dl><dt>대출대상</dt><dd>%s</dd></dl></div>
+      </body></html>""" % ("부부합산 연소득 1.3억원 이하 " * 20)
+    title, text = html_to_text(html)
+    assert title == "마이홈포털"
+    assert text.startswith("대출대상") and "1.3억원" in text
+
+
 @pytest.mark.parametrize("url", [
     "http://127.0.0.1/wp-admin/",
     "http://169.254.169.254/opc/v2/instance/",

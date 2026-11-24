@@ -45,7 +45,8 @@ _SKIP_TAGS = {"script", "style", "noscript", "svg", "iframe", "template", "head"
 # 본문 영역으로 보는 태그·id (있으면 메뉴 글자를 빼고 이 안만 쓴다)
 # 본문 영역 후보(앞쪽일수록 우선). 있으면 메뉴 글자를 빼고 그 안만 쓴다.
 _MAIN_PRIORITY = ("main", "article", "#contents", "#content", "#main-content",
-                  "#maincontent", "#main_content", "#container")
+                  "#maincontent", "#main_content", "#contentsarea", "#contents-area",
+                  "#contents_area", "#container")
 _BLOCK_TAGS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
                "section", "article", "table", "ul", "ol", "dd", "dt", "header"}
 
@@ -83,6 +84,7 @@ class _TextExtractor(HTMLParser):
         self.regions: dict[str, list[str]] = {}   # 후보 이름 → 글자 (처음 만난 것만)
         self._open: list[list] = []               # [후보 이름, 태그, 같은 태그 깊이]
         self._skip_depth = 0
+        self._in_head = False   # 브라우저처럼 <head>는 겹치지 않게 다룬다(<head>를 두 번 여는 페이지 대비)
         self._in_title = False
 
     def _add(self, text: str) -> None:
@@ -91,6 +93,13 @@ class _TextExtractor(HTMLParser):
             self.regions[name].append(text)
 
     def handle_starttag(self, tag, attrs):
+        if tag == "head":
+            if self._in_head:
+                return          # 닫히지 않은 <head> 안의 두 번째 <head>는 무시(마이홈포털 사례)
+            self._in_head = True
+        elif tag == "body" and self._in_head:
+            self._in_head = False   # </head> 없이 <body>가 오면 머리 부분은 끝난 것
+            self._skip_depth = max(0, self._skip_depth - 1)
         if tag == "title":
             self._in_title = True
         for region in self._open:
@@ -107,6 +116,10 @@ class _TextExtractor(HTMLParser):
             self._add("\n")
 
     def handle_endtag(self, tag):
+        if tag == "head":
+            if not self._in_head:
+                return
+            self._in_head = False
         if tag == "title":
             self._in_title = False
         if tag in _SKIP_TAGS and self._skip_depth:
