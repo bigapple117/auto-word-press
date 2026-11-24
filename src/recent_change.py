@@ -29,6 +29,9 @@ MAX_CANDIDATES = 8          # 읽기 실패에 대비한 후보 수
 MAX_NOTES = 4               # 승인 알림에 보일 줄 수
 RECENT_DAYS = 365           # 이보다 오래된 기사는 안내 페이지에 이미 반영됐을 가능성이 높다
 QUERY_WORDS = ("개편", "개정", "달라지는")
+# 해마다 바뀌는 금액(실업급여 상한액 등)은 '2026년 이렇게 달라진다' 같은 연초 정리 기사에만 나오는 일이 많다.
+# 최신순만 보면 그 뒤의 논쟁 기사에 밀려 못 읽는다(2026-11-24 실업급여 글이 옛 상한액 66,000원으로 쓰인 사례).
+_ANNUAL_TITLE = re.compile(r"달라지는|달라진다|달라집니다|바뀌는|바뀐다|새해부터|부터\s*시행")
 
 # 확정 근거: 국회·국무회의를 통과했다, 공포·고시됐다(최저임금·기준중위소득은 고시로 확정), 이미 시행 중
 _FINAL = re.compile(
@@ -43,7 +46,13 @@ _CONDITIONAL = re.compile(
     r"통과하면|통과될 경우|의결되면|확정되면|된다면|했다면|돼야|되어야|예정|전망|추진|검토|계획|방침|입법예고"
     r"|상임위|소위|위원회|제출|발의|심의|상정|정부안"
 )
+# 연도를 박은 '달라지는 것' 정리 기사(예: '2026년 이렇게 달라진다②'). 정부가 확정해 공표한 변경을 모은 기사라
+# 문장이 '6만8100원으로 오른다'처럼 앞날 표현이어도 확정으로 본다(검토·추진 같은 말이 있는 문장은 여전히 제외).
+_ROUNDUP_TITLE = re.compile(r"(20\d{2})\s*년[^\n]{0,20}?(?:달라지|달라진|달라집|바뀌|바뀐|바뀝)")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+# 정리 기사라도 이런 말이 제목·해당 문장·바로 앞 문장에 있으면 확정으로 보지 않는다
+# ('인상안 검토', '아직 논의 중이다. … 오른다.', '합의가 이뤄지면 … 오른다.')
+_HEDGE = re.compile(r"아직|합의|논의|쟁점|경우|여부|[가-힣]안(?=[\s,·…?!]|$)|(?:되|지|하|나|오)면(?=[\s,]|$)")
 
 Reader = Callable[[str, Sequence[Source], dict], Sequence[Any]]
 
@@ -63,6 +72,30 @@ def is_final(proof: str) -> bool:
     return bool(_FINAL.search(proof)) and not _CONDITIONAL.search(proof)
 
 
+def roundup_year(title: str, today: date) -> int | None:
+    """연도를 박은 '달라지는 것' 정리 기사면 그 연도. 올해 것과, 연말(11~12월)이면 내년 것만.
+    지난해 정리 기사의 값(예: 2025년 하한액)은 올해 다시 바뀌었을 수 있어 확정 근거로 쓰지 않는다."""
+    m = _ROUNDUP_TITLE.search(title or "")
+    last = today.year + (1 if today.month >= 11 else 0)
+    if m and today.year <= int(m.group(1)) <= last:
+        return int(m.group(1))
+    return None
+
+
+def _roundup_confirmed(title: str, text: str, change: str, today: date) -> bool:
+    """연도 정리 기사(올해·연말엔 내년)에서 앞날 표현 변경 문장을 확정으로 볼지. 제목과 그 문장, 바로 앞 문장에
+    조건·논의 표현이 없어야 한다. 문장은 기사에 이어진 그대로 있어야 한다(한 문장 안)."""
+    if not roundup_year(title, today) or _CONDITIONAL.search(title) or _HEDGE.search(title):
+        return False
+    q = _fact_norm(change)
+    if len(q) < 6 or _CONDITIONAL.search(change):
+        return False
+    parts = [p.strip() for p in _SENTENCE.split(text) if p.strip()]
+    hits = [i for i, p in enumerate(parts) if q in _fact_norm(p)]
+    return bool(hits) and all(not (_CONDITIONAL.search(x) or _HEDGE.search(x))
+                              for i in hits for x in parts[max(0, i - 1):i + 1])
+
+
 def _whole_sentences(text: str, quote: str) -> list[str]:
     """인용 조각이 이어진 그대로 들어 있는 기사 문장 전체. AI가 '통과했다면 … 예정'에서 '통과했다'만
     잘라 와도 문장 전체로 다시 판단하려는 것. 이어진 그대로 없으면 빈 목록."""
@@ -80,12 +113,16 @@ def _published(hit: Any) -> datetime | None:
 
 
 def pick_articles(search: Any, topic: str, today: date | None = None) -> list[tuple[Any, datetime]]:
-    """제도 이름이 제목·요약에 들어 있는 최근 기사. 정책브리핑(korea.kr) → 제목에 제도 이름 → 최신순."""
+    """제도 이름이 제목·요약에 들어 있는 최근 기사. 정책브리핑(korea.kr) → '달라지는·부터 시행' 같은 확정 변경 정리
+    기사 → 제목에 제도 이름 → 최신순."""
     today = today or date.today()
     core = core_keyword(topic)
     words = [_fact_norm(w) for w in core.split() if _fact_norm(w)]
     found: dict[str, tuple[Any, datetime]] = {}
-    for q in (f"{core} {k}" for k in QUERY_WORDS):
+    queries = [f"{core} {k}" for k in QUERY_WORDS] + [f"{today.year}년 달라지는 {core}"]
+    if today.month >= 11:      # 연말이면 다음 해 정리 기사도 나온다
+        queries.append(f"{today.year + 1}년 달라지는 {core}")
+    for q in queries:
         try:
             hits = search.news(q, display=20)
         except Exception as exc:  # noqa: BLE001 - 검색 하나가 안 돼도 나머지로 진행
@@ -102,7 +139,10 @@ def pick_articles(search: Any, topic: str, today: date | None = None) -> list[tu
     def rank(item: tuple[Any, datetime]):
         host = (urlparse(item[0].url).hostname or "").lower()
         in_title = all(w in _fact_norm(item[0].title) for w in words)
-        return (0 if host.endswith("korea.kr") else 1, 0 if in_title else 1, -item[1].timestamp())
+        title = item[0].title
+        annual = bool(_ANNUAL_TITLE.search(title)) and not (_CONDITIONAL.search(title) or _HEDGE.search(title))
+        return (0 if host.endswith("korea.kr") else 1, 0 if annual else 1, 0 if in_title else 1,
+                -item[1].timestamp())
     return sorted(found.values(), key=rank)[:MAX_CANDIDATES]
 
 
@@ -150,6 +190,7 @@ def find_recent_changes(search: Any, fetch: Callable, read: Reader, topic: str, 
         log.warning("최근 변경 판정 실패: %s", exc)
         out.errors.append(f"최근 변경 판정 실패: {exc.__class__.__name__}")
         return out
+    today = today or date.today()
     raw = {s.id: s.text for s in articles}
     texts = {s.id: _fact_norm(s.text) for s in articles}
     confirmed: dict[str, list[tuple[str, str]]] = {}
@@ -163,6 +204,8 @@ def find_recent_changes(search: Any, fetch: Callable, read: Reader, topic: str, 
         whole = _whole_sentences(raw[sid], proof) if proof else []
         ok = (getattr(it, "status", "") == "confirmed" and bool(whole) and all(is_final(w) for w in whole)
               and not _CONDITIONAL.search(change))
+        if not ok and _roundup_confirmed(info[sid]["title"], raw[sid], change, today):
+            ok, whole = True, [f"'{info[sid]['title']}' — 연도별 확정 변경 정리 기사"]
         if ok:
             proof = whole[0]
         entry = {"change": change, "proof": proof if ok else "", **info[sid]}

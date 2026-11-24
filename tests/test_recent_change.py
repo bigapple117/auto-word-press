@@ -65,7 +65,20 @@ def test_pick_articles_filters_old_and_unrelated_and_ranks_briefing_first():
     ])
     urls = [h.url for h, _ in pick_articles(search, "월세 세액공제 신청 대상", TODAY)]
     assert urls == ["https://www.korea.kr/b", "https://news.example/a"]
-    assert search.queries == ["월세 세액공제 개편", "월세 세액공제 개정", "월세 세액공제 달라지는"]
+    assert search.queries[:3] == ["월세 세액공제 개편", "월세 세액공제 개정", "월세 세액공제 달라지는"]
+    assert f"{TODAY.year}년 달라지는 월세 세액공제" in search.queries
+
+
+def test_pick_articles_prefers_annual_change_roundup():
+    """최신 논쟁 기사보다 '2026년 이렇게 달라진다' 같은 확정 변경 정리 기사를 먼저 읽는다."""
+    search = FakeSearch([
+        hit("https://news.example/debate", "실업급여 개편 논란", published="Mon, 23 Nov 2026 09:00:00 +0900"),
+        hit("https://news.example/roundup", "2026년 이렇게 달라진다② 최저임금·실업급여",
+            published="Fri, 30 Jan 2026 09:00:00 +0900"),
+    ])
+    urls = [h.url for h, _ in pick_articles(search, "실업급여 신청 자격", date(2026, 11, 24))]
+    assert urls == ["https://news.example/roundup", "https://news.example/debate"]
+    assert "2027년 달라지는 실업급여" in search.queries   # 연말엔 다음 해 정리 기사도
 
 
 def test_confirmed_change_becomes_source_with_quotes_only():
@@ -153,3 +166,64 @@ def test_prompt_explains_news_source():
     p = build_prompt("월세 세액공제", srcs, 60, today=TODAY)
     assert CHANGE_NOTE in p and '종류="최근 확정 변경"' in p
     assert CHANGE_NOTE not in build_prompt("월세 세액공제", srcs[:1], 60, today=TODAY)
+
+
+def test_roundup_year_only_this_year_or_next_in_late_year():
+    from src.recent_change import roundup_year
+    assert roundup_year("2026년 이렇게 달라진다② 최저임금·실업급여", TODAY) == 2026
+    assert roundup_year("2027년부터 달라지는 정부 정책은?", TODAY) == 2027
+    assert roundup_year("2025년 달라지는 것들", TODAY) is None
+    assert roundup_year("2027년부터 달라지는 정부 정책", date(2026, 5, 1)) is None
+    assert roundup_year("실업급여 개편 논의", TODAY) is None
+
+
+ROUNDUP = ("새해부터 달라지는 제도를 정리했다. 구직급여(실업급여) 하루 상한액은 기존 6만6000원에서 6만8100원으로 오른다. "
+           "정부는 반복 수급자 감액도 검토하고 있다.")
+
+
+def test_roundup_article_future_tense_change_is_confirmed():
+    url = "https://news.example/r"
+    change = "구직급여(실업급여) 하루 상한액은 기존 6만6000원에서 6만8100원으로 오른다."
+    read = lambda topic, arts, dates: [item("N1", "pending", change)]
+    r = find_recent_changes(FakeSearch([hit(url, "2026년 이렇게 달라진다② 최저임금·실업급여")]),
+                            fake_fetch({url: ROUNDUP}), read, "실업급여 신청", 5, today=TODAY)
+    assert [s.via for s in r.sources] == ["news"] and change in r.sources[0].text
+    assert len(r.memo["confirmed"]) == 1 and r.memo["pending"] == []
+
+
+def test_roundup_article_conditional_or_unquoted_change_stays_pending():
+    url = "https://news.example/r"
+    for change in ["정부는 반복 수급자 감액도 검토하고 있다.", "하루 상한액은 7만원으로 오른다."]:
+        read = lambda topic, arts, dates: [item("N1", "pending", change)]
+        r = find_recent_changes(FakeSearch([hit(url, "2026년 이렇게 달라진다② 최저임금·실업급여")]),
+                                fake_fetch({url: ROUNDUP}), read, "실업급여 신청", 5, today=TODAY)
+        assert r.sources == [] and r.memo["confirmed"] == [], change
+
+
+def test_old_year_roundup_future_tense_stays_pending():
+    url = "https://news.example/r"
+    change = "구직급여(실업급여) 하루 상한액은 기존 6만6000원에서 6만8100원으로 오른다."
+    read = lambda topic, arts, dates: [item("N1", "pending", change)]
+    r = find_recent_changes(FakeSearch([hit(url, "2025년 이렇게 달라진다 실업급여")]),
+                            fake_fetch({url: ROUNDUP}), read, "실업급여 신청", 5, today=TODAY)
+    assert r.sources == []
+
+
+def test_roundup_hedged_title_or_context_stays_pending():
+    url = "https://news.example/r"
+    change = "실업급여 상한액은 7만원으로 오른다."
+    cases = [("2026년 실업급여 어떻게 바뀌나…인상안 검토", "새해 제도 정리. 실업급여 상한액은 7만원으로 오른다."),
+             ("2026년 이렇게 달라진다", "다음 내용은 아직 논의 중이다. 실업급여 상한액은 7만원으로 오른다."),
+             ("2026년 이렇게 달라진다", "새해 정리. 합의가 이뤄지면 실업급여 상한액은 7만원으로 오른다.")]
+    for title, text in cases:
+        read = lambda topic, arts, dates: [item("N1", "pending", change)]
+        r = find_recent_changes(FakeSearch([hit(url, title)]), fake_fetch({url: text}), read,
+                                "실업급여 신청", 5, today=TODAY)
+        assert r.sources == [], (title, text)
+
+
+def test_hedged_annual_title_gets_no_rank_bonus():
+    s = FakeSearch([hit("https://a.example/1", "실업급여 개편 내년부터 시행 추진", published="Fri, 20 Nov 2026 09:00:00 +0900"),
+                    hit("https://a.example/2", "실업급여 상한 인상 고시", published="Sat, 21 Nov 2026 09:00:00 +0900")])
+    picked = pick_articles(s, "실업급여 신청", today=TODAY)
+    assert picked[0][0].url == "https://a.example/2"
