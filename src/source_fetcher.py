@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 import socket
 import threading
@@ -30,6 +31,13 @@ DNS_TIMEOUT = 5
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 15
 TOTAL_TIMEOUT = 40          # 주소 하나를 읽는 전체 시간(리다이렉트 포함)
+# 한국 통로: 해외 접속을 막은 한국 기관 사이트를 24시간 켜 둔 집 노트북(한국 가정용 인터넷)으로 읽는다.
+# 노트북 → 오라클1 127.0.0.1:18081(역방향 SOCKS) ← 오라클2 127.0.0.1:18081(ssh -L, korea-relay-forward 서비스).
+# 주소·IP 검사는 지금처럼 여기서 하고, 검사한 IP로만 접속을 부탁한다(socks5, 이름 풀이를 노트북에 맡기지 않음).
+KOREA_PROXY = "socks5://127.0.0.1:18081"
+DEAD_HOST_SECONDS = 6 * 60 * 60   # 직접 접속이 끊긴 호스트는 이 시간 동안 바로 한국 통로로(매번 수십 초 기다리지 않게)
+_dead_hosts: dict[str, float] = {}
+log = logging.getLogger(__name__)
 _DNS_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dns")
 
 _SKIP_TAGS = {"script", "style", "noscript", "svg", "iframe", "template", "head",
@@ -48,6 +56,10 @@ class SourceError(RuntimeError):
 
 class BlockedUrlError(SourceError):
     """보안 정책으로 거절한 주소(내부 주소, 허용 안 된 포트·형식). 대신 읽기도 하지 않는다."""
+
+
+class ConnectFailedError(SourceError):
+    """서버에 닿지 못함(접속 거절·시간 초과). 해외 접속 차단일 수 있어 한국 통로로 다시 읽을 만하다."""
 
 
 class RelayUnavailableError(SourceError):
@@ -235,7 +247,8 @@ def _recording(base: type, watch: _Watch) -> type:
     return Recording
 
 
-def _open(target: _Target, ip: str, timeout: urllib3.Timeout, watch: _Watch, cookie: str = ""):
+def _open(target: _Target, ip: str, timeout: urllib3.Timeout, watch: _Watch, cookie: str = "",
+          proxy: str | None = None):
     """검사한 IP로만 접속한다. Host 헤더와 TLS 인증서 확인은 원래 호스트 이름으로 한다."""
     headers = {
         "Host": target.host,
@@ -245,7 +258,13 @@ def _open(target: _Target, ip: str, timeout: urllib3.Timeout, watch: _Watch, coo
     }
     if cookie:
         headers["Cookie"] = cookie
-    if target.scheme == "https":
+    if proxy:
+        from urllib3.contrib.socks import SOCKSProxyManager   # PySocks 필요(한국 통로를 쓸 때만)
+        extra = ({"server_hostname": target.host, "assert_hostname": target.host,
+                  "cert_reqs": "CERT_REQUIRED", "ca_certs": certifi.where()} if target.scheme == "https" else {})
+        pool = SOCKSProxyManager(proxy, timeout=timeout, retries=False, maxsize=1).connection_from_host(
+            ip, target.port, scheme=target.scheme, pool_kwargs=extra)
+    elif target.scheme == "https":
         pool = urllib3.HTTPSConnectionPool(
             ip, target.port, timeout=timeout, retries=False, maxsize=1,
             server_hostname=target.host, assert_hostname=target.host,
@@ -281,7 +300,7 @@ def _decode(body: bytes, content_type: str) -> str:
 _BAD_COOKIE = re.compile(r"[\x00-\x20\x7f;,]")   # 제어문자·공백·구분자가 든 쿠키는 버린다
 
 
-def _fetch(url: str, deadline: float) -> tuple[str, str, str]:
+def _fetch(url: str, deadline: float, proxy: str | None = None) -> tuple[str, str, str]:
     """(최종 주소, Content-Type, 본문 글자). 리다이렉트마다 주소·IP를 다시 검사한다."""
     current = url
     # 일부 기관(국토교통부 등)은 첫 방문에 쿠키를 주고 같은 주소로 다시 보낸다. 쿠키를 돌려주지 않으면
@@ -307,7 +326,7 @@ def _fetch(url: str, deadline: float) -> tuple[str, str, str]:
         watchdog.start()
         try:
             cookie = "; ".join(f"{k}={v}" for k, v in jar.get((target.scheme, target.host), {}).items())
-            resp, pool = _open(target, ip, timeout, watch, cookie)
+            resp, pool = _open(target, ip, timeout, watch, cookie, **({"proxy": proxy} if proxy else {}))
         except (urllib3.exceptions.HTTPError, OSError) as exc:
             watchdog.cancel()
             if time.monotonic() >= deadline:
@@ -363,14 +382,24 @@ def fetch_source(
     source_id: str,
     max_chars: int = DEFAULT_MAX_CHARS,
     total_timeout: float = TOTAL_TIMEOUT,
+    proxy: str | None = None,
 ) -> Source:
-    """주소 하나를 읽어 Source로 돌려준다. 어떤 실패든 SourceError로 알린다."""
+    """주소 하나를 읽어 Source로 돌려준다. 어떤 실패든 SourceError로 알린다(서버에 못 닿았으면 ConnectFailedError).
+    proxy: 한국 통로(KOREA_PROXY) 등 SOCKS 주소. 통로 자체가 안 되면 RelayUnavailableError."""
     deadline = time.monotonic() + total_timeout
     try:
-        final_url, ctype, raw = _fetch(url, deadline)
-    except SourceError:
+        final_url, ctype, raw = _fetch(url, deadline, proxy)
+    except SourceError as exc:
+        if str(exc).startswith("시간 초과"):
+            raise ConnectFailedError(str(exc)) from exc
         raise
     except (urllib3.exceptions.HTTPError, OSError, ValueError) as exc:
+        if proxy and not relay_ready(proxy):
+            raise RelayUnavailableError(f"한국 통로 연결 안 됨({exc.__class__.__name__})") from exc
+        if isinstance(exc, (urllib3.exceptions.ConnectTimeoutError, urllib3.exceptions.NewConnectionError,
+                            urllib3.exceptions.ReadTimeoutError, urllib3.exceptions.ProtocolError,
+                            ConnectionError, TimeoutError)):
+            raise ConnectFailedError(f"접속 실패: {url} ({exc.__class__.__name__})") from exc
         raise SourceError(f"접속 실패: {url} ({exc.__class__.__name__})") from exc
     if "html" in ctype:
         try:
@@ -384,11 +413,31 @@ def fetch_source(
     return Source(id=source_id, url=final_url, title=title or final_url, text=text[:max_chars])
 
 
+def relay_ready(proxy: str = KOREA_PROXY, timeout: float = 5) -> bool:
+    """한국 통로가 노트북까지 이어져 있는지. SOCKS5 인사(인증 없음)를 주고받아 본다.
+    오라클2 입구만 열리고 노트북이 꺼져 있으면 오라클1에서 연결이 끊겨 답이 오지 않는다."""
+    if not proxy:
+        return False
+    host, port = proxy.rsplit("//", 1)[-1].rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(b"\x05\x01\x00")
+            return sock.recv(2) == b"\x05\x00"
+    except OSError:
+        return False
+
+
+def _host(url: str) -> str:
+    return (urlparse(url.strip()).hostname or "").lower()
+
+
 def fetch_sources(
     urls: list[str],
     max_sources: int | None = None,
     fallback: Callable[[str, str], Source] | None = None,
     max_fallback_attempts: int = 3,
+    korea_proxy: str | None = "auto",
     **kwargs,
 ) -> tuple[list[Source], list[str]]:
     """여러 주소를 읽는다. (성공한 자료, 실패 사유 목록)을 돌려준다.
@@ -400,6 +449,9 @@ def fetch_sources(
     """
     relay_tries = 0
     relay_down = False
+    if korea_proxy == "auto":
+        korea_proxy = KOREA_PROXY
+    korea = korea_proxy if korea_proxy and relay_ready(korea_proxy) else None
     sources: list[Source] = []
     errors: list[str] = []
     seen: set[str] = set()
@@ -412,25 +464,43 @@ def fetch_sources(
             continue
         seen.add(url)
         source_id = f"S{len(sources) + 1}"
+        host = _host(url)
         try:
+            if korea and _dead_hosts.get(host, 0) > time.monotonic():
+                raise ConnectFailedError(f"접속 실패: {url} (최근 접속 끊김, 바로 한국 통로로)")
             src = fetch_source(url, source_id, **kwargs)
         except BlockedUrlError as exc:
             errors.append(str(exc))
             continue
         except SourceError as exc:
-            if fallback is None or relay_down or relay_tries >= max_fallback_attempts:
-                errors.append(str(exc))
-                continue
-            relay_tries += 1
-            try:
-                src = fallback(url, source_id)
-            except RelayUnavailableError as exc2:
-                relay_down = True
-                errors.append(f"{exc} / 대신 읽기 중단: {exc2}")
-                continue
-            except SourceError as exc2:
-                errors.append(f"{exc} / 대신 읽기도 실패: {exc2}")
-                continue
+            problem = str(exc)
+            src = None
+            if isinstance(exc, ConnectFailedError) and korea:
+                # 서버에 못 닿음 = 해외 차단일 수 있음 → 한국 통로(집 노트북)로 다시 읽는다
+                _dead_hosts[host] = time.monotonic() + DEAD_HOST_SECONDS
+                try:
+                    src = fetch_source(url, source_id, proxy=korea, **kwargs)
+                    log.info("한국 통로로 읽음: %s", url)
+                except RelayUnavailableError as exc2:
+                    log.warning("한국 통로 안 됨(이번 자료 모으기에서는 더 안 씀): %s", exc2)
+                    korea = None
+                    problem += f" / 한국 통로 안 됨: {exc2}"
+                except SourceError as exc2:
+                    problem += f" / 한국 통로로도 실패: {exc2}"
+            if src is None:
+                if fallback is None or relay_down or relay_tries >= max_fallback_attempts:
+                    errors.append(problem)
+                    continue
+                relay_tries += 1
+                try:
+                    src = fallback(url, source_id)
+                except RelayUnavailableError as exc2:
+                    relay_down = True
+                    errors.append(f"{problem} / 대신 읽기 중단: {exc2}")
+                    continue
+                except SourceError as exc2:
+                    errors.append(f"{problem} / 대신 읽기도 실패: {exc2}")
+                    continue
         if src.url in {s.url for s in sources} or src.text in texts:
             continue
         texts.add(src.text)

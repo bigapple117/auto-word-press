@@ -1,5 +1,6 @@
 # 실행에 필요한 부품. 설치: .venv/bin/pip install -r requirements.txt
 requests==2.34.2        # 워드프레스·Pexels·Pixabay·텔레그램 API 호출
+PySocks==1.7.1          # 한국 통로(집 노트북 SOCKS)로 해외 차단 기관 사이트 읽기
 python-dotenv==1.2.4    # .env 비밀값 읽기
 pydantic==2.14.2        # AI가 만든 JSON 구조 검사
 google-genai==2.34.0    # Gemini (글·대본 생성, 무료 등급 우선)
