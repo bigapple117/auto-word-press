@@ -389,8 +389,12 @@ def fetch_source(
     deadline = time.monotonic() + total_timeout
     try:
         final_url, ctype, raw = _fetch(url, deadline, proxy)
+    except BlockedUrlError:
+        raise
     except SourceError as exc:
         if str(exc).startswith("시간 초과"):
+            if proxy and not relay_ready(proxy):
+                raise RelayUnavailableError(f"한국 통로 연결 안 됨({exc})") from exc
             raise ConnectFailedError(str(exc)) from exc
         raise
     except (urllib3.exceptions.HTTPError, OSError, ValueError) as exc:
@@ -423,7 +427,13 @@ def relay_ready(proxy: str = KOREA_PROXY, timeout: float = 5) -> bool:
         with socket.create_connection((host, int(port)), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(b"\x05\x01\x00")
-            return sock.recv(2) == b"\x05\x00"
+            got = b""
+            while len(got) < 2:
+                chunk = sock.recv(2 - len(got))
+                if not chunk:
+                    return False
+                got += chunk
+            return got == b"\x05\x00"
     except OSError:
         return False
 
@@ -464,23 +474,31 @@ def fetch_sources(
             continue
         seen.add(url)
         source_id = f"S{len(sources) + 1}"
-        host = _host(url)
         try:
-            if korea and _dead_hosts.get(host, 0) > time.monotonic():
+            host = _host(url)
+            if korea and host and _dead_hosts.get(host, 0) > time.monotonic():
                 raise ConnectFailedError(f"접속 실패: {url} (최근 접속 끊김, 바로 한국 통로로)")
             src = fetch_source(url, source_id, **kwargs)
         except BlockedUrlError as exc:
             errors.append(str(exc))
+            continue
+        except ValueError as exc:   # 깨진 주소(예: http://[bad)
+            errors.append(f"주소 형식 오류: {url} ({exc})")
             continue
         except SourceError as exc:
             problem = str(exc)
             src = None
             if isinstance(exc, ConnectFailedError) and korea:
                 # 서버에 못 닿음 = 해외 차단일 수 있음 → 한국 통로(집 노트북)로 다시 읽는다
-                _dead_hosts[host] = time.monotonic() + DEAD_HOST_SECONDS
+                skipped = "바로 한국 통로로" in problem
                 try:
                     src = fetch_source(url, source_id, proxy=korea, **kwargs)
                     log.info("한국 통로로 읽음: %s", url)
+                    if host and not skipped:   # 직접은 안 되고 통로로는 된 호스트만, 적중 때는 기한을 늘리지 않음
+                        _dead_hosts[host] = time.monotonic() + DEAD_HOST_SECONDS
+                except BlockedUrlError as exc2:   # 통로로 읽다가 내부 주소로 리다이렉트 등 → 대신 읽기도 하지 않음
+                    errors.append(str(exc2))
+                    continue
                 except RelayUnavailableError as exc2:
                     log.warning("한국 통로 안 됨(이번 자료 모으기에서는 더 안 씀): %s", exc2)
                     korea = None
