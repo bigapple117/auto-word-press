@@ -151,6 +151,62 @@ def _editorial_box(checked_on: str | None) -> str:
     )
 
 
+_LABEL_MAX = 30
+_HEAD_LINES = 40     # 쪽 제목은 본문 앞쪽에 있다. 너무 뒤의 줄은 제목이 아니라 본문 내용일 가능성이 크다
+
+
+def _norm_line(line: str) -> str:
+    """띄어쓰기·빼기 기호 모양(-, −, –)만 다른 줄은 같은 줄로 본다."""
+    return re.sub(r"[\u2010-\u2015\u2212]", "-", re.sub(r"\s+", "", line))
+
+
+def _lines(source: Source) -> list[str]:
+    return [re.sub(r"\s+", " ", line).strip() for line in (source.text or "").splitlines() if line.strip()]
+
+
+def _distinct_heading(source: Source, others: Sequence[Source]) -> str:
+    """같은 사이트 이름을 가진 다른 자료와 본문을 앞에서부터 나란히 견줘, 처음 달라지는 줄을 쪽 제목으로 본다.
+    메뉴·글자크기 버튼·탭 목록처럼 같은 사이트 쪽마다 똑같은 앞부분은 저절로 건너뛴다.
+    (한국장학재단은 첫 줄 '다자녀 국가장학금', 국세청은 공통 탭 목록 뒤 '월세액 세액공제')
+    달라지는 줄이 제목답지 않으면(너무 짧거나 긴 문장) 빈 글자 → 번호로 구분한다."""
+    mine = _lines(source)
+    keys = [_norm_line(x) for x in mine]
+    start = 0
+    for other in others:
+        theirs = [_norm_line(x) for x in _lines(other)]
+        n = 0
+        while n < len(keys) and n < len(theirs) and keys[n] == theirs[n]:
+            n += 1
+        start = max(start, n)
+    if start >= min(len(mine), _HEAD_LINES):
+        return ""
+    line = mine[start]
+    if 3 <= len(line) <= _LABEL_MAX and re.search(r"[가-힣A-Za-z]", line) and keys[start] != _norm_line(source.title):
+        return line
+    return ""
+
+
+def source_labels(sources: Sequence[Source]) -> list[str]:
+    """참고 자료 링크 이름. 사이트가 모든 쪽에 같은 <title>을 쓰면(한국장학재단 등) 이름이 모두 같아져
+    어느 링크가 무슨 자료인지 알 수 없다(2026-11-25 국가장학금 글). 이름이 겹칠 때만 쪽 제목을
+    덧붙이고, 쪽 제목을 못 찾아 그래도 겹치면 번호를 붙인다."""
+    titles = [s.title.strip() or s.url for s in sources]
+    labels = []
+    for i, (s, title) in enumerate(zip(sources, titles)):
+        same = [o for j, o in enumerate(sources) if j != i and titles[j] == title]
+        heading = _distinct_heading(s, same) if same else ""
+        labels.append(f"{title} · {heading}" if heading else title)
+    seen: dict[str, int] = {}
+    out = []
+    for label in labels:
+        if labels.count(label) > 1:
+            seen[label] = seen.get(label, 0) + 1
+            out.append(f"{label} ({seen[label]})")
+        else:
+            out.append(label)
+    return out
+
+
 def reference_note_text(note: str) -> str:
     """'기준:' 표기 뒤에 붙일 정보 기준 문구. 끝의 '기준'을 떼어 '기준: … 기준' 중복을 막는다."""
     text = note.strip()
@@ -205,8 +261,8 @@ def render_blog_html(
     cited = [s for s in sources if s.id in used and _safe_url(s.url)]
     if cited:
         items = "".join(
-            f'<li><a href="{escape(s.url)}" target="_blank" rel="noopener">{escape(s.title)}</a></li>'
-            for s in cited
+            f'<li><a href="{escape(s.url)}" target="_blank" rel="noopener">{escape(label)}</a></li>'
+            for s, label in zip(cited, source_labels(cited))
         )
         out.append(f'<h2>참고 자료</h2><ul class="jc-sources">{items}</ul>')
     out.append(_editorial_box(checked_on))
