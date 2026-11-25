@@ -21,6 +21,7 @@ from src.auto_refresh import FIGURE_WARNING, check_warnings, split_figures
 from src.blog_html import SectionImage, render_blog_html
 from src.config import ROOT, Settings
 from src.law_source import LawClient, find_law_sources
+from src.current_values import find_current_values
 from src.recent_change import find_recent_changes
 from src.link_check import is_home
 from src.content_schema import MasterContent, slug_without_year
@@ -62,6 +63,7 @@ class Services:
     laws: Any = None                 # 국가법령정보 API(LAW_OC가 없으면 법령 조회를 건너뜀)
     find_laws: Callable = find_law_sources
     find_changes: Callable | None = find_recent_changes   # 최근 변경(확정된 개정) 기사 찾기. None이면 건너뜀
+    find_values: Callable | None = find_current_values    # 기사 2곳 이상이 일치한 '올해 기준' 금액. None이면 건너뜀
     judge: Callable | None = None    # 대표 사진을 AI가 보고 고름(없거나 실패하면 검색 순서 첫 후보)
 
     @classmethod
@@ -168,6 +170,16 @@ def gather_sources(svc: Services, topic: str, must_read: Sequence[str] = ()) -> 
         except Exception as exc:  # noqa: BLE001 - 덧붙이는 조사라 실패해도 글은 계속 쓴다
             log.warning("최근 변경 찾기 실패: %r", exc)
             errors = list(errors) + [f"최근 변경 찾기 실패: {exc.__class__.__name__}"]
+    # 올해 기준 금액: 공식 안내 페이지가 지난해(또는 더 예전) 금액을 그대로 둔 경우 대비(AI 호출 없음)
+    values = None
+    if svc.find_values is not None:
+        try:
+            # 최근 변경으로 읽은 기사도 다시 읽는다: 그 기사가 현재 금액을 교차 확인할 언론사 하나일 수 있다
+            values = svc.find_values(svc.search, svc.fetch, topic, len(sources) + 1,
+                                     skip_urls=[s.url for s in sources if s.via != "news"])
+            sources = list(sources) + values.sources
+        except Exception as exc:  # noqa: BLE001 - 덧붙이는 조사라 실패해도 글은 계속 쓴다
+            log.warning("올해 기준 금액 찾기 실패: %r", exc)
     return {
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "topic": topic,
@@ -175,8 +187,9 @@ def gather_sources(svc: Services, topic: str, must_read: Sequence[str] = ()) -> 
         "sources": [{"id": s.id, "url": s.url, "title": s.title, "via": s.via, "text": s.text} for s in sources],
         "errors": list(errors),
         "news": [{"published": n.published, "title": n.title, "url": n.url} for n in news],
-        "change_notes": list(changes.notes) if changes else [],
+        "change_notes": (list(changes.notes) if changes else []) + (list(values.notes) if values else []),
         "recent_changes": changes.as_dict() if changes else {},
+        "current_values": values.memo if values else {},
     }
 
 

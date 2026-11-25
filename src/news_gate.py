@@ -118,7 +118,7 @@ def build_prompt(topic: str, o: dict[str, Any], content: dict[str, Any], sources
     article = json.dumps(content, ensure_ascii=False)[:MAX_ARTICLE_CHARS]
     parts, used = [], 0
     for s in sources:
-        if s.get("via") == "news" or used >= MAX_SOURCE_CHARS:
+        if s.get("via") in ("news", "current") or used >= MAX_SOURCE_CHARS:
             continue
         text = (s.get("text") or "")[:min(3000, MAX_SOURCE_CHARS - used)]
         used += len(text)

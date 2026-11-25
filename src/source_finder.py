@@ -111,8 +111,9 @@ class NaverSearch:
     def web(self, query: str, display: int = 20) -> list[SearchHit]:
         return self._search("webkr", query, display)
 
-    def news(self, query: str, display: int = 10) -> list[SearchHit]:
-        return self._search("news", query, display, sort="date")
+    def news(self, query: str, display: int = 10, sort: str = "date") -> list[SearchHit]:
+        """sort: date(최신순), sim(정확도순 — 몇 달 전의 핵심 기사가 최신 기사에 밀리지 않게)."""
+        return self._search("news", query, display, sort=sort)
 
     def trend(self, keywords: Sequence[str], start: date, end: date,
               time_unit: str = "month") -> dict[str, list[tuple[str, float]]]:

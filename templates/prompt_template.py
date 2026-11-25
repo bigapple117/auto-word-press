@@ -131,8 +131,16 @@ CHANGE_NOTE = ("종류=\"최근 확정 변경\"인 [자료]는 언론 기사에�
                "시행일이 자료에 없으면 그 변경은 쓰지 않는다.")
 
 
+CURRENT_NOTE = ("종류=\"최근 기사 올해 기준 금액\"인 [자료]는 서로 다른 언론사 기사 2곳 이상이 똑같은 금액으로 적은 "
+                "'올해 기준' 현재 금액 문장만 그대로 옮긴 것이다(앞으로 바뀌는 금액·개편안 문장은 뺐다). 공식 안내 자료가 같은 항목을 다른 금액으로 적었고 그 자료에 올해 "
+                "기준이라는 표시(연도·개정일)가 없으면, 공식 안내가 지난 금액을 고치지 않은 것으로 보고 이 자료의 금액을 "
+                "'○년 기준'이라고 밝혀 쓴다. 현행 법령 자료나 올해 날짜가 적힌 공식 안내와 다르면 그쪽을 따른다. "
+                "이 자료의 문장에 없는 금액은 계산해서 만들지 않는다.")
+
+
 def source_block(s: Source) -> str:
-    kind = {"law": ' 종류="현행 법령"', "news": ' 종류="최근 확정 변경"'}.get(s.via, "")
+    kind = {"law": ' 종류="현행 법령"', "news": ' 종류="최근 확정 변경"',
+            "current": ' 종류="최근 기사 올해 기준 금액"'}.get(s.via, "")
     return f"<자료 id=\"{s.id}\"{kind} 제목=\"{s.title}\" 주소=\"{s.url}\">\n{s.text}\n</자료>"
 
 
@@ -170,6 +178,7 @@ def build_prompt(
         "아래 [자료]만 근거로 마스터 콘텐츠 JSON을 만든다. 자료 밖 지식으로 숫자나 기준을 채우지 않는다.",
         *([LAW_NOTE] if any(s.via == "law" for s in sources) else []),
         *([CHANGE_NOTE] if any(s.via == "news" for s in sources) else []),
+        *([CURRENT_NOTE] if any(s.via == "current" for s in sources) else []),
         "[자료]",
         "\n\n".join(blocks),
     ]
@@ -272,6 +281,7 @@ def build_review_prompt(topic: str, sources: Sequence[Source], content_json: str
         f"주제: {topic}",
         *([LAW_NOTE] if any(s.via == "law" for s in sources) else []),
         *([CHANGE_NOTE] if any(s.via == "news" for s in sources) else []),
+        *([CURRENT_NOTE] if any(s.via == "current" for s in sources) else []),
         "[자료]", blocks,
         "[자동 검사 경고 - 프로그램이 찾은 것. 숫자 경고는 표기 차이로 잘못 걸린 것일 수 있으니 자료와 대조해 판단한다]",
         found,
@@ -315,6 +325,7 @@ def build_fact_prompt(topic: str, sources: Sequence[Source], article: Sequence[s
         f"주제: {topic}",
         *([LAW_NOTE] if any(s.via == "law" for s in sources) else []),
         *([CHANGE_NOTE] if any(s.via == "news" for s in sources) else []),
+        *([CURRENT_NOTE] if any(s.via == "current" for s in sources) else []),
         "[자료]", blocks,
         "[확인할 글 - 문단·표 줄 단위]", lines,
         "사실 문장마다 판정을 JSON(claims)으로 돌려준다.",
