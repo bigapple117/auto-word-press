@@ -196,14 +196,20 @@ def source_labels(sources: Sequence[Source]) -> list[str]:
         same = [o for j, o in enumerate(sources) if j != i and titles[j] == title]
         heading = _distinct_heading(s, same) if same else ""
         labels.append(f"{title} · {heading}" if heading else title)
-    seen: dict[str, int] = {}
+    taken = {label for label in labels if labels.count(label) == 1}
+    count: dict[str, int] = {}
     out = []
     for label in labels:
-        if labels.count(label) > 1:
-            seen[label] = seen.get(label, 0) + 1
-            out.append(f"{label} ({seen[label]})")
-        else:
+        if labels.count(label) == 1:
             out.append(label)
+            continue
+        while True:   # 번호 붙인 이름이 다른 자료 이름('기관 (1)')과 다시 겹치지 않게
+            count[label] = count.get(label, 0) + 1
+            candidate = f"{label} ({count[label]})"
+            if candidate not in taken:
+                break
+        taken.add(candidate)
+        out.append(candidate)
     return out
 
 

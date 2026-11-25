@@ -24,3 +24,11 @@ def test_source_labels_disambiguate_same_site_title():
         "연금 (2)",
         "연금 (3)",
     ]
+
+
+def test_source_labels_numbering_does_not_collide():
+    from src.blog_html import source_labels
+    from src.source_fetcher import Source
+    srcs = [Source("S1", "u1", "기관", ""), Source("S2", "u2", "기관", ""), Source("S3", "u3", "기관 (1)", "")]
+    labels = source_labels(srcs)
+    assert len(set(labels)) == 3 and labels[2] == "기관 (1)"
