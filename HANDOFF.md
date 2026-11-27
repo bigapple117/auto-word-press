@@ -1123,3 +1123,4 @@
 - 변경: `ContentGenerator(flex=...)` — Flex로 먼저 요청(타임아웃 FLEX_TIMEOUT_MS 15분), 일시 오류(429·5xx·타임아웃)면 같은 모델을 일반 요금으로 한 번 다시 요청 후 기존 재시도 규칙. 403 등은 그대로 실패. 설정 `GEMINI_FLEX`(기본 켬, 0/false/off로 끔). 텔레그램에서 바로 기다리는 주제 찾기(TopicWriter)는 flex=False. image_judge·remote_reader·TTS는 비용이 작아 그대로.
 - 검증: pytest 854개 통과(새 tests/test_generator_flex.py, test_config, test_topic_finder). 실제 Flex 요청은 지출 한도 403으로 아직 못 함.
 - 남은 일: (1) 사용자가 AI Studio에서 지출 한도 상향 → (2) 실행기 재시작(승인 필요, 진행 중 작업 없을 때) → (3) 짧은 Flex 실제 요청 확인 후 `jobctl retry 61`~`67` → (4) 며칠 뒤 AI Studio 사용량으로 단가 절반 반영 확인(포럼에 할인 미적용 사례 1건 있음) → (5) ②~④ 순서대로(②는 시험 글 비교 필수, 퇴근 후·주말)
+- 2026-11-27 작업 16 클립 실제 등록 후 PC 웹(clip.naver.com) 캡처 확인: 해시태그는 클립 해시태그 링크가 되지만, 설명 속 글 주소(jalcheck.com)는 링크가 아닌 일반 글자 → 눌리지 않음(휴대폰 앱은 미확인). 복사해 들어갈 수 있어 주소는 계속 넣기로 함. 'AI 활용' 표시 정상 적용
