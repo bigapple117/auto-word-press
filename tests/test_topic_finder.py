@@ -271,9 +271,11 @@ def test_budget_stops_and_reports_unchecked():
 class FakeGen:
     def __init__(self, replies, fail=False):
         self.replies, self.fail, self.prompts = list(replies), fail, []
+        self.flex_calls = []
 
-    def _call_with_retry(self, prompt, schema=None, system=None):
+    def _call_with_retry(self, prompt, schema=None, system=None, flex=None):
         self.prompts.append((schema, prompt))
+        self.flex_calls.append((schema, flex))
         if self.fail:
             raise RuntimeError("busy")
         return self.replies.pop(0), "m"
@@ -292,6 +294,7 @@ def test_writer_discovers_and_phrases_with_validation_and_fallback():
         news={"지원금 신청 시작": [news("스포츠강좌이용권 신청 접수 시작")]},
     )
     result = find_candidates(s, TopicWriter(gen), seeds, [], today=TODAY)
+    assert gen.flex_calls == [(DiscoveredList, False), (PhrasedList, False)]
     topics = {c.seed.name: c.topic for c in result.candidates}
     assert topics == {"기초연금": "기초연금 신청 자격과 받는 방법",
                       "스포츠강좌이용권": "스포츠강좌이용권 지원 대상과 신청 방법"}

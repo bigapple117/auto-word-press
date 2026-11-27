@@ -62,6 +62,7 @@ class Settings:
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"          # 1순위
     gemini_second_model: str = "gemini-3.6-flash"   # 1순위가 한도 초과·혼잡일 때 블로그를 쓰는 차선
+    gemini_flex: bool = True   # 뒤에서 도는 글 작업은 Flex 요금(절반 가격, 응답 몇 분 지연 가능)으로 먼저 요청
 
     # 무료 스톡 이미지·영상
     pexels_api_key: str = ""
@@ -137,6 +138,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         gemini_api_key=_env("GEMINI_API_KEY"),
         gemini_model=_env("GEMINI_MODEL", d.gemini_model),
         gemini_second_model=_env("GEMINI_SECOND_MODEL", d.gemini_second_model),
+        gemini_flex=_env("GEMINI_FLEX", "1") not in ("0", "false", "off", "no"),
         pexels_api_key=_env("PEXELS_API_KEY"),
         pixabay_api_key=_env("PIXABAY_API_KEY"),
         naver_client_id=_env("NAVER_CLIENT_ID"),

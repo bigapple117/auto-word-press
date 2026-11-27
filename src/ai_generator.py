@@ -40,6 +40,8 @@ MAX_TIMEOUTS_PER_MODEL = 2      # 같은 모델에서 시간 초과가 이만큼
 MAX_SHORTS_REPAIRS = 2           # 쇼츠 길이만 틀렸을 때 대본만 고쳐 쓰는 횟수
 NARRATION_PROBLEM = "쇼츠 내레이션 전체 길이"
 REQUEST_TIMEOUT_MS = 300_000
+# Flex 요청은 Google 대기열에서 1~15분 기다릴 수 있어 공식 문서 권장(10분 이상)대로 길게 잡는다.
+FLEX_TIMEOUT_MS = 900_000
 
 _TRANSIENT_CODES = {429, 500, 502, 503, 504}
 _EMOJI = re.compile(
@@ -828,8 +830,12 @@ class ContentGenerator:
         sleep: Callable[[float], None] = time.sleep,
         retry_waits: Sequence[float] = RETRY_WAITS,
         blog_fallback: bool = False,
+        flex: bool = False,
     ) -> None:
         self.client = client
+        # True면 매 요청을 Flex 요금(50% 할인)으로 먼저 보내고, 혼잡·시간 초과면 같은 모델을 일반 요금으로 다시 보낸다.
+        # 모델·지시문·자료는 그대로라 글 내용은 같고 응답만 늦어질 수 있다.
+        self.flex = flex
         self.models = list(dict.fromkeys(m for m in (model, second_model, fallback_model) if m))
         # 블로그 본문은 1순위 모델 → 차선 모델 순서로만 쓴다(매번 1순위부터 시도하므로
         # 1순위 한도가 다시 채워지면 자동으로 1순위로 돌아감). 가장 가벼운 예비 모델 글은
@@ -847,10 +853,27 @@ class ContentGenerator:
             http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS),
         )
         kwargs.setdefault("second_model", settings.gemini_second_model or None)
+        kwargs.setdefault("flex", settings.gemini_flex)
         return cls(client, settings.gemini_model, **kwargs)
 
     def _call(self, model: str, prompt: str, schema: type = MasterContent,
-              system: str = SYSTEM_INSTRUCTION) -> str:
+              system: str = SYSTEM_INSTRUCTION, flex: bool | None = None) -> str:
+        """flex: None이면 self.flex를 따른다. 사용자가 텔레그램에서 바로 기다리는 짧은 요청은 False."""
+        if self.flex if flex is None else flex:
+            try:
+                return self._request(model, prompt, schema, system, flex=True)
+            except Exception as exc:  # noqa: BLE001 - 일시 오류만 일반 요금으로 넘긴다
+                if not _is_transient(exc):
+                    raise
+                # Flex는 서버가 자동으로 일반 요금으로 바꿔 주지 않으므로 여기서 한 번 넘긴다.
+                log.warning("%s Flex 혼잡·지연(%s), 일반 요금으로 다시 요청", model, exc)
+        return self._request(model, prompt, schema, system, flex=False)
+
+    def _request(self, model: str, prompt: str, schema: type, system: str, flex: bool) -> str:
+        extra: dict[str, Any] = {}
+        if flex:
+            extra = {"service_tier": types.ServiceTier.FLEX,
+                     "http_options": types.HttpOptions(timeout=FLEX_TIMEOUT_MS)}
         response = self.client.models.generate_content(
             model=model,
             contents=prompt,
@@ -859,6 +882,7 @@ class ContentGenerator:
                 response_mime_type="application/json",
                 response_schema=schema,
                 temperature=0.7,
+                **extra,
             ),
         )
         text = getattr(response, "text", None)

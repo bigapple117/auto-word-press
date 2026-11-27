@@ -7,7 +7,7 @@ ENV_NAMES = [
     "WP_BASE_URL", "WP_USERNAME", "WP_APP_PASSWORD", "GEMINI_API_KEY", "GEMINI_MODEL",
     "PEXELS_API_KEY", "PIXABAY_API_KEY", "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
     "GOOGLE_SERVICE_ACCOUNT_FILE", "GOOGLE_SHEET_ID", "TTS_VOICE", "WEB_HOST", "WEB_PORT",
-    "DATA_DIR", "FFMPEG_BIN", "FFPROBE_BIN", "FONTS_DIR",
+    "DATA_DIR", "FFMPEG_BIN", "FFPROBE_BIN", "FONTS_DIR", "GEMINI_FLEX",
 ]
 
 
@@ -29,6 +29,14 @@ def test_defaults_when_env_empty(tmp_path):
     assert s.tts_voice == "ko-KR-SunHiNeural"
     assert s.web_host == "127.0.0.1" and s.web_port == 8000
     assert s.db_path == config.ROOT / "data" / "jobs.sqlite3"
+
+
+def test_gemini_flex_default_and_environment_override(tmp_path, monkeypatch):
+    assert config.Settings().gemini_flex is True
+    env_file = write_env(tmp_path, "")
+    assert load_settings(env_file).gemini_flex is True
+    monkeypatch.setenv("GEMINI_FLEX", "0")
+    assert load_settings(env_file).gemini_flex is False
 
 
 def test_blank_values_fall_back_to_defaults(tmp_path):

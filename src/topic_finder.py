@@ -418,7 +418,8 @@ def _group_regional(found: list[Seed]) -> list[Seed]:
 
 
 class TopicWriter:
-    """Gemini 호출부. ContentGenerator의 재시도·모델 순서를 그대로 쓴다."""
+    """Gemini 호출부. ContentGenerator의 재시도·모델 순서를 그대로 쓴다.
+    텔레그램에서 사용자가 바로 결과를 기다리는 일이라 Flex(몇 분 지연 가능)를 쓰지 않는다(호출이 작아 비용 차이도 작음)."""
 
     def __init__(self, generator: Any) -> None:
         self.gen = generator
@@ -429,14 +430,14 @@ class TopicWriter:
             return []
         raw, _model = self.gen._call_with_retry(
             build_discover_prompt(titles, [s.name for s in seeds], existing),
-            schema=DiscoveredList, system=DISCOVER_SYSTEM)
+            schema=DiscoveredList, system=DISCOVER_SYSTEM, flex=False)
         return validate_discovered(DiscoveredList.model_validate_json(raw).items, titles, seeds)
 
     def phrase(self, items: Sequence[Candidate]) -> dict[str, str]:
         if not items:
             return {}
         raw, _model = self.gen._call_with_retry(build_phrase_prompt(items), schema=PhrasedList,
-                                                system=PHRASE_SYSTEM)
+                                                system=PHRASE_SYSTEM, flex=False)
         return {p.key: p.topic.strip() for p in PhrasedList.model_validate_json(raw).items}
 
 
